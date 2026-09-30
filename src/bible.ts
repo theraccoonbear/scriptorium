@@ -14,6 +14,7 @@ export function emptyBible(): Bible {
     locations: {},
     threads: {},
     ledger: [],
+    resolvedDecisions: [],
     summary: { arcs: [], recent: [] },
     sceneCount: 0
   };
@@ -45,6 +46,11 @@ export function applyPatch(bible: Bible, patch: Patch | undefined, index: number
   }
   const paid = new Set(p.paySetups || []);
   next.ledger = next.ledger.filter((s) => !paid.has(s.id));
+  for (const d of p.resolveDecisions || []) {
+    if (d && !next.resolvedDecisions.includes(d)) {
+      next.resolvedDecisions.push(d);
+    }
+  }
 
   if (p.timeline) {
     next.summary.recent.push(`S${index + 1}: ${p.timeline}`);
@@ -85,6 +91,7 @@ export function renderBible(bible: Bible): string {
     .map((t) => `- ${t.id}: ${t.title} [${t.status}]`)
     .join("\n");
   const ledger = bible.ledger.map((s) => `- ${s.id} (opened S${s.openedAt + 1}): ${s.text}`).join("\n");
+  const decisions = bible.resolvedDecisions.map((d) => `- ${d}`).join("\n");
   return [
     `PREMISE: ${bible.premise}`,
     `TONE: ${bible.tone}`,
@@ -92,6 +99,7 @@ export function renderBible(bible: Bible): string {
     `LOCATIONS:\n${locs || "(none)"}`,
     `THREADS:\n${threads || "(none)"}`,
     `OPEN SETUPS (Chekhov ledger):\n${ledger || "(none)"}`,
+    `RESOLVED DECISIONS (do not re-litigate without new pressure):\n${decisions || "(none)"}`,
     `EARLIER ARCS:\n${bible.summary.arcs.join("\n") || "(none)"}`,
     `RECENT SCENES:\n${bible.summary.recent.join("\n") || "(none)"}`
   ].join("\n\n");
