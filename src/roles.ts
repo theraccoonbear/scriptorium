@@ -159,6 +159,10 @@ STYLE ENFORCEMENT:
 - STYLE_PATTERN blocks only when the same tic recurs THREE OR MORE times (negation-then-correction, abstract padding instead of concrete detail, narration restating the theme). Entity quotes one example; detail names the approximate count.
 - One or two occurrences are NOT blocking — put them in the review text. CRAFT remains non-blocking regardless.
 
+VOICE DRIFT:
+- CHARACTER_ARC also covers voice drift: when a speaker reads like another character's voice sheet, or abandons their own register so who-is-speaking becomes muddled, flag CHARACTER_ARC (entity = the passage; detail = which voice was lost or borrowed).
+- Only when it confuses attribution. Subtle register variation under pressure is fine — put that in the review text.
+
 DO NOT put CRAFT issues (word choice, repetition, voice, exposition style, metaphor quality, "overwrought," "editorializing") in the issues array. Put those in the review field instead. CRAFT is subjective and does not justify a rewrite on its own.
 
 - ok: true if the draft is acceptable, false if it needs revision
@@ -459,8 +463,15 @@ export async function write(role: Role, params: {
   previousScenes?: string[];
 } & CreativeFeedback): Promise<RoleOutput<string>> {
   const { bible, beat, sceneIndex, attempt, sceneWords, previousDraft, previousScenes, issues, fresh } = params;
-  const pov = bible.characters[beat.pov];
-  const voice = pov && pov.voice ? `VOICE: ${pov.name} — ${pov.voice}` : "";
+  // Voice sheets for every character in the bible — not just POV, so minor
+  // characters arrive with their own register and voices cannot converge.
+  const voiceSheets = Object.values(bible.characters)
+    .filter((ch) => ch.voice)
+    .map((ch) => `- ${ch.name}: ${ch.voice}`)
+    .join("\n");
+  const voice = voiceSheets
+    ? `VOICE SHEETS (keep every speaker in their own register — do not let voices converge):\n${voiceSheets}`
+    : "";
   const fix = feedbackBlock(
     issues,
     fresh,

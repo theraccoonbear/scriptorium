@@ -123,3 +123,24 @@ test("critic blocks style tics only on recurrence", () => {
   assert.ok(CRITIC_SYSTEM.includes("are NOT blocking"), "single occurrences must stay non-blocking");
   assert.ok(CRITIC_SYSTEM.includes("CRAFT remains non-blocking"), "CRAFT rule weakened");
 });
+
+// --- issue #5: voice sheets + drift ---
+test("writer gets voice sheets for every character, not just POV", async () => {
+  const bible = emptyBible();
+  bible.characters["a"] = { id: "a", name: "Osmagus", traits: "", goal: "", voice: "Short declarative sentences.", status: "active" };
+  bible.characters["b"] = { id: "b", name: "Mettka", traits: "", goal: "", voice: "Measured, speaks in parables.", status: "active" };
+  const out = await write(mockRole, {
+    bible, beat: testBeat, sceneIndex: 0, attempt: 0,
+    sceneWords: { min: 1200, max: 1800 }
+  });
+  assert.ok(out.prompt.includes("VOICE SHEETS"), "missing voice sheet block");
+  assert.ok(out.prompt.includes("Osmagus: Short declarative sentences."), "missing first voice");
+  assert.ok(out.prompt.includes("Mettka: Measured, speaks in parables."), "missing non-POV voice");
+  assert.ok(out.prompt.includes("do not let voices converge"), "missing anti-convergence rule");
+});
+
+test("critic checks voice drift", () => {
+  assert.ok(CRITIC_SYSTEM.includes("VOICE DRIFT"), "missing voice drift section");
+  assert.ok(CRITIC_SYSTEM.includes("voice drift"), "missing drift semantics");
+  assert.ok(CRITIC_SYSTEM.includes("confuses attribution"), "missing blocking threshold");
+});
