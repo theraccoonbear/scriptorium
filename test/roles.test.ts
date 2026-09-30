@@ -144,3 +144,15 @@ test("critic checks voice drift", () => {
   assert.ok(CRITIC_SYSTEM.includes("voice drift"), "missing drift semantics");
   assert.ok(CRITIC_SYSTEM.includes("confuses attribution"), "missing blocking threshold");
 });
+
+// --- issue #6: unaddressed practical gaps ---
+test("continuist can flag unaddressed practical gaps", () => {
+  assert.ok(CONTINUIST_SYSTEM.includes("UNADDRESSED_PRACTICAL"), "missing type in enum");
+  assert.ok(CONTINUIST_SYSTEM.includes("obvious in-world fix"), "missing example in enum");
+  assert.ok(CONTINUIST_SYSTEM.includes("PRACTICAL GAPS"), "missing section");
+  assert.ok(CONTINUIST_SYSTEM.includes("the constraint is the reason"), "missing constraint carve-out");
+  assert.ok(
+    CONTINUIST_SYSTEM.includes("UNSATISFIABLE_CONSTRAINT"),
+    "missing beatgate deferral for unsatisfiable specs"
+  );
+});
