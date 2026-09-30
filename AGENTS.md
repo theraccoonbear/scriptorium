@@ -24,15 +24,32 @@ archivist → patchgate → commit
 | Mock story end-to-end | `npm run story:mock` |
 | Live run | `npm run story -- --max-attempts inf --scenes 3` |
 
-Run **all three** of typecheck/tests/mock before you consider work done.
+Run **all three** of typecheck/tests/mock before you consider work done, and
+paste the result into the PR.
 
-## Branching
+## Branching and merging
 
 - One branch per issue: `feat-<slug>-<issue#>` or `fix-<slug>-<issue#>`
   (e.g. `feat-continuist-mustreveal-1`).
-- Branch from `main`. Merge back to `main` only when typecheck + tests are green.
-- Commit message references the issue (`Closes #N`) so GitHub closes it on push.
-- Do not push directly to `main` except for docs/meta (README, this file).
+- Branch from `main`. **Nothing reaches `main` except through a GitHub PR.**
+  Create it with `gh pr create`, wait for green, merge with `gh pr merge`.
+  Docs and meta included — no direct pushes.
+- Reference the issue in the commit or PR body (`Closes #N`) so GitHub closes
+  it on merge.
+- PR description must say: what changed, why, which issue it closes, and how
+  you verified it (typecheck / tests / mock run).
+
+## Test coverage (required)
+
+- **New functionality, bug fixes, and regressions need tests** added under
+  `test/` before the PR merges. No test, no merge.
+- Prompt-only changes (system prompt text): tests don't read prompts except
+  via contract tests — assert the required sections exist so the contract
+  can't silently regress (see `test/roles.test.ts`).
+- Engine/behavior changes: extend the mock-provider fixtures (pattern:
+  `MockProvider.rejectFirstOn` + `story.config.json`).
+- Bugs found in a live run get a regression test that fails without the fix
+  whenever that is mechanically possible.
 
 ## Hard invariants (do not weaken these)
 
