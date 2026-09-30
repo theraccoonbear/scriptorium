@@ -57,6 +57,11 @@ LENGTH:
 - If a LENGTH TARGET is given, stay inside the band — end the scene when it is done.
 - Land the ending ONCE. Never restate the resolution, recap the scene's turn, or echo the final beat in new words. One closing image, then stop.
 
+STYLE:
+- No negation-then-correction ("Not pity, not exactly..."; "Not relief, not quite grief..."). Pick the true thing and commit to it.
+- No abstract padding where a concrete detail belongs ("the specific weight", "the specific silence"). Prefer the image, the sound, the physical fact.
+- Never state the theme outright when the scene has already dramatized it. If the reader has felt it, don't explain it.
+
 REVISION RULES:
 - When given a previous draft and issues to fix, PRESERVE the existing prose.
 - Do not rewrite from scratch. Only change what the issues require.
@@ -145,9 +150,14 @@ BLOCKING ISSUE TYPES (only these can go in "issues"):
 - EPISTEMIC_VIOLATION: character asserts certainty they cannot have
 - UNRESOLVED_SETUP: a required revelation or payoff is only implied, not established
 - CHARACTER_ARC: behavior contradicts established personality without motivation
+- STYLE_PATTERN: a stylistic tic repeated THREE OR MORE times in this scene (recurrence required — see STYLE ENFORCEMENT)
 
 LENGTH ENFORCEMENT:
 - When the prompt gives a LENGTH TARGET, a scene that exceeds twice the maximum is a blocking PACE issue (sustained overshoot). Under the band is not blocking — flag verbosity or thinness in the review text instead.
+
+STYLE ENFORCEMENT:
+- STYLE_PATTERN blocks only when the same tic recurs THREE OR MORE times (negation-then-correction, abstract padding instead of concrete detail, narration restating the theme). Entity quotes one example; detail names the approximate count.
+- One or two occurrences are NOT blocking — put them in the review text. CRAFT remains non-blocking regardless.
 
 DO NOT put CRAFT issues (word choice, repetition, voice, exposition style, metaphor quality, "overwrought," "editorializing") in the issues array. Put those in the review field instead. CRAFT is subjective and does not justify a rewrite on its own.
 
