@@ -48,3 +48,25 @@ test("continuist enforces mustReveal delivery", () => {
     "missing no-deferral rule"
   );
 });
+
+// --- issue #2: escalation tracking ---
+import { ARCHIVIST_SYSTEM, DIRECTOR_SYSTEM } from "../src/roles.ts";
+
+test("director is told not to rehash resolved decisions", () => {
+  assert.ok(DIRECTOR_SYSTEM.includes("RESOLVED DECISIONS"), "missing RESOLVED DECISIONS reference");
+  assert.ok(DIRECTOR_SYSTEM.includes("NEW pressure"), "missing new-pressure rule");
+  assert.ok(
+    DIRECTOR_SYSTEM.includes("Each scene must turn the story somewhere it has not been"),
+    "missing escalation requirement"
+  );
+});
+
+test("archivist records decisions that closed in the scene", () => {
+  assert.ok(ARCHIVIST_SYSTEM.includes('"resolveDecisions":[string]'), "missing schema field");
+  assert.ok(ARCHIVIST_SYSTEM.includes("CLOSED in this scene"), "missing semantics");
+});
+
+test("beatgate can flag a rehash", () => {
+  assert.ok(BEAT_GATE_SYSTEM.includes("REHASH"), "missing REHASH type");
+  assert.ok(BEAT_GATE_SYSTEM.includes("RESOLVED DECISIONS"), "missing decision cross-check");
+});

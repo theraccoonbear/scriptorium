@@ -40,12 +40,13 @@ Create the premise, setting, and cast that make the best story — one character
 You will be given character names and location names — use them exactly, do not invent new ones.
 Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.`;
 
-const DIRECTOR_SYSTEM = `You are the Director of a procedurally generated story. You never write prose.
+export const DIRECTOR_SYSTEM = `You are the Director of a procedurally generated story. You never write prose.
 Plan the next scene as a beat spec. Output ONLY JSON with this shape:
 {"goal":string,"conflict":string,"pov":characterId,"location":string,"mustReveal":string,"constraints":[string],"payoffs":[setupId]}
 Honor the tension target and the required complication. Every overdue setup must appear in payoffs.
 Never contradict the bible.
-Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.`;
+Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.
+The bible lists RESOLVED DECISIONS — choices characters have already made and closed. Do not build a beat whose core is re-deciding one of them (having characters re-choose what is already chosen). A resolved decision may be referenced only if the beat adds genuinely NEW pressure on it: new stakes, new information, or a new cost. Each scene must turn the story somewhere it has not been.`;
 
 const WRITER_SYSTEM = `You are the Writer. Render the beat spec as a single scene of prose.
 Stay strictly in the POV character's voice and knowledge. Obey every constraint.
@@ -80,7 +81,8 @@ SPEC ISSUE TYPES (for reviewing beat specs and bible patches, not prose):
 - CANON_CONTRADICTION: spec or patch conflicts with established bible facts
 - POV_LEAK: spec requires information the POV character cannot plausibly have
 - WRONG_PAYOFF: a payoff doesn't match its setup, or a required setup is missing
-- INADEQUATE_SPEC: required fields missing/empty, duplicate names, or output too generic to use`;
+- INADEQUATE_SPEC: required fields missing/empty, duplicate names, or output too generic to use
+- REHASH: the beat re-litigates an already-resolved decision without introducing new pressure`;
 
 // Shared issue contract for ALL gates. One schema, one dedup key — a gate that
 // omits `constraint` degrades repeat-detection to prose quotes that change every
@@ -149,15 +151,17 @@ ${ISSUE_RULES}
 - Be honest about quality but pragmatic — not every imperfection justifies a rewrite.
 - You share this pipeline with a continuity checker. Focus on prose quality and story craft; they handle continuity.`;
 
-const ARCHIVIST_SYSTEM = `You are the Archivist, the only role allowed to change the story bible.
+export const ARCHIVIST_SYSTEM = `You are the Archivist, the only role allowed to change the story bible.
 Read the committed scene and output ONLY a JSON patch:
 {"upsertCharacters":[{"id":string,"name"?:string,"traits"?:string,"goal"?:string,"voice"?:string,"status"?:string}],
 "upsertLocations":[{"id":string,"name"?:string,"description"?:string}],
 "upsertThreads":[{"id":string,"title"?:string,"status"?:string}],
 "openSetups":[{"id":string,"text":string}],
 "paySetups":[setupId],
+"resolveDecisions":[string],
 "timeline":"one line summary of what happened"}
-Only record facts established in the scene.`;
+Only record facts established in the scene.
+resolveDecisions: choices or commitments that CLOSED in this scene — decisions the characters will not re-make without new pressure. List only what the scene actually settles; an open or deferred choice does not belong here.`;
 
 export const BEAT_GATE_SYSTEM = `You are the Beat Gate. You review a beat spec BEFORE any prose is written.
 Your job: catch specs that a writer cannot satisfy, or that contradict the story bible.
@@ -177,6 +181,8 @@ CHECK SPECIFICALLY:
 - Read mustReveal against every constraint. If the reveal would itself violate a constraint (e.g. the reveal says a problem is solved/compensated while a constraint says it must remain unresolved), flag UNSATISFIABLE_CONSTRAINT.
 - Read constraints against each other. Two constraints that cannot hold in the same scene = UNSATISFIABLE_CONSTRAINT.
 - Read the conflict and payoffs against the bible and prior scenes.
+- Read the beat's goal and conflict against the bible's RESOLVED DECISIONS. If the scene's core is re-deciding something already closed — with no new pressure, stakes, or information — flag REHASH.
+- A beat that adds nothing the story hasn't already done (same turn, restated) also fails: flag REHASH.
 
 ${ISSUE_RULES}
 - ok: true if a competent writer can satisfy this spec without contradicting itself or the bible.

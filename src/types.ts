@@ -59,6 +59,7 @@ export interface Bible {
   locations: Record<string, Location>;
   threads: Record<string, Thread>;
   ledger: Setup[];
+  resolvedDecisions: string[];
   summary: BibleSummary;
   sceneCount: number;
 }
@@ -79,6 +80,7 @@ export interface Patch {
   upsertThreads?: Partial<Thread>[];
   openSetups?: { id: string; text?: string }[];
   paySetups?: string[];
+  resolveDecisions?: string[];
   timeline?: string;
 }
 
