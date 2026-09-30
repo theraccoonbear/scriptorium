@@ -5,16 +5,18 @@ import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders, listModels } from "./providers.ts";
 import { runStory, renderStory } from "./engine.ts";
 import { replay } from "./bible.ts";
+import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
 import { c } from "./colors.ts";
 
 const USAGE = `scriptorium <command> [options]
 
   run   --config <file> [--out <prefix>] [--scenes N] [--premise "..."] [--setting "..."]
-        [--context <file.md>] [--max-attempts N|unlimited]
+        [--context <file.md>] [--max-attempts N|unlimited] [--speaker-tags]
         generate (or resume) a story
   fork  --from <dir> --at <sceneCount> --out <dir>      branch a run at a scene
   show  --out <dir>                                     print the story as markdown
   bible --out <dir>                                     print the current bible as JSON
+  audiobook --out <dir> [--narrator-voice <id>]          render the run's scenes to WAV
   models --config <file> --provider <name>              list model ids a provider serves
 
 Options:
@@ -24,12 +26,17 @@ Options:
   --setting "..."         Genre/setting description
   --max-attempts N        Total drafts per scene (default: 3)
   --max-attempts 0        Unlimited — keep revising until both reviewers approve
+  --speaker-tags          Writer tags every paragraph with a speaker, so
+                          audiobook can switch voices per character
+  --narrator-voice <id>   Kokoro voice id for narration (default: af_heart)
 
 Examples:
   npm run story -- --scenes 8
   npm run story -- --context my-story.md --scenes 5
   npm run story -- --premise "a lighthouse keeper" --setting "1980s Maine" --scenes 3
   npm run story -- --max-attempts unlimited --scenes 3
+  npm run story -- --speaker-tags --scenes 3
+  node src/cli.ts audiobook --out runs/story-20260101-000000
 `;
 
 const MAX_RUNS = 10;
@@ -96,7 +103,9 @@ async function main() {
       premise: { type: "string" },
       setting: { type: "string" },
       context: { type: "string" },
-      "max-attempts": { type: "string" }
+      "max-attempts": { type: "string" },
+      "speaker-tags": { type: "boolean" },
+      "narrator-voice": { type: "string" }
     }
   });
 
@@ -131,7 +140,13 @@ async function main() {
     }
     await updateManifest(runDir, values.config);
     await runStory({
-      config: { ...config, premise: values.premise, setting: values.setting || config.setting, context },
+      config: {
+        ...config,
+        premise: values.premise,
+        setting: values.setting || config.setting,
+        context,
+        speakerTags: values["speaker-tags"] ?? config.speakerTags
+      },
       log,
       roles,
       scenes,
@@ -161,6 +176,29 @@ async function main() {
     const log = new EventLog(values.out);
     await log.load();
     console.log(command === "show" ? renderStory(log.events) : JSON.stringify(replay(log.events), null, 2));
+    return;
+  }
+
+  if (command === "audiobook") {
+    if (!values.out) {
+      throw new Error("--out is required");
+    }
+    const log = new EventLog(values.out);
+    await log.load();
+    const result = await generateAudiobook(log.events, {
+      runDir: values.out,
+      narratorVoice: values["narrator-voice"],
+      onProgress: (event) => {
+        if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);
+        else if (event.type === "model_ready") console.error(`[scriptorium] ${c.ok("model ready")}`);
+        else if (event.type === "scene_start") console.error(`[scriptorium] ${c.blue(c.bold(`scene ${event.index + 1}/${event.total}`))} ${c.dim(`(${event.segments} segment${event.segments === 1 ? "" : "s"})`)}`);
+        else if (event.type === "chunk_done") console.error(`[scriptorium]   ${c.dim(`[${event.speaker}] ${event.text.slice(0, 60)}${event.text.length > 60 ? "..." : ""}`)}`);
+        else if (event.type === "segment_done") console.error(`[scriptorium]   ${c.dim(`segment ${event.segmentIndex + 1}/${event.segments} (${event.speaker}) done`)}`);
+        else if (event.type === "scene_done") console.error(`[scriptorium] ${c.ok(`scene ${event.index + 1} written`)} ${c.dim(event.path)}`);
+      }
+    });
+    await writeVoiceMap(result.outDir, result.voices);
+    console.log(`${c.ok(`${result.scenes} scene${result.scenes === 1 ? "" : "s"} rendered to`)} ${c.cyan(result.outDir + "/")}`);
     return;
   }
 

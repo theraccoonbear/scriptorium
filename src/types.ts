@@ -185,6 +185,10 @@ export interface StoryConfig {
   premise?: string;
   setting?: string;
   context?: string;
+  // When true, the writer tags every paragraph with a speaker (`narrator:` or
+  // a bible character id) so the audiobook tool can switch voices per line.
+  // Off by default: story.md stays plain prose, unchanged from every prior run.
+  speakerTags?: boolean;
 }
 
 // A structured role call: the model output plus the exact inputs that produced it.
