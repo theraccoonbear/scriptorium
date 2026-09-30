@@ -109,3 +109,17 @@ test("critic blocks sustained overshoot as PACE", () => {
   assert.ok(CRITIC_SYSTEM.includes("LENGTH ENFORCEMENT"), "missing enforcement section");
   assert.ok(CRITIC_SYSTEM.includes("twice the maximum"), "missing >2x blocking rule");
 });
+
+// --- issue #4: style patterns ---
+test("writer bans the observed tics", () => {
+  assert.ok(WRITER_SYSTEM.includes("No negation-then-correction"), "missing negation rule");
+  assert.ok(WRITER_SYSTEM.includes("No abstract padding"), "missing padding rule");
+  assert.ok(WRITER_SYSTEM.includes("Never state the theme outright"), "missing theme rule");
+});
+
+test("critic blocks style tics only on recurrence", () => {
+  assert.ok(CRITIC_SYSTEM.includes("STYLE_PATTERN"), "missing STYLE_PATTERN type");
+  assert.ok(CRITIC_SYSTEM.includes("THREE OR MORE times"), "missing recurrence rule");
+  assert.ok(CRITIC_SYSTEM.includes("are NOT blocking"), "single occurrences must stay non-blocking");
+  assert.ok(CRITIC_SYSTEM.includes("CRAFT remains non-blocking"), "CRAFT rule weakened");
+});
