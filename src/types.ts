@@ -168,11 +168,18 @@ export interface RoleSpec {
   timeoutMs?: number;
 }
 
+// Word band for a scene. Writer stays inside it; critic flags >2x as PACE.
+export interface WordBudget {
+  min: number;
+  max: number;
+}
+
 export interface StoryConfig {
   rngSeed?: number;
   scenes?: number;
   maxRevisions?: number;
   overdueAfter?: number;
+  sceneWords?: WordBudget;
   providers: Record<string, ProviderSpec>;
   roles: Record<string, RoleSpec>;
   premise?: string;
