@@ -84,6 +84,7 @@ const ISSUE_TYPES = `ISSUE TYPES (use the exact enum value):
 - UNRESOLVED_SETUP: a required revelation or payoff is only implied, not established
 - UNINTRODUCED_ENTITY: named character/location appears without introduction
 - PACE: scene moves too fast/slow, transitions feel abrupt
+- UNADDRESSED_PRACTICAL: an established problem has an obvious in-world fix that goes unused with no reason given (e.g. a crack that could simply be sealed) — if a beat constraint explains the non-use, do not flag
 - CRAFT: word choice, repetition, voice inconsistency, exposition issues
 
 SPEC ISSUE TYPES (for reviewing beat specs and bible patches, not prose):
@@ -127,6 +128,11 @@ INTERPRETING CONSTRAINTS:
 - "Unresolved" means the material state of the world — a shortage still short, a secret still hidden, a choice still unmade. It is NOT about the character's attitude or emotional response.
 - If the prose states the problem is still unresolved AND no resource, answer, or resolution has actually appeared, the constraint is satisfied — even if the character feels hopeful, calm, or confident about it.
 - Do not flag a constraint when the only evidence is the character's internal outlook.
+
+PRACTICAL GAPS:
+- If the prose establishes a problem with an obvious in-world fix, and neither the scene nor a beat constraint explains why the fix is not used, flag UNADDRESSED_PRACTICAL — entity quotes the problem, constraint names the missing reason.
+- If a beat constraint already accounts for why the fix cannot be used, do NOT flag: the constraint is the reason.
+- If the beat both forbids the obvious fix and leaves no alternative account, that contradiction belongs to the beat gate (UNSATISFIABLE_CONSTRAINT) — do not flag it here.
 
 DELIVERING THE BEAT (check this every draft):
 - The beat spec's mustReveal and every constraint are requirements the prose must ESTABLISH — on the page, in this scene, before it ends.
