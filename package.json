@@ -1,0 +1,24 @@
+{
+  "name": "scriptorium",
+  "version": "0.1.0",
+  "description": "Agentic narrative scaffolding: director, writer, critic, archivist roles over swappable models",
+  "type": "module",
+  "bin": {
+    "scriptorium": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc",
+    "demo": "node --env-file=.env src/cli.ts run --config story.config.json --out runs/demo",
+    "story": "node --env-file=.env src/cli.ts run --config story.opencode-go.config.json",
+    "story:mock": "node --env-file=.env src/cli.ts run --config story.config.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}

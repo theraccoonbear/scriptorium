@@ -1,0 +1,20 @@
+{
+  "rngSeed": 7,
+  "scenes": 8,
+  "maxRevisions": 2,
+  "overdueAfter": 3,
+  "providers": {
+    "go": { "type": "opencode-go", "api": "chat", "model": "deepseek-v4-flash", "maxTokens": 8192 },
+    "go-fast": { "type": "opencode-go", "api": "chat", "model": "glm-5.3-flash", "maxTokens": 8192 },
+    "go-critic": { "type": "opencode-go", "api": "chat", "model": "space-bunny-free", "maxTokens": 8192 },
+    "haiku": { "type": "anthropic", "model": "claude-haiku-4-5-20251001", "apiKeyEnv": "ANTHROPIC_API_KEY", "maxTokens": 4096 }
+  },
+  "roles": {
+    "worldbuilder": { "provider": "haiku", "temperature": 0.9 },
+    "director": { "provider": "haiku", "temperature": 0.7 },
+    "writer": { "provider": "haiku", "temperature": 0.9 },
+    "continuist": { "provider": "haiku", "temperature": 0.1 },
+    "critic": { "provider": "haiku", "temperature": 0.5 },
+    "archivist": { "provider": "haiku", "temperature": 0.1 }
+  }
+}
