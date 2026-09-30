@@ -104,6 +104,8 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   const total = scenes ?? config.scenes;
   if (total === undefined) throw new Error("scenes must be set via config or --scenes");
   const overdueAfter = config.overdueAfter ?? 3;
+  // Scene word band: writer stays inside it; critic flags >2x as blocking PACE.
+  const sceneWords = config.sceneWords ?? { min: 1200, max: 1800 };
   // maxAttempts = total drafts allowed. Infinity = unbounded until both reviewers approve.
   const defaultAttempts = (config.maxRevisions ?? 2) + 1;
   const maxAttempts = maxAttemptsOverride ?? defaultAttempts;
@@ -261,7 +263,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         }
         const fresh = stage === 2;
         t0 = Date.now();
-        const writeOut = await write(roles.writer, { bible, beat: beat.result, sceneIndex: i, attempt, issues: verdict.issues, previousDraft: prose, previousScenes, fresh });
+        const writeOut = await write(roles.writer, { bible, beat: beat.result, sceneIndex: i, attempt, sceneWords, issues: verdict.issues, previousDraft: prose, previousScenes, fresh });
         recordTiming("writer", Date.now() - t0);
         if (runDir) await writeRoleOutput(runDir, ++seq, `writer-a${attempt}`, writeOut);
         prose = writeOut.result;
@@ -270,7 +272,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         // Continuist and critic run in parallel — identical context, different prompts.
         t0 = Date.now();
         const gateCtx = {
-          bible, beat: beat.result, prose, sceneIndex: i, attempt: attempt - 1, previousScenes,
+          bible, beat: beat.result, prose, sceneIndex: i, attempt: attempt - 1, previousScenes, sceneWords,
           previousIssues: dedupIssues([...contHistory, ...criticHistory]),
           context: config.context
         };

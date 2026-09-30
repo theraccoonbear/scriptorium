@@ -70,3 +70,42 @@ test("beatgate can flag a rehash", () => {
   assert.ok(BEAT_GATE_SYSTEM.includes("REHASH"), "missing REHASH type");
   assert.ok(BEAT_GATE_SYSTEM.includes("RESOLVED DECISIONS"), "missing decision cross-check");
 });
+
+// --- issue #3: scene length budget ---
+import { checkContinuity, write, WRITER_SYSTEM } from "../src/roles.ts";
+import { MockProvider } from "../src/providers.ts";
+import { emptyBible } from "../src/bible.ts";
+import type { Beat } from "../src/types.ts";
+
+const mockRole = { provider: new MockProvider(), temperature: 0 };
+const testBeat: Beat = {
+  goal: "g", conflict: "c", pov: "missing-pov", location: "missing-loc",
+  mustReveal: "m", constraints: [], payoffs: []
+};
+
+test("writer prompt carries the length target and land-once rule", async () => {
+  const out = await write(mockRole, {
+    bible: emptyBible(), beat: testBeat, sceneIndex: 0, attempt: 0,
+    sceneWords: { min: 1200, max: 1800 }
+  });
+  assert.ok(out.prompt.includes("LENGTH TARGET: 1200-1800 words"), "missing LENGTH TARGET");
+  assert.ok(out.prompt.includes("do not restate the resolution"), "missing land-once prompt rule");
+});
+
+test("gate context carries the length target for the critic", async () => {
+  const out = await checkContinuity(mockRole, {
+    bible: emptyBible(), beat: testBeat, prose: "scene text here", sceneIndex: 0, attempt: 0,
+    sceneWords: { min: 900, max: 1500 }
+  });
+  assert.ok(out.prompt.includes("LENGTH TARGET: 900-1500 words"), "gates never saw the budget");
+});
+
+test("writer system bans restating the ending", () => {
+  assert.ok(WRITER_SYSTEM.includes("Land the ending ONCE"), "missing land-once rule");
+  assert.ok(WRITER_SYSTEM.includes("Never restate the resolution"), "missing no-restate rule");
+});
+
+test("critic blocks sustained overshoot as PACE", () => {
+  assert.ok(CRITIC_SYSTEM.includes("LENGTH ENFORCEMENT"), "missing enforcement section");
+  assert.ok(CRITIC_SYSTEM.includes("twice the maximum"), "missing >2x blocking rule");
+});

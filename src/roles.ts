@@ -9,6 +9,7 @@ import type {
   RoleOutput,
   Setup,
   Verdict,
+  WordBudget,
   WorldOutput
 } from "./types.ts";
 
@@ -48,9 +49,13 @@ Never contradict the bible.
 Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.
 The bible lists RESOLVED DECISIONS — choices characters have already made and closed. Do not build a beat whose core is re-deciding one of them (having characters re-choose what is already chosen). A resolved decision may be referenced only if the beat adds genuinely NEW pressure on it: new stakes, new information, or a new cost. Each scene must turn the story somewhere it has not been.`;
 
-const WRITER_SYSTEM = `You are the Writer. Render the beat spec as a single scene of prose.
+export const WRITER_SYSTEM = `You are the Writer. Render the beat spec as a single scene of prose.
 Stay strictly in the POV character's voice and knowledge. Obey every constraint.
 Do not resolve anything the beat does not resolve. Output only the scene text.
+
+LENGTH:
+- If a LENGTH TARGET is given, stay inside the band — end the scene when it is done.
+- Land the ending ONCE. Never restate the resolution, recap the scene's turn, or echo the final beat in new words. One closing image, then stop.
 
 REVISION RULES:
 - When given a previous draft and issues to fix, PRESERVE the existing prose.
@@ -140,6 +145,9 @@ BLOCKING ISSUE TYPES (only these can go in "issues"):
 - EPISTEMIC_VIOLATION: character asserts certainty they cannot have
 - UNRESOLVED_SETUP: a required revelation or payoff is only implied, not established
 - CHARACTER_ARC: behavior contradicts established personality without motivation
+
+LENGTH ENFORCEMENT:
+- When the prompt gives a LENGTH TARGET, a scene that exceeds twice the maximum is a blocking PACE issue (sustained overshoot). Under the band is not blocking — flag verbosity or thinness in the review text instead.
 
 DO NOT put CRAFT issues (word choice, repetition, voice, exposition style, metaphor quality, "overwrought," "editorializing") in the issues array. Put those in the review field instead. CRAFT is subjective and does not justify a rewrite on its own.
 
@@ -436,10 +444,11 @@ export async function write(role: Role, params: {
   beat: Beat;
   sceneIndex: number;
   attempt: number;
+  sceneWords: WordBudget;
   previousDraft?: string;
   previousScenes?: string[];
 } & CreativeFeedback): Promise<RoleOutput<string>> {
-  const { bible, beat, sceneIndex, attempt, previousDraft, previousScenes, issues, fresh } = params;
+  const { bible, beat, sceneIndex, attempt, sceneWords, previousDraft, previousScenes, issues, fresh } = params;
   const pov = bible.characters[beat.pov];
   const voice = pov && pov.voice ? `VOICE: ${pov.name} — ${pov.voice}` : "";
   const fix = feedbackBlock(
@@ -458,6 +467,7 @@ export async function write(role: Role, params: {
     priorProse ? `PREVIOUS SCENES (established canon — do not contradict):\n\n${priorProse}` : "",
     `GOAL: ${beat.goal}\nCONFLICT: ${beat.conflict}\nLOCATION: ${beat.location}\nMUST REVEAL: ${beat.mustReveal}`,
     `CONSTRAINTS:\n${beat.constraints.map((c) => `- ${c}`).join("\n")}`,
+    `LENGTH TARGET: ${sceneWords.min}-${sceneWords.max} words. Land the ending once — do not restate the resolution or recap the scene.`,
     voice,
     draft,
     fix
@@ -480,13 +490,14 @@ export interface ProseGateParams {
   prose: string;
   sceneIndex: number;
   attempt: number;
+  sceneWords?: WordBudget;
   previousScenes?: string[];
   previousIssues?: ReadonlyArray<Issue | string>;
   context?: string;
 }
 
 function buildGateContext(params: ProseGateParams): string {
-  const { bible, beat, prose, sceneIndex, attempt, previousScenes, previousIssues, context } = params;
+  const { bible, beat, prose, sceneIndex, attempt, sceneWords, previousScenes, previousIssues, context } = params;
   const priorProse = (previousScenes || [])
     .map((s, idx) => `--- SCENE ${idx + 1} (committed) ---\n${s}`)
     .join("\n\n");
@@ -502,6 +513,7 @@ function buildGateContext(params: ProseGateParams): string {
     priorProse ? `PREVIOUS SCENES (established canon):\n\n${priorProse}` : "",
     priorIssues,
     beat ? `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}` : "",
+    sceneWords ? `LENGTH TARGET: ${sceneWords.min}-${sceneWords.max} words` : "",
     `CURRENT SCENE (draft ${draftNum}):\n${prose}`
   ].filter(Boolean).join("\n\n");
 }
