@@ -1,14 +1,19 @@
 import { replay } from "./bible.ts";
 import type { CharacterArtData, StoryEvent, VisualRefData, VisualRefKind } from "./types.ts";
 
-// The story's art style: the Creator's canon, or — for runs from before the
-// Creator decided one — the style the Art Director set in an art_style event.
+// The story's art style: an author-set style (art_style event with source
+// "author", newest wins) overrides everything; then the Creator's canon; then —
+// for runs from before the Creator decided one — the Art Director's art_style.
 export function storyArtStyle(events: StoryEvent[]): string | undefined {
-  const canon = replay(events).artStyle;
-  if (canon) return canon;
-  let set: string | undefined;
-  for (const e of events) if (e.type === "art_style") set = (e.data as { style: string }).style;
-  return set;
+  let author: string | undefined;
+  let defined: string | undefined;
+  for (const e of events) {
+    if (e.type !== "art_style") continue;
+    const d = e.data as { style: string; source?: string };
+    if (d.source === "author") author = d.style;
+    else defined = d.style;
+  }
+  return author ?? replay(events).artStyle ?? defined;
 }
 
 // Canonical visual references (characters, locations, key props) from the

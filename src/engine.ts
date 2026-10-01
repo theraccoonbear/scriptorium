@@ -89,8 +89,16 @@ export interface RunStoryOptions {
   maxAttempts?: number;
 }
 
+// An author-set art style (config.artStyle) overrides the Creator's: record it
+// once, or again when it changes, so art direction and the artist use it.
+async function applyAuthorArtStyle(config: StoryConfig, log: EventLog): Promise<void> {
+  const style = config.artStyle?.trim();
+  if (style && storyArtStyle(log.events) !== style) await log.append("art_style", { style, source: "author" });
+}
+
 export async function runStory({ config, log, roles, scenes, onScene, runDir, maxAttempts: maxAttemptsOverride }: RunStoryOptions): Promise<Bible> {
   await log.load();
+  await applyAuthorArtStyle(config, log);
   let bible = replay(log.events);
   const total = scenes ?? config.scenes;
   if (total === undefined) throw new Error("scenes must be set via config or --scenes");
@@ -622,6 +630,7 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
   const artRole = roles.artdirector;
   if (!artRole) throw new Error("config has no artdirector role");
   await log.load();
+  await applyAuthorArtStyle(config, log);
   let seq = 0;
   if (runDir) {
     try {

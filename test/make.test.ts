@@ -109,3 +109,12 @@ test("the audiobook skips unchanged scenes without loading the model, and adopts
   assert.equal((await generateAudiobook(events, { runDir })).rendered, 0);
   assert.notEqual(sceneRenderKey(buildScenes(events)[0], { ...settings, narratorVoice: "am_adam" }), manifest.scenes[sceneFile(0)]);
 });
+
+test("story files layer direction and art style over the config, and reject unknown layers", async () => {
+  const { file } = await storyDir({ artStyle: "Photorealistic.", direction: { artdirector: "Low angles.", artist: "Film grain." } });
+  const s = await loadStoryFile(file);
+  assert.equal(s.config.artStyle, "Photorealistic.");
+  assert.deepEqual(s.config.direction, { artdirector: "Low angles.", artist: "Film grain." });
+  const typo = await storyDir({ direction: { artdirectr: "x" } });
+  await assert.rejects(loadStoryFile(typo.file), /unknown layer "artdirectr"/);
+});

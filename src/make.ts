@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { EventLog } from "./eventlog.ts";
+import { checkDirection } from "./providers.ts";
 import { artStep, audiobookStep, loadRun, readContexts, storyStep, videoStep } from "./steps.ts";
 import { c } from "./colors.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
@@ -22,6 +23,8 @@ export interface StoryFile {
   speakerTags?: boolean;
   audiobook?: { narratorVoice?: string; language?: string; voiceGenders?: Record<string, string> };
   video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
+  direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
+  artStyle?: string;                   // prescriptive art style; overrides the Creator's
 }
 
 export interface ResolvedStory {
@@ -50,7 +53,14 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
   if (!raw.out) throw new Error(`${path}: "out" (the run directory) is required`);
   if (!raw.config) throw new Error(`${path}: "config" (a config file path, or the config inline) is required`);
   const configPath = typeof raw.config === "string" ? at(raw.config) : undefined;
-  const config = configPath ? (JSON.parse(await readFile(configPath, "utf8")) as StoryConfig) : (raw.config as StoryConfig);
+  const baseConfig = configPath ? (JSON.parse(await readFile(configPath, "utf8")) as StoryConfig) : (raw.config as StoryConfig);
+  // The story file's direction and art style layer over the config's.
+  const config: StoryConfig = {
+    ...baseConfig,
+    ...(raw.direction || baseConfig.direction ? { direction: { ...baseConfig.direction, ...raw.direction } } : {}),
+    ...(raw.artStyle ?? baseConfig.artStyle ? { artStyle: raw.artStyle ?? baseConfig.artStyle } : {})
+  };
+  checkDirection(config.direction);
   const contexts = raw.context === undefined ? [] : Array.isArray(raw.context) ? raw.context : [raw.context];
   const attempts = raw.maxAttempts === "unlimited" ? Infinity : raw.maxAttempts;
   if (attempts !== undefined && !(attempts === Infinity || (Number.isInteger(attempts) && attempts > 0))) {

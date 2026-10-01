@@ -255,6 +255,11 @@ export interface StoryConfig {
   // a bible character id) so the audiobook tool can switch voices per line.
   // Off by default: story.md stays plain prose, unchanged from every prior run.
   speakerTags?: boolean;
+  // Author direction per creative layer (role label -> notes the layer must
+  // follow), plus "artist" for every image request. See DIRECTION_LAYERS.
+  direction?: Record<string, string>;
+  // A prescriptive art style that overrides the Creator's choice.
+  artStyle?: string;
   // Art Director: one shot per this many words of narration (~45s at 150 wpm). Default 110.
   artWordsPerShot?: number;
   // Image rendering for the `art` command; omitted = DEFAULT_ARTIST_CONFIG in src/artist.ts.

@@ -285,3 +285,20 @@ test("ffmpegShrink falls back to the original on input it can't read", async () 
   assert.equal(await ffmpegShrink(junk, 768), junk);
   assert.equal(await ffmpegShrink(junk, 0), junk);
 });
+
+test("direction.artist goes with every image and inspection; changing it re-renders", async () => {
+  const runDir = await tmp();
+  const events = [ev(0, "scene_art", { sceneIndex: 0, prompt: "s1", shots: [{ startParagraph: 0, prompt: "s1" }] })];
+  const backend = new MockImageBackend();
+  const inspector = new MockInspector();
+  await renderArt(events, { runDir, backend, inspector, direction: "Anamorphic lens, film grain." });
+  assert.equal(backend.calls[0].direction, "Anamorphic lens, film grain.");
+  assert.equal(inspector.calls[0].direction, "Anamorphic lens, film grain.");
+  const same = new MockImageBackend();
+  await renderArt(events, { runDir, backend: same, direction: "Anamorphic lens, film grain." });
+  assert.equal(same.calls.length, 0);
+  const changed = new MockImageBackend();
+  await renderArt(events, { runDir, backend: changed, direction: "Black and white." });
+  assert.equal(changed.calls.length, 1);
+  assert.ok(INSPECTOR_SYSTEM.includes("AUTHOR DIRECTION"));
+});

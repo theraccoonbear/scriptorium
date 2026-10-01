@@ -159,3 +159,18 @@ test("a reply that stopped at the output limit fails clearly on every wire forma
     atLimit = false;
   }
 });
+
+test("author direction reaches only its own layer, matched by the call's role label", async () => {
+  const { withDirection, checkDirection } = await import("../src/providers.ts");
+  const seen: Array<[string, string]> = [];
+  const inner = { complete: async (r: { role: string; prompt: string }) => { seen.push([r.role, r.prompt]); return "ok"; } };
+  const p = withDirection(inner, { creator: "Make it a heist.", artdirector: "Cinematic, photorealistic." });
+  await p.complete({ role: "creator", system: "S", prompt: "P" });
+  await p.complete({ role: "director", system: "S", prompt: "P" });
+  await p.complete({ role: "artdirector", system: "S", prompt: "P" });
+  assert.equal(seen[0][1], "P\n\nAUTHOR DIRECTION for the creator (follow it; it overrides your defaults):\nMake it a heist.");
+  assert.equal(seen[1][1], "P", "the director shares the model but gets no creator notes");
+  assert.ok(seen[2][1].endsWith("Cinematic, photorealistic."));
+  assert.throws(() => checkDirection({ artdirectr: "x" }), /unknown layer "artdirectr"/);
+  checkDirection({ artist: "x", writer: "y" });
+});
