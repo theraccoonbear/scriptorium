@@ -7,7 +7,7 @@ import { EventLog } from "../src/eventlog.ts";
 import { buildRoleProviders } from "../src/providers.ts";
 import { runStory, tensionAt } from "../src/engine.ts";
 import { replay } from "../src/bible.ts";
-import type { SceneCommittedData } from "../src/types.ts";
+import type { CoverArtData, SceneArtData, SceneCommittedData } from "../src/types.ts";
 
 async function loadConfig(overrides = {}) {
   const config = JSON.parse(await readFile(new URL("../story.config.json", import.meta.url), "utf8"));
@@ -75,4 +75,50 @@ test("tension arc rises then falls", () => {
   const peak = curve.indexOf(Math.max(...curve));
   assert.ok(peak >= 4 && peak <= 6);
   assert.ok(curve[7] < curve[peak]);
+});
+
+test("art director emits one scene_art per scene and one cover_art, without touching canon", async () => {
+  const config = await loadConfig({ scenes: 3 });
+  const log = new EventLog(await tmp());
+  await runStory({ config, log, roles: buildRoleProviders(config) });
+  const art = log.events.filter((e) => e.type === "scene_art").map((e) => e.data as SceneArtData);
+  assert.deepEqual(art.map((a) => a.sceneIndex), [0, 1, 2]);
+  assert.ok(art.every((a) => a.prompt.length > 0));
+  // Each scene's art follows its own commit.
+  const types = log.events.map((e) => e.type);
+  assert.deepEqual(types.slice(0, 2), ["scene_committed", "scene_art"]);
+  const covers = log.events.filter((e) => e.type === "cover_art").map((e) => e.data as CoverArtData);
+  assert.equal(covers.length, 1);
+  assert.equal(covers[0].sceneCount, 3);
+  assert.equal(types.at(-1), "cover_art");
+
+  const { artdirector: _, ...noArtRoles } = config.roles;
+  const plainLog = new EventLog(await tmp());
+  await runStory({ config: { ...config, roles: noArtRoles }, log: plainLog, roles: buildRoleProviders({ ...config, roles: noArtRoles }) });
+  assert.deepEqual(replay(log.events), replay(plainLog.events));
+});
+
+test("art director failure does not fail the scene or the run", async () => {
+  const config = await loadConfig({ scenes: 2 });
+  config.providers = { mock: { type: "mock", failRoles: ["artdirector"] } };
+  const log = new EventLog(await tmp());
+  const bible = await runStory({ config, log, roles: buildRoleProviders(config) });
+  assert.equal(bible.sceneCount, 2);
+  assert.equal(log.events.filter((e) => e.type === "scene_committed").length, 2);
+  assert.equal(log.events.filter((e) => e.type === "scene_art" || e.type === "cover_art").length, 0);
+});
+
+test("resuming a finished run does not duplicate the cover; extending it adds a fresh one", async () => {
+  const config = await loadConfig({ scenes: 2 });
+  const dir = await tmp();
+  await runStory({ config, log: new EventLog(dir), roles: buildRoleProviders(config) });
+  const again = new EventLog(dir);
+  await runStory({ config, log: again, roles: buildRoleProviders(config) });
+  assert.equal(again.events.filter((e) => e.type === "cover_art").length, 1);
+
+  const extended = new EventLog(dir);
+  await runStory({ config, log: extended, roles: buildRoleProviders(config), scenes: 3 });
+  const covers = extended.events.filter((e) => e.type === "cover_art").map((e) => e.data as CoverArtData);
+  assert.deepEqual(covers.map((c) => c.sceneCount), [2, 3]);
+  assert.equal(extended.events.filter((e) => e.type === "scene_art").length, 3);
 });

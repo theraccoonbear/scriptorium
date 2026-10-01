@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ARTDIRECTOR_SYSTEM,
   BEAT_GATE_SYSTEM,
   CONTINUIST_SYSTEM,
   CRITIC_SYSTEM,
@@ -72,7 +73,7 @@ test("beatgate can flag a rehash", () => {
 });
 
 // --- issue #3: scene length budget ---
-import { checkContinuity, write, WRITER_SYSTEM } from "../src/roles.ts";
+import { artDirect, checkContinuity, write, WRITER_SYSTEM } from "../src/roles.ts";
 import { MockProvider } from "../src/providers.ts";
 import { emptyBible } from "../src/bible.ts";
 import type { Beat } from "../src/types.ts";
@@ -179,4 +180,34 @@ test("continuist can flag unaddressed practical gaps", () => {
     CONTINUIST_SYSTEM.includes("UNSATISFIABLE_CONSTRAINT"),
     "missing beatgate deferral for unsatisfiable specs"
   );
+});
+
+test("art director prompt covers both modes, continuity, and video framing", () => {
+  assert.ok(ARTDIRECTOR_SYSTEM.includes('{"prompt":string}'), "missing output shape");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("- SCENE:"), "missing scene mode");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("- COVER:"), "missing cover mode");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("never invent events"), "missing grounded-in-prose rule");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("VISUAL CONTINUITY"), "missing cross-scene continuity rule");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("never by name alone"), "missing describe-by-appearance rule");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("16:9"), "missing landscape framing");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("No text"), "missing no-text rule");
+});
+
+test("art director prompt builder includes the scene, or the beat summary for the cover", async () => {
+  const bible = emptyBible();
+  bible.characters["a"] = { id: "a", name: "Osmagus", traits: "", goal: "", voice: "", status: "active" };
+  const scene = await artDirect(mockRole, {
+    bible, mode: "scene", beat: testBeat, prose: "The lamp gutters.", sceneIndex: 0,
+    previousPrompts: ["p1", "p2", "p3", "p4", "p5"]
+  });
+  assert.ok(scene.prompt.includes("MODE: SCENE"));
+  assert.ok(scene.prompt.includes("The lamp gutters."));
+  assert.ok(scene.prompt.includes("Osmagus"));
+  assert.ok(scene.prompt.includes("- p5") && !scene.prompt.includes("- p1"), "continuity window should keep only recent prompts");
+  assert.ok(scene.result.prompt.length > 0);
+
+  const cover = await artDirect(mockRole, { bible, mode: "cover", beats: [testBeat, testBeat] });
+  assert.ok(cover.prompt.includes("MODE: COVER"));
+  assert.ok(cover.prompt.includes(`2. [${testBeat.location}]`));
+  assert.ok(!cover.prompt.includes("COMMITTED SCENE"));
 });

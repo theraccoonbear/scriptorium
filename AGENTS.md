@@ -12,7 +12,7 @@ No creative output enters the story until its gate is green.
 worldbuilder  → worldgate  →
 creator/director → beatgate →
 writer → continuist ∥ critic →
-archivist → patchgate → commit
+archivist → patchgate → commit → artdirector (optional, ungated)
 ```
 
 ## Commands
@@ -56,6 +56,11 @@ paste the result into the PR.
 1. **Every creative is gated.** Never route a creative's output past its gate,
    and never "commit as-is" in unbounded mode (`--max-attempts inf`). A red
    artifact must never enter canon.
+   *Exemption:* the Art Director (`artDirect()`) is deliberately ungated. It
+   runs after commit and writes image-gen prompts (`scene_art`, `cover_art`
+   events) that are presentation metadata, not story facts — `replay()`
+   ignores them and they never touch the bible. Its failures are logged and
+   swallowed so they can't fail a scene that is already canon. Don't add a gate.
 2. **One Issue shape.** `Issue { type, entity, constraint, detail }` lives in
    `src/types.ts`. Gate prompts get it from the shared `ISSUE_SCHEMA` /
    `ISSUE_RULES` constants in `src/roles.ts`. Never hand-write an issue shape

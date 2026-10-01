@@ -1,7 +1,7 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import { mulberry32, pick } from "./rng.ts";
-import { direct, createAndDirect, buildWorld, write, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, normalizeIssue, renderIssue } from "./roles.ts";
+import { direct, createAndDirect, buildWorld, write, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
 import { findUntaggedParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
@@ -9,10 +9,12 @@ import { EventLog } from "./eventlog.ts";
 import type {
   Beat,
   Bible,
+  CoverArtData,
   GateResult,
   Issue,
   RoleOutput,
   Roles,
+  SceneArtData,
   SceneCommittedData,
   StoryConfig,
   StoryEvent,
@@ -402,6 +404,26 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       previousScenes.push(prose);
       if (runDir) await writeStoryIncremental(runDir, log.events);
 
+      // Art Director: image prompt for this scene. The scene is already canon, so a failure only warns.
+      if (roles.artdirector) {
+        const artRole = roles.artdirector;
+        await nonFatal(`scene ${i + 1} art prompt`, async () => {
+          t0 = Date.now();
+          const out = await artDirect(artRole, {
+            bible,
+            mode: "scene",
+            beat: beat.result,
+            prose: stripSpeakerTags(prose, new Set(Object.keys(bible.characters))),
+            sceneIndex: i,
+            previousPrompts: sceneArtPrompts(log.events)
+          });
+          recordTiming("artdirector", Date.now() - t0);
+          if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector", out);
+          const art: SceneArtData = { sceneIndex: i, prompt: out.result.prompt };
+          await log.append("scene_art", art);
+        });
+      }
+
       if (onScene) {
         onScene(data, bible);
       }
@@ -410,8 +432,43 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       throw err;
     }
   }
+
+  // Cover art: one montage prompt once the story is complete. Skipped if the
+  // log already has a cover for exactly this many scenes (e.g. a resumed run).
+  const committed = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);
+  const lastCover = log.events.filter((e) => e.type === "cover_art").at(-1)?.data as CoverArtData | undefined;
+  if (roles.artdirector && committed.length > 0 && lastCover?.sceneCount !== committed.length) {
+    const artRole = roles.artdirector;
+    await nonFatal("cover art prompt", async () => {
+      const t0 = Date.now();
+      const out = await artDirect(artRole, {
+        bible,
+        mode: "cover",
+        beats: committed.map((d) => d.beat),
+        previousPrompts: sceneArtPrompts(log.events)
+      });
+      recordTiming("artdirector", Date.now() - t0);
+      if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
+      const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
+      await log.append("cover_art", cover);
+    });
+  }
+
   console.error(`[scriptorium] ${c.ok(`done — ${total} scenes`)}`);
   return bible;
+}
+
+function sceneArtPrompts(events: StoryEvent[]): string[] {
+  return events.filter((e) => e.type === "scene_art").map((e) => (e.data as SceneArtData).prompt);
+}
+
+// Runs presentation-only work (e.g. art prompts) whose failure must never fail the run.
+async function nonFatal(what: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    console.error(`[scriptorium]   ${c.retry(`${what} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
+  }
 }
 
 export function renderStory(events: StoryEvent[]): string {

@@ -53,6 +53,9 @@ export class MockProvider {
   async complete(req: CompletionRequest): Promise<string> {
     this.calls.push(req.role);
     const ctx: MockCtx = req.ctx || {};
+    if (this.spec.failRoles?.includes(req.role)) {
+      throw new Error(`mock: ${req.role} failure`);
+    }
     switch (req.role) {
       case "worldbuilder":
         return JSON.stringify(this.buildWorld(ctx));
@@ -74,6 +77,12 @@ export class MockProvider {
         return JSON.stringify({ ok: true, issues: [] });
       case "worldgate":
         return JSON.stringify({ ok: true, issues: [] });
+      case "artdirector":
+        return JSON.stringify({
+          prompt: ctx.mode === "cover"
+            ? `Mock cover montage of ${ctx.beats?.length ?? 0} scenes.`
+            : `Mock still of scene ${(ctx.sceneIndex ?? 0) + 1} at ${ctx.beat?.location ?? "an unknown place"}.`
+        });
       default:
         return "";
     }
@@ -469,7 +478,7 @@ export async function listModels(spec: ProviderSpec): Promise<string[]> {
 
 // Adaptive timeouts per role. Floor set from observed minimums, ceiling from P99 + safety.
 const roleTimings: Record<string, number[]> = {};
-const ROLE_FLOORS: Record<string, number> = { worldbuilder: 180000, director: 180000, writer: 180000, continuist: 180000, critic: 180000, archivist: 180000, beatgate: 180000, patchgate: 180000, worldgate: 180000 };
+const ROLE_FLOORS: Record<string, number> = { worldbuilder: 180000, director: 180000, writer: 180000, continuist: 180000, critic: 180000, archivist: 180000, beatgate: 180000, patchgate: 180000, worldgate: 180000, artdirector: 180000 };
 const TIMEOUT_CEILING_MS = 120000;
 const TIMEOUT_SAFETY = 1.5;
 
