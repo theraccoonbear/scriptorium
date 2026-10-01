@@ -28,10 +28,10 @@ export interface ImageRequest {
   direction?: string;    // the author's art direction for the image model, sent with every image
 }
 
-export const PORTRAIT_LABEL = "Canonical look of a character who appears in this image — match their face, build, hair, colors and clothing exactly:";
+export const PORTRAIT_LABEL = "Canonical look of a character who appears in this image — match their face, build, hair, colors and clothing exactly, but NOT the reference's pose, expression or framing: pose and move them exactly as this image's description says:";
 export const LOCATION_LABEL = "The place where this image is set — keep its landmarks, architecture, terrain and materials, but choose your own camera angle and framing:";
 export const PROP_LABEL = "A key object that appears in this image — match its shape, materials, colors and markings exactly:";
-export const SCENE_LABEL = "Earlier image from the same story — match its art style:";
+export const SCENE_LABEL = "Earlier image from the same story — match its art style, not its composition or poses:";
 export const STYLE_LABEL = "Reference image of something ELSE from the same story — match only its art style, not its subject:";
 
 const REF_LABEL: Record<VisualRefKind, string> = { character: PORTRAIT_LABEL, location: LOCATION_LABEL, prop: PROP_LABEL };
@@ -71,13 +71,14 @@ CHECK FOR:
 - REAL PERSON: any figure that looks like a recognizable real person, actor, or celebrity.
 - AUTHOR DIRECTION: if given, the image must satisfy it (it is the author's explicit instruction for every image).
 - STYLE: if an ART STYLE is given, the image must be rendered in it (medium, palette, line, level of realism). A different medium or a jump in realism is an issue.
+- STAGING: the prompt describes motion or a decisive action, but the figures are stiff — standing still, posed, facing the camera like a portrait, or copying a reference portrait's pose — or the shot ignores the camera angle the prompt names. A flat, lifeless version of an action prompt is an issue.
 - ARTIFACTS: malformed anatomy, extra or missing limbs, melted faces, garbled objects.
 - TEXT: any visible text, captions, logos, watermarks, or speech bubbles.
 
 RULES:
 - ok: true if the image is usable as-is. Minor stylistic drift is fine — only flag what a viewer would notice.
 - issues: one short sentence per problem; empty when ok.
-- revised_prompt: when ok is false, rewrite the ORIGINAL prompt to fix the issues (make the missed detail explicit, restate character appearance, add "no text"). Keep the same scene and moment. When ok is true, return "".`;
+- revised_prompt: when ok is false, rewrite the ORIGINAL prompt to fix the issues (make the missed detail explicit, restate character appearance, make the action and camera angle explicit for a STAGING issue, add "no text"). Keep the same scene and moment. When ok is true, return "".`;
 
 export interface ArtJob {
   key: string;            // "character-<id>", "scene-01-03" (scene 1, shot 3), "scene-01" (pre-shots events) or "cover"

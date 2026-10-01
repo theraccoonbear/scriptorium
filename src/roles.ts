@@ -320,20 +320,28 @@ MODES:
   - The first shot starts at paragraph 1. start_paragraph values strictly increase.
   - Cut where the action, setting, or focus actually changes, not at even intervals. Spread shots across the WHOLE scene, through to its ending.
   - Each shot depicts a moment that actually happens in its own stretch of paragraphs — never invent events.
+  - SHOOT IT LIKE A FILM, NOT A STORYBOARD OF STANDING PEOPLE. You are the cinematographer; do the job:
+    - Pick the decisive instant of the stretch — the most visual, highest-energy moment it contains — not its most literal or quietest sentence. In an action passage that is mid-action: the stone in flight, the body mid-leap, the blow landing, the horn sounding with its effect visible. Never the moment before or after when the moment itself happens in the text.
+    - Put bodies in motion and give them a line of action: weight shifting, bracing, lunging, recoiling, straining, reaching, turning. A figure standing still, or with one arm raised, is a last resort — at most one such shot per scene, and only when the prose really is that still.
+    - Name a camera angle and placement in every prompt: low angle, high angle, over-the-shoulder, ground level, through a doorway or past a foreground object, tilted for chaos; subject off-center (rule of thirds), with depth from foreground to background.
+    - Even quiet moments are composed like film frames: an intimate close-up on hands or eyes, a figure small against a vast landscape, a silhouette in a doorway — not two people standing face to face, centered.
+    - Match the scene's tone: kinetic and close in action, still and wide in awe or dread — but always a deliberate shot.
   - Vary the framing across shots: wide establishing views, medium shots of characters interacting, close-ups on hands, faces, and objects that matter.
   - characters: the ids of every character visible in the shot (empty for none). location: the id of the place the shot is set ("" if none fits). props: the ids of KNOWN PROPS visible in the shot. Their reference images are given to the image model.
-- COVER: one montage/compilation image that sums up the whole story's action, for a video thumbnail and opening card. Combine the key characters, places, and conflicts into a single composition with a clear focal point.
+- COVER: one montage/compilation image that sums up the whole story's action, for a video thumbnail and opening card. Combine the key characters, places, and conflicts into a single composition with a clear focal point — dramatic and in motion, like a film poster, not a lineup of standing figures.
   Output ONLY JSON:
   {"prompt":string}
 
 PROMPT RULES:
-- One paragraph, 60-120 words, in present tense, describing what the camera sees: subject, action, setting, lighting, mood, composition, and art style.
+- One paragraph, 80-150 words, in present tense, describing what the camera sees. Lead with the camera angle and the action — what each body is doing, in specific physical verbs — then setting, light and art style.
+- Only what a camera can see. Never write thoughts, realizations, or "the mood is…" — show mood through body language, light, weather and framing.
+- Keep character appearance to its distinguishing essentials (the reference image carries the rest), so the action gets the words.
 - Never use character or place names — the image model does not know who or where they are, and each image is generated on its own. In EVERY prompt, describe each character present by appearance (height and build, age, hair, clothing), never by name alone.
 - CANONICAL APPEARANCES: when given, describe each character, location, and prop with its canonical appearance — same features, colors, materials, and landmarks, every time. Never contradict it.
 - VISUAL CONTINUITY: describe each recurring character the same way in every shot, and if PREVIOUS ART PROMPTS are given, keep each character's appearance (age, build, hair, clothing) and the overall art style consistent with them. Only change a look if the scene's prose changes it. Each image is generated separately, so every prompt must carry the ART STYLE verbatim.
 - Wide landscape framing (16:9) with the subject away from the very edges, since the image will be panned and cropped.
 - No text, captions, logos, or speech bubbles in the image.
-- Nothing graphic: imply violence through tension and aftermath, not gore.`;
+- Nothing graphic: show the action at its peak, but no gore, wounds, or blood.`;
 
 export function parseJson(text: unknown): unknown {
   const trimmed = String(text).trim();

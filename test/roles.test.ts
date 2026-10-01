@@ -404,3 +404,11 @@ test("the beat gate flags a beat that leaves the author's plan", async () => {
   const out = await reviewBeat(gateRole, { bible: emptyBible(), beat: testBeat, sceneIndex: 1, total: 3, tension: 7, complication: "x", context: "plan" });
   assert.ok(out.prompt.includes("SUGGESTED COMPLICATION (optional"));
 });
+
+test("the art director shoots the decisive instant, in motion, with a named camera angle", () => {
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("Pick the decisive instant"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("at most one such shot per scene"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("Name a camera angle and placement in every prompt"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("Only what a camera can see"));
+  assert.ok(!ARTDIRECTOR_SYSTEM.includes("tension and aftermath"));
+});
