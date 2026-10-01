@@ -254,6 +254,26 @@ ${ISSUE_RULES}
 - ok: true if the Creator can build a story from this output.
 - Names need not be perfect — only flag output that is empty, duplicated, contradictory, or unusable.`;
 
+// Not a creative and not gated: its output is presentation metadata for video
+// assembly and never enters the bible or story canon.
+export const ARTDIRECTOR_SYSTEM = `You are the Art Director. You write prompts for an image-generation model; you never write story prose.
+Each prompt becomes ONE still image shown (with a slow pan/zoom) while the narration plays.
+
+Output ONLY JSON:
+{"prompt":string}
+
+MODES:
+- SCENE: depict the single most striking visual or action moment of the committed scene. Pick a moment that actually happens in the prose — never invent events.
+- COVER: one montage/compilation image that sums up the whole story's action, for a video thumbnail and opening card. Combine the key characters, places, and conflicts into a single composition with a clear focal point.
+
+PROMPT RULES:
+- One paragraph, 60-120 words, in present tense, describing what the camera sees: subject, action, setting, lighting, mood, composition, and art style.
+- Describe characters by appearance, never by name alone — the image model does not know who they are.
+- VISUAL CONTINUITY: if PREVIOUS ART PROMPTS are given, keep each recurring character's appearance (age, build, hair, clothing) and the overall art style consistent with them. Only change a look if the scene's prose changes it.
+- Wide landscape framing (16:9) with the subject away from the very edges, since the image will be panned and cropped.
+- No text, captions, logos, or speech bubbles in the image.
+- Nothing graphic: imply violence through tension and aftermath, not gore.`;
+
 export function parseJson(text: unknown): unknown {
   const trimmed = String(text).trim();
   try {
@@ -761,4 +781,53 @@ export async function reviewPatch(role: Role, params: {
     prompt,
     ctx: { bible, beat, prose, sceneIndex, patch, previousIssues }
   });
+}
+
+export type ArtMode = "scene" | "cover";
+
+export interface ArtDirection {
+  prompt: string;
+}
+
+export async function artDirect(role: Role, params: {
+  bible: Bible;
+  mode: ArtMode;
+  // scene mode: the committed scene
+  beat?: Beat;
+  prose?: string;
+  sceneIndex?: number;
+  // cover mode: every committed beat, in order
+  beats?: Beat[];
+  // earlier scene_art prompts, oldest first, for visual continuity
+  previousPrompts?: string[];
+}): Promise<RoleOutput<ArtDirection>> {
+  const { bible, mode, beat, prose, sceneIndex, beats, previousPrompts = [] } = params;
+  const parts = [renderBible(bible)];
+  if (mode === "scene") {
+    const trimmedProse = prose && prose.length > 3000 ? prose.slice(0, 3000) + "\n\n[...truncated for art director]" : prose;
+    parts.push(`MODE: SCENE (scene ${(sceneIndex ?? 0) + 1})`);
+    if (beat) parts.push(`BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`);
+    parts.push(`COMMITTED SCENE:\n${trimmedProse ?? ""}`);
+  } else {
+    parts.push("MODE: COVER");
+    const summary = (beats ?? []).map((b, n) => `${n + 1}. [${b.location}] ${b.goal} — ${b.conflict}`).join("\n");
+    parts.push(`STORY SO FAR (one line per scene):\n${summary}`);
+  }
+  // Keep continuity context bounded: the last few prompts carry the established look.
+  const recent = previousPrompts.slice(-4);
+  if (recent.length > 0) {
+    parts.push(`PREVIOUS ART PROMPTS (oldest first):\n${recent.map((p) => `- ${p}`).join("\n")}`);
+  }
+  const prompt = parts.join("\n\n");
+  const { result, system, raw } = await callJson(role, {
+    role: "artdirector",
+    system: ARTDIRECTOR_SYSTEM,
+    prompt,
+    ctx: { mode, beat, sceneIndex, beats }
+  });
+  const out = result as Partial<ArtDirection>;
+  if (typeof out.prompt !== "string" || !out.prompt.trim()) {
+    throw new Error("art director returned no prompt");
+  }
+  return { result: { prompt: out.prompt.trim() }, prompt, system, raw };
 }

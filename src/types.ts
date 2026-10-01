@@ -109,6 +109,19 @@ export interface SceneCommittedData {
   bible?: Partial<Bible>;
 }
 
+// Image-gen prompts from the Art Director. Presentation metadata, not canon:
+// replay() ignores these events, so they never touch the bible.
+export interface SceneArtData {
+  sceneIndex: number;
+  prompt: string;
+}
+
+export interface CoverArtData {
+  // Number of committed scenes the cover summarizes; a run extended past this gets a fresh cover.
+  sceneCount: number;
+  prompt: string;
+}
+
 // ---- provider / role plumbing ----
 
 export interface CompletionRequest {
@@ -141,6 +154,7 @@ export interface Roles {
   beatgate?: Role;
   patchgate?: Role;
   worldgate?: Role;
+  artdirector?: Role;
   [key: string]: Role | undefined;
 }
 
@@ -159,6 +173,8 @@ export interface ProviderSpec {
   retries?: number;
   extraBody?: Record<string, unknown>;
   rejectFirstOn?: number[];
+  // Mock only: roles whose calls throw, for testing non-fatal failure paths.
+  failRoles?: string[];
   [key: string]: unknown;
 }
 
