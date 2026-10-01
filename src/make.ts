@@ -24,7 +24,17 @@ export interface StoryFile {
   scenes?: number;
   maxAttempts?: number | "unlimited";
   speakerTags?: boolean;
-  audiobook?: { narratorVoice?: string; language?: string; voiceGenders?: Record<string, string>; kokoroVoices?: { include?: string[]; exclude?: string[] }; characterVoices?: Record<string, string> };
+  audiobook?: {
+    narratorVoice?: string;
+    language?: string;
+    voiceGenders?: Record<string, string>;
+    narration?: "kokoro" | "gemini";             // default kokoro
+    dialogue?: "kokoro" | "gemini";              // default kokoro
+    geminiModel?: string;
+    geminiVoices?: Record<string, string>;       // character id or "narrator" -> Gemini voice
+    kokoroVoices?: { include?: string[]; exclude?: string[] };
+    characterVoices?: Record<string, string>;  // character id -> Kokoro voice
+  };
   video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
   budget?: { usd: number };            // stop before spending more than this on the run
@@ -181,8 +191,11 @@ const defaultRunners: StepRunners = {
   // make never re-renders finished work; the individual commands take --force for that.
   art: async (s, events) => { await artStep(s.runDir, s.config, events, false); },
   audiobook: async (s, events) => {
+    const a = s.audiobook;
     await audiobookStep(s.runDir, events, {
-      narratorVoice: s.audiobook.narratorVoice, language: s.audiobook.language, characterGenders: s.audiobook.voiceGenders, kokoroVoices: s.audiobook.kokoroVoices, characterVoices: s.audiobook.characterVoices,
+      narratorVoice: a.narratorVoice, language: a.language, characterGenders: a.voiceGenders,
+      narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
+      kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
       config: s.config
     });
   },

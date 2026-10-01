@@ -9,7 +9,10 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { replay } from "./bible.ts";
-import type { SceneCommittedData, StoryEvent } from "./types.ts";
+import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
+import type { Speak } from "./geminiTts.ts";
+import { isBudgetError } from "./usage.ts";
+import type { Bible, SceneCommittedData, StoryEvent } from "./types.ts";
 
 const DEFAULT_MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
@@ -68,17 +71,28 @@ function mergeConsecutive(segments: SpeakerSegment[]): SpeakerSegment[] {
 // (action, attribution) read by the narrator; only the quoted spans are
 // voiced as that character. Quotes are paired by position, not nesting —
 // adequate for standard double-quoted dialogue, not for quotes-within-quotes.
+// A `"` straight after a digit is an inch mark (4'8", a 7" bell), not a quote.
+function quoteMark(text: string, from: number): number {
+  for (let k = text.indexOf('"', from); k !== -1; k = text.indexOf('"', k + 1)) {
+    if (!/\d/.test(text[k - 1] ?? "")) return k;
+  }
+  return -1;
+}
+
+// A quote with nothing speakable in it ("" or "—") is not a line.
+const speakable = (t: string) => /[\p{L}\p{N}]/u.test(t);
+
 function splitByQuotes(speaker: string, text: string, paragraph: number): SpeakerSegment[] {
   const parts: Array<{ speaker: string; text: string }> = [];
   let i = 0;
   while (i < text.length) {
-    const open = text.indexOf('"', i);
+    const open = quoteMark(text, i);
     if (open === -1) {
       parts.push({ speaker: "narrator", text: text.slice(i) });
       break;
     }
     if (open > i) parts.push({ speaker: "narrator", text: text.slice(i, open) });
-    const close = text.indexOf('"', open + 1);
+    const close = quoteMark(text, open + 1);
     if (close === -1) {
       // Unterminated quote (truncated draft) — treat the rest as spoken rather than drop it.
       parts.push({ speaker, text: text.slice(open) });
@@ -89,7 +103,7 @@ function splitByQuotes(speaker: string, text: string, paragraph: number): Speake
   }
   return parts
     .map((p) => ({ ...p, text: p.text.trim(), paragraphs: [paragraph] }))
-    .filter((p) => p.text.length > 0);
+    .filter((p) => speakable(p.text));
 }
 
 // The book-markdown renderer for tagged prose: strip the leading `speaker: `
@@ -176,6 +190,8 @@ function hashString(s: string): number {
 export interface VoiceAssignment {
   narrator: string;
   characters: Record<string, string>;
+  // Gemini voices, when narration or dialogue is voiced by Gemini TTS.
+  gemini?: { narrator: string; characters: Record<string, string> };
   // The gender each character's voice was matched to (absent = any voice).
   genders: Record<string, Gender>;
 }
@@ -286,9 +302,15 @@ export interface AudiobookOptions {
   // Overrides/sets character genders for voice matching (e.g. runs made before
   // the bible recorded gender): character id -> "female" | "male".
   characterGenders?: Record<string, string>;
+  // Which engine voices what: Kokoro (local, free) or Gemini TTS (acted, paid).
+  narration?: TtsEngine;  // default "kokoro"
+  dialogue?: TtsEngine;   // default "kokoro"
+  geminiModel?: string;
+  geminiVoices?: Record<string, string>;  // character id (or "narrator") -> Gemini voice name
   characterVoices?: Record<string, string>;  // character id -> Kokoro voice, chosen by the author
   // Kokoro voices to use or avoid (e.g. weak or overused ones), by id.
   kokoroVoices?: { include?: string[]; exclude?: string[] };
+  speak?: Speak;    // Gemini TTS call; injectable for tests
   force?: boolean;  // re-render scenes whose text and voice settings are unchanged
   onProgress?: (event: AudiobookProgress) => void;
 }
@@ -297,6 +319,7 @@ export type AudiobookProgress =
   | { type: "model_loading" }
   | { type: "model_ready" }
   | { type: "scene_skipped"; index: number; path: string }
+  | { type: "line_fallback"; speaker: string; error: string }
   | { type: "scene_start"; index: number; total: number; segments: number }
   | { type: "chunk_done"; sceneIndex: number; segmentIndex: number; segments: number; speaker: string; text: string }
   | { type: "segment_done"; sceneIndex: number; segmentIndex: number; segments: number; speaker: string }
@@ -338,8 +361,24 @@ function concatFloat32(chunks: Float32Array[]): Float32Array {
   return out;
 }
 
-// One TTS pass over `text`, yielding audio per sentence-ish chunk.
-export type Synthesize = (text: string, voice: string) => AsyncIterable<{ text: string; audio: Float32Array }>;
+export type TtsEngine = "kokoro" | "gemini";
+
+// One TTS pass over `text`, yielding audio per sentence-ish chunk. `context` is
+// the text just before this piece (for engines that act the line).
+export type Synthesize = (text: string, voice: string, ctx?: { speaker: string; context: string }) => AsyncIterable<{ text: string; audio: Float32Array }>;
+
+// Linear resample for engines whose output rate differs from the audiobook's.
+export function resample(samples: Float32Array, from: number, to: number): Float32Array {
+  if (from === to) return samples;
+  const out = new Float32Array(Math.round((samples.length * to) / from));
+  for (let i = 0; i < out.length; i++) {
+    const x = (i * from) / to;
+    const i0 = Math.floor(x);
+    const i1 = Math.min(i0 + 1, samples.length - 1);
+    out[i] = samples[i0] + (samples[i1] - samples[i0]) * (x - i0);
+  }
+  return out;
+}
 
 export interface SynthesizedScene {
   audio: Float32Array;
@@ -360,17 +399,21 @@ export async function synthesizeScene(
   const chunks: Float32Array[] = [];
   const starts: Array<number | undefined> = [];
   let samples = 0;
+  const recent: string[] = [];  // the last few pieces spoken, as context for acted lines
   for (const [s, seg] of scene.segments.entries()) {
     const pieces = seg.text.split("\n\n");
     const aligned = pieces.length === seg.paragraphs.length;
     const work = aligned ? pieces.map((text, k) => ({ text, paragraph: seg.paragraphs[k] })) : [{ text: seg.text, paragraph: seg.paragraphs[0] }];
     for (const { text, paragraph } of work) {
       if (paragraph !== undefined && starts[paragraph] === undefined) starts[paragraph] = samples / SAMPLE_RATE;
-      for await (const chunk of synth(text, voiceFor(seg.speaker))) {
+      const context = recent.join(" ").slice(-500);
+      for await (const chunk of synth(text, voiceFor(seg.speaker), { speaker: seg.speaker, context })) {
         chunks.push(chunk.audio);
         samples += chunk.audio.length;
         onChunk(s, seg.speaker, chunk.text);
       }
+      recent.push(text);
+      if (recent.length > 3) recent.shift();
     }
     onSegment(s, seg.speaker);
   }
@@ -391,6 +434,75 @@ export interface SceneTiming {
   paragraphStarts: number[];
 }
 
+// Generous upper bound for speaking a line: ~1s per word plus room for a
+// dramatic pause or a sigh. Anything longer spoke more than the line.
+export function maxLineSeconds(line: string): number {
+  return Math.round(line.split(/\s+/).filter(Boolean).length * 1 + 3);
+}
+
+// The scene context for an acted line: the narration just before it, without
+// any quoted dialogue (Gemini performs quoted lines it sees in its prompt as
+// if they were part of the script), trimmed to the most recent ~300 chars.
+export function sceneContext(text: string): string {
+  const narration = text.replace(/"[^"]*"/g, " ").replace(/\s+/g, " ").trim();
+  return narration.length > 300 ? `…${narration.slice(-300).replace(/^\S*\s/, "")}` : narration;
+}
+
+// Routes each speaker to an engine — Kokoro, or Gemini TTS acting the line —
+// and builds the synthesizer that voices them. Voices are "gemini:<Name>" for
+// Gemini lines and Kokoro ids otherwise. A Gemini line is acted: who is
+// speaking (from the bible), what just happened (the preceding text), then the
+// line. A failed Gemini line falls back to the speaker's Kokoro voice, so one
+// bad request never sinks the audiobook.
+export function hybridVoicing(p: {
+  bible: Bible;
+  assignment: VoiceAssignment;
+  narration: TtsEngine;
+  dialogue: TtsEngine;
+  kokoroSynth: Synthesize;
+  speak: Speak;
+  onFallback?: (speaker: string, error: string) => void;
+}): { voiceFor: (speaker: string) => string; synth: Synthesize } {
+  const { bible, assignment, narration, dialogue, kokoroSynth, speak } = p;
+  const kokoroVoiceFor = (speaker: string) => speaker === "narrator"
+    ? assignment.narrator
+    : (assignment.characters[speaker] ?? assignment.narrator);
+  const voiceFor = (speaker: string) => {
+    const engine = speaker === "narrator" ? narration : dialogue;
+    if (engine !== "gemini" || !assignment.gemini) return kokoroVoiceFor(speaker);
+    const g = speaker === "narrator" ? assignment.gemini.narrator : assignment.gemini.characters[speaker];
+    return g ? `gemini:${g}` : kokoroVoiceFor(speaker);
+  };
+  const synth: Synthesize = async function* (text, voice, ctx) {
+    if (!voice.startsWith("gemini:")) {
+      yield* kokoroSynth(text, voice);
+      return;
+    }
+    const speaker = ctx?.speaker ?? "narrator";
+    const ch = bible.characters[speaker];
+    const scene = sceneContext(ctx?.context ?? "");
+    const prompt = buildTtsPrompt(speaker === "narrator" || !ch
+      ? { name: "Narrator", profile: `The narrator of a story. Tone: ${bible.tone || "measured, warm storytelling"}.`, scene, notes: "Storytelling narration: clear, engaged, natural pace; let the drama of the moment color the read without over-acting.", line: text }
+      : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" "), scene, line: text });
+    try {
+      // A reply far longer than the line could take means the model spoke
+      // something else too (direction, context): retry once, then fall back.
+      let audio: Float32Array | undefined;
+      for (let attempt = 0; attempt < 2 && !audio; attempt++) {
+        const { samples, sampleRate } = await speak(prompt, voice.slice("gemini:".length));
+        if (samples.length / sampleRate <= maxLineSeconds(text)) audio = resample(samples, sampleRate, SAMPLE_RATE);
+      }
+      if (!audio) throw new Error(`audio far longer than the line (over ${maxLineSeconds(text)}s) on both attempts`);
+      yield { text, audio };
+    } catch (err) {
+      if (isBudgetError(err)) throw err;  // a spent budget stops the audiobook; it never quietly switches engines
+      p.onFallback?.(speaker, err instanceof Error ? err.message : String(err));
+      yield* kokoroSynth(text, kokoroVoiceFor(speaker));
+    }
+  };
+  return { voiceFor, synth };
+}
+
 // Synthesizes one WAV per scene under `<runDir>/audiobook/`. Long text always
 // goes through tts.stream() — tts.generate() silently truncates anything past
 // ~509 tokens, which would drop the tail of a full-length scene.
@@ -406,9 +518,13 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   Object.assign(genders, opts.characterGenders);
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   const dtype = opts.dtype ?? "q8";
+  const narration: TtsEngine = opts.narration ?? "kokoro";
+  const dialogue: TtsEngine = opts.dialogue ?? "kokoro";
+  const usesGemini = narration === "gemini" || dialogue === "gemini";
   const settings = {
     narratorVoice: opts.narratorVoice ?? null, language: opts.language ?? "en", genders, modelId, dtype,
-    // Only part of the key when set, so audiobooks made before this option stay current.
+    // Only part of the key when set, so audiobooks made before these options stay current.
+    ...(usesGemini ? { narration, dialogue, geminiModel: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, geminiVoices: opts.geminiVoices ?? {} } : {}),
     ...(opts.kokoroVoices ? { kokoroVoices: opts.kokoroVoices } : {}),
     ...(opts.characterVoices ? { characterVoices: opts.characterVoices } : {})
   };
@@ -480,7 +596,14 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     if (!languageVoices.includes(voice)) throw new Error(`characterVoices: "${voice}" (for ${id}) is not a Kokoro voice for language "${opts.language ?? "en"}"`);
     if (!bible.characters[id]) console.error(`[scriptorium] characterVoices: no character "${id}" in this story (characters: ${Object.keys(bible.characters).join(", ")}) — ignored`);
   }
-  const assignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice, { genders, voiceGenders, pinned });
+  const assignment: VoiceAssignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice, { genders, voiceGenders, pinned });
+  if (usesGemini) {
+    const g = assignVoices(Object.keys(bible.characters), Object.keys(GEMINI_VOICES), opts.geminiVoices?.narrator ?? "Charon", { genders, voiceGenders: GEMINI_VOICES });
+    for (const [id, v] of Object.entries(opts.geminiVoices ?? {})) {
+      if (id !== "narrator" && GEMINI_VOICES[v]) g.characters[id] = v;
+    }
+    assignment.gemini = { narrator: g.narrator, characters: g.characters };
+  }
   manifest.voices = assignment;
 
   // tts.stream(text, opts) — the plain-string convenience form — pushes text
@@ -488,7 +611,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   // sentence in any fixed string never flushes: the for-await hangs on it, and
   // Node silently exits once nothing else holds the event loop open. Build and
   // close our own stream instead.
-  const synth: Synthesize = async function* (text, voice) {
+  const kokoroSynth: Synthesize = async function* (text, voice) {
     const splitter = new TextSplitterStream();
     splitter.push(text);
     splitter.close();
@@ -496,9 +619,11 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
       yield { text: said, audio: audio.audio };
     }
   };
-  const voiceFor = (speaker: string) => speaker === "narrator"
-    ? assignment.narrator
-    : (assignment.characters[speaker] ?? assignment.narrator);
+  const { voiceFor, synth } = hybridVoicing({
+    bible, assignment, narration, dialogue, kokoroSynth,
+    speak: opts.speak ?? geminiSpeaker({ model: opts.geminiModel }),
+    onFallback: (speaker, error) => onProgress({ type: "line_fallback", speaker, error })
+  });
 
   for (const scene of todo) {
     const segments = scene.segments.length;
