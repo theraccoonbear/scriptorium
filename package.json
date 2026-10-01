@@ -13,7 +13,8 @@
     "story": "node --env-file=.env src/cli.ts run --config story.opencode-go.config.json",
     "story:mock": "node --env-file=.env src/cli.ts run --config story.config.json",
     "art": "node --env-file=.env src/cli.ts art --config story.opencode-go.config.json",
-    "artdirect": "node --env-file=.env src/cli.ts artdirect --config story.opencode-go.config.json"
+    "artdirect": "node --env-file=.env src/cli.ts artdirect --config story.opencode-go.config.json",
+    "video": "node src/cli.ts video"
   },
   "engines": {
     "node": ">=20"
