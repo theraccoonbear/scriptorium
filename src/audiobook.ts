@@ -194,13 +194,14 @@ export function normalizeGender(value: string | undefined): Gender | undefined {
 export interface VoiceGenderOptions {
   genders?: Readonly<Record<string, string | undefined>>;      // character id -> gender
   voiceGenders?: Readonly<Record<string, string | undefined>>; // voice id -> gender
+  pinned?: Readonly<Record<string, string>>;                    // character id -> voice the author chose
 }
 
 export function assignVoices(
   characterIds: readonly string[],
   voices: readonly string[],
   narratorVoice?: string,
-  { genders = {}, voiceGenders = {} }: VoiceGenderOptions = {}
+  { genders = {}, voiceGenders = {}, pinned = {} }: VoiceGenderOptions = {}
 ): VoiceAssignment {
   if (voices.length === 0) throw new Error("no voices available to assign");
   const narrator = narratorVoice && voices.includes(narratorVoice) ? narratorVoice : voices[0];
@@ -210,11 +211,19 @@ export function assignVoices(
   const used = new Set<string>();
   const characters: Record<string, string> = {};
   const matched: Record<string, Gender> = {};
+  // The author's choices go first, so no one else is handed those voices.
+  for (const id of characterIds) {
+    if (pinned[id]) {
+      characters[id] = pinned[id];
+      used.add(pinned[id]);
+    }
+  }
   // Characters with a known gender pick first so unspecified ones can't use up
   // the smaller same-gender pool; order within each group stays sorted.
   const ids = [...characterIds].sort();
   const ordered = [...ids.filter((id) => normalizeGender(genders[id])), ...ids.filter((id) => !normalizeGender(genders[id]))];
   for (const id of ordered) {
+    if (characters[id]) continue;
     const gender = normalizeGender(genders[id]);
     const gendered = gender ? byGender(gender) : [];
     // No voice of that gender in this language: any voice beats none.
@@ -277,6 +286,7 @@ export interface AudiobookOptions {
   // Overrides/sets character genders for voice matching (e.g. runs made before
   // the bible recorded gender): character id -> "female" | "male".
   characterGenders?: Record<string, string>;
+  characterVoices?: Record<string, string>;  // character id -> Kokoro voice, chosen by the author
   // Kokoro voices to use or avoid (e.g. weak or overused ones), by id.
   kokoroVoices?: { include?: string[]; exclude?: string[] };
   force?: boolean;  // re-render scenes whose text and voice settings are unchanged
@@ -399,7 +409,8 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   const settings = {
     narratorVoice: opts.narratorVoice ?? null, language: opts.language ?? "en", genders, modelId, dtype,
     // Only part of the key when set, so audiobooks made before this option stay current.
-    ...(opts.kokoroVoices ? { kokoroVoices: opts.kokoroVoices } : {})
+    ...(opts.kokoroVoices ? { kokoroVoices: opts.kokoroVoices } : {}),
+    ...(opts.characterVoices ? { characterVoices: opts.characterVoices } : {})
   };
 
   // Skip scenes whose WAV exists and was made from the same text and settings.
@@ -463,7 +474,13 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     throw new Error(`no Kokoro voices left for language "${opts.language ?? "en"}" after include/exclude`);
   }
   const voiceGenders = Object.fromEntries(voiceIds.map((id) => [id, (tts.voices as Record<string, { gender?: string }>)[id]?.gender]));
-  const assignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice, { genders, voiceGenders });
+  const pinned = opts.characterVoices ?? {};
+  const languageVoices = filterVoicesByLanguage(tts.voices, opts.language ?? "en");
+  for (const [id, voice] of Object.entries(pinned)) {
+    if (!languageVoices.includes(voice)) throw new Error(`characterVoices: "${voice}" (for ${id}) is not a Kokoro voice for language "${opts.language ?? "en"}"`);
+    if (!bible.characters[id]) console.error(`[scriptorium] characterVoices: no character "${id}" in this story (characters: ${Object.keys(bible.characters).join(", ")}) — ignored`);
+  }
+  const assignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice, { genders, voiceGenders, pinned });
   manifest.voices = assignment;
 
   // tts.stream(text, opts) — the plain-string convenience form — pushes text

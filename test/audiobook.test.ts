@@ -290,3 +290,14 @@ test("curateVoices drops excluded Kokoro voices; an include list wins", () => {
   assert.deepEqual(curateVoices(["af_heart", "am_adam"], { include: ["am_adam"], exclude: ["am_adam"] }), ["am_adam"]);
   assert.deepEqual(curateVoices(["af_heart", "am_adam"]), ["af_heart", "am_adam"]);
 });
+
+test("an author-chosen voice is kept, and no other character is given it", () => {
+  const voices = ["af_heart", "am_michael", "bm_george", "bm_lewis"];
+  const voiceGenders = { af_heart: "female", am_michael: "male", bm_george: "male", bm_lewis: "male" };
+  const genders = { osmagus: "male", goblin: "male", kobold: "male" };
+  const auto = assignVoices(["osmagus", "goblin", "kobold"], voices, "af_heart", { genders, voiceGenders });
+  const pinned = assignVoices(["osmagus", "goblin", "kobold"], voices, "af_heart", { genders, voiceGenders, pinned: { osmagus: "bm_george" } });
+  assert.equal(pinned.characters.osmagus, "bm_george");
+  assert.ok(!["goblin", "kobold"].some((id) => pinned.characters[id] === "bm_george"));
+  assert.ok(auto.characters.osmagus !== undefined);
+});

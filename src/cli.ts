@@ -25,6 +25,7 @@ const USAGE = `scriptorium <command> [options]
   bible --out <dir>                                     print the current bible as JSON
   audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>]
             [--voice-gender <id>=<female|male>,...] [--exclude-voices <kokoro ids>]
+            [--character-voice <id>=<kokoro voice>,...]
                                                          render the run's scenes to WAV
   art   --out <dir> [--config <file>] [--force]          render the run's art prompts to images
   video --out <dir> [--encoder auto|nvenc|x264] [--parallel N] [--force]
@@ -140,6 +141,7 @@ async function main() {
       language: { type: "string" },
       "voice-gender": { type: "string" },
       "exclude-voices": { type: "string" },
+      "character-voice": { type: "string" },
       force: { type: "boolean" },
       redo: { type: "string" },
       only: { type: "string" },
@@ -293,6 +295,7 @@ async function main() {
       language: values.language,
       characterGenders: parseVoiceGenders(values["voice-gender"]),
       kokoroVoices: values["exclude-voices"] ? { exclude: values["exclude-voices"].split(",").map((v) => v.trim()).filter(Boolean) } : undefined,
+      characterVoices: values["character-voice"] ? Object.fromEntries(values["character-voice"].split(",").map((p) => p.split("=").map((x) => x.trim())).filter((p) => p.length === 2 && p[0] && p[1])) : undefined,
       force: values.force
     });
     return;
