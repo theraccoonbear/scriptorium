@@ -19,6 +19,7 @@ State lives in an append-only JSONL event log. The bible is always rebuilt by re
     node src/cli.js bible --out runs/demo-b
     npm run art -- --out runs/demo-b      # re-render or retry a run's images
     npm run artdirect -- --out runs/demo-b  # redo shots + cover for an existing run, then render
+    npm run video -- --out runs/demo-b      # art + audiobook -> video/story.mp4
 
 ## Art
 
@@ -49,3 +50,9 @@ All providers strip `<think>` blocks, retry on 429/5xx with backoff, and fail lo
 - LLM-based hierarchical summarization (current compaction is deterministic concatenation).
 - Streaming and per-role token budgets.
 - Multiple writer voices per scene and a "twist" role that can propose retcons for archivist approval.
+
+## Video
+
+`video --out <run>` turns a run's art and audiobook into `video/story.mp4` (1080p30 H.264 + AAC, ready for YouTube), `video/thumbnail.jpg` (1280×720, from the cover) and `video/story.srt` (one subtitle cue per sentence). It needs `ffmpeg` on the PATH and runs after `art` and `audiobook`.
+
+Each shot comes on screen when the narration reaches its paragraph (`art.json` `startParagraph` × `timings.json` `paragraphStarts`) and holds until the next shot, with a slow Ken Burns move (zoom in, zoom out, pan left or right — chosen per shot, never the same twice in a row) and a 1.5s crossfade. Shots that would be on screen for under 6s are dropped and the previous one holds. The cover opens the video for 6s and a 1.5s black pause separates scenes. Everything is frame-exact at 30fps and each scene's audio is padded/trimmed to its frame length, so the pictures can't drift from the narration. The plan is written to `video/timeline.json` (with warnings, e.g. images the inspector never accepted) before rendering. Each scene renders in one ffmpeg pass at about real time on a CPU; scenes are cached in `video/cache.json` and only re-rendered when their images or timing change (`--force` re-renders all).
