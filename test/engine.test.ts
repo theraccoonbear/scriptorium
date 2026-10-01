@@ -236,6 +236,63 @@ test("redirectArt --redo recreates a named reference and rejects unknown ones", 
   await assert.rejects(redirectArt({ config, log, roles: buildRoleProviders(config), notes: "x" }), /only applies with --redo/);
 });
 
+// --- issue #31: stalled review loops ---
+// Scene 2's critic flags the same passage every draft, each time as a different
+// kind of problem (so each looks "new") — the ping-pong that stalled a real run.
+async function pingPongRun(maxAttempts: number) {
+  const config = await loadConfig({ scenes: 2 });
+  const roles = buildRoleProviders(config);
+  const types = ["PACE", "CHARACTER_ARC", "UNRESOLVED_SETUP", "EPISTEMIC_VIOLATION", "TELLING_NOT_SHOWING", "SENSORY_SPECIFICITY"];
+  let n = 0;
+  const directorScenes: number[] = [];
+  const real = roles.critic!.provider.complete.bind(roles.critic!.provider);
+  roles.critic!.provider = {
+    complete: async (req) => {
+      const ctx = req.ctx as { sceneIndex?: number };
+      if (req.role === "director") directorScenes.push(ctx.sceneIndex ?? -1);
+      if (req.role === "critic" && ctx?.sceneIndex === 1) {
+        const type = types[n++ % types.length];
+        return JSON.stringify({ ok: false, issues: [{ type, entity: "Thele's suggestion that Kess play the ceremony", constraint: "", detail: `${type} complaint` }] });
+      }
+      return real(req);
+    }
+  };
+  roles.director = { ...roles.director, provider: roles.critic!.provider };
+  const log = new EventLog(await tmp());
+  await runStory({ config, log, roles, maxAttempts });
+  return { critiques: n, directorForScene2: directorScenes.filter((i) => i === 1).length, log };
+}
+
+test("a passage flagged in three drafts sends the scene back to the director for a new beat", async () => {
+  const { critiques, directorForScene2, log } = await pingPongRun(4);
+  assert.equal(directorForScene2, 2, "initial beat + one regeneration after draft 3");
+  assert.equal(critiques, 4);
+  assert.equal(log.events.filter((e) => e.type === "scene_committed").length, 2);
+});
+
+test("a reworded repeat of the same complaint counts as already flagged", async () => {
+  const config = await loadConfig({ scenes: 2 });
+  const roles = buildRoleProviders(config);
+  let n = 0;
+  const real = roles.critic!.provider.complete.bind(roles.critic!.provider);
+  roles.critic!.provider = {
+    complete: async (req) => {
+      const ctx = req.ctx as { sceneIndex?: number };
+      if (req.role === "critic" && ctx?.sceneIndex === 1) {
+        n++;
+        return JSON.stringify({ ok: false, issues: [{ type: "PACE", entity: `Kess's arrival and challenge sequence (take ${n})`, constraint: "", detail: `rushed, version ${n}` }] });
+      }
+      return real(req);
+    }
+  };
+  const log = new EventLog(await tmp());
+  await runStory({ config, log, roles, maxAttempts: 10 });
+  // Draft 1 rejected; draft 2's only issue is the same complaint reworded → accepted.
+  assert.equal(n, 2);
+  const scene2 = log.events.filter((e) => e.type === "scene_committed")[1].data as SceneCommittedData;
+  assert.equal(scene2.attempts, 2);
+});
+
 test("the Creator's art style lands in the bible; a run made without one gets it once from the Art Director", async () => {
   const { storyArtStyle } = await import("../src/visualrefs.ts");
   const config = await loadConfig({ scenes: 1 });

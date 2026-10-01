@@ -258,3 +258,30 @@ test("every image is generated and inspected with the story's art style; changin
   assert.equal(r.rendered, 2);
   assert.equal(r.manifest["character-a"].style, "oil painting");
 });
+
+test("references and the inspected image are sent shrunk; files on disk stay full size", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const runDir = await tmp();
+  const events = [
+    ev(0, "visual_ref", { kind: "character", id: "a", appearance: "x", prompt: "portrait a" }),
+    ev(1, "scene_art", { sceneIndex: 0, prompt: "s1", shots: [{ startParagraph: 0, prompt: "s1", characters: ["a"] }] })
+  ];
+  const sizes: number[] = [];
+  // Fake resizer: marks the image as shrunk to the requested size.
+  const shrink = async (img: { data: Buffer; mimeType: string }, max: number) => { sizes.push(max); return { ...img, data: Buffer.from(`small-${max}`) }; };
+  const backend = new MockImageBackend();
+  const inspector = new MockInspector();
+  await renderArt(events, { runDir, backend, inspector, shrink });
+  assert.equal(String(backend.calls[1].references[0].data), "small-768", "the portrait reference was shrunk");
+  assert.ok(inspector.calls.every((c) => String(c.image.data) === "small-1024"), "the candidate was shrunk for inspection");
+  const onDisk = await readFile(join(runDir, "art", "character-a.png"));
+  assert.notEqual(String(onDisk), "small-768");
+  assert.ok(onDisk.length > 0);
+});
+
+test("ffmpegShrink falls back to the original on input it can't read", async () => {
+  const { ffmpegShrink } = await import("../src/artist.ts");
+  const junk = { data: Buffer.from("not an image"), mimeType: "image/png" };
+  assert.equal(await ffmpegShrink(junk, 768), junk);
+  assert.equal(await ffmpegShrink(junk, 0), junk);
+});
