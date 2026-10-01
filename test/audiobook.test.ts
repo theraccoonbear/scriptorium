@@ -1,0 +1,182 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { assignVoices, buildScenes, filterVoicesByLanguage, findUntaggedParagraphs, parseScene, stripSpeakerTags } from "../src/audiobook.ts";
+import type { StoryEvent } from "../src/types.ts";
+
+test("parseScene falls back to a single narrator segment when untagged", () => {
+  const prose = "Osmagus climbed the ridge as dusk closed in.\n\n\"The horn needed seeing,\" he said.";
+  const scene = parseScene(0, prose, new Set(["osmagus"]));
+  assert.equal(scene.tagged, false);
+  assert.equal(scene.segments.length, 1);
+  assert.equal(scene.segments[0].speaker, "narrator");
+  assert.ok(scene.segments[0].text.includes("The horn needed seeing"));
+});
+
+test("parseScene splits tagged paragraphs by speaker", () => {
+  const prose = [
+    "narrator: Osmagus climbed the ridge as dusk closed in.",
+    "osmagus: \"The horn needed seeing.\"",
+    "narrator: He turned toward the gate."
+  ].join("\n\n");
+  const scene = parseScene(0, prose, new Set(["osmagus"]));
+  assert.equal(scene.tagged, true);
+  assert.deepEqual(scene.segments.map((s) => s.speaker), ["narrator", "osmagus", "narrator"]);
+  assert.equal(scene.segments[1].text, '"The horn needed seeing."');
+});
+
+test("parseScene merges consecutive same-speaker paragraphs", () => {
+  const prose = [
+    "narrator: The ridge was cold.",
+    "narrator: Dusk had nearly closed.",
+    "osmagus: \"Enough waiting.\""
+  ].join("\n\n");
+  const scene = parseScene(0, prose, new Set(["osmagus"]));
+  assert.equal(scene.segments.length, 2);
+  assert.ok(scene.segments[0].text.includes("The ridge was cold"));
+  assert.ok(scene.segments[0].text.includes("Dusk had nearly closed"));
+});
+
+test("parseScene ignores tag-shaped text for unknown speakers", () => {
+  // "note:" isn't narrator and isn't a known bible id — treat the whole
+  // paragraph as narration rather than silently dropping the prefix as a cue.
+  const prose = "note: this looks like a tag but isn't a real speaker.";
+  const scene = parseScene(0, prose, new Set(["osmagus"]));
+  assert.equal(scene.tagged, false);
+  assert.equal(scene.segments[0].speaker, "narrator");
+});
+
+test("parseScene routes attribution and action inside a character paragraph to the narrator", () => {
+  // The exact bug this guards against: a character-tagged paragraph that
+  // mixes narration ("he called", action beats) with their actual quoted
+  // words. Only the quoted text should be voiced as that character —
+  // attribution is never inside the quote marks in standard prose, so the
+  // narrator/dialogue boundary is mechanical, not a judgment call.
+  const prose = 'riggins: "Mango," he called. "Stop."';
+  const scene = parseScene(0, prose, new Set(["riggins"]));
+  assert.deepEqual(
+    scene.segments.map((s) => [s.speaker, s.text]),
+    [
+      ["riggins", '"Mango,"'],
+      ["narrator", "he called."],
+      ["riggins", '"Stop."']
+    ]
+  );
+});
+
+test("parseScene keeps a pure-dialogue character paragraph as one segment", () => {
+  const prose = 'mango: "What? Did you see something?"';
+  const scene = parseScene(0, prose, new Set(["mango"]));
+  assert.deepEqual(scene.segments, [{ speaker: "mango", text: '"What? Did you see something?"' }]);
+});
+
+test("parseScene sends a narrator-tagged paragraph entirely to narrator even if it contains quotes", () => {
+  const prose = 'narrator: The sign read "No Entry" above the door.';
+  const scene = parseScene(0, prose, new Set());
+  assert.deepEqual(scene.segments, [{ speaker: "narrator", text: 'The sign read "No Entry" above the door.' }]);
+});
+
+test("parseScene strips leading heading markup", () => {
+  const prose = "# The Horn\n\nOsmagus climbed the ridge.";
+  const scene = parseScene(0, prose, new Set());
+  assert.ok(!scene.segments[0].text.startsWith("#"));
+  assert.ok(scene.segments[0].text.includes("The Horn"));
+});
+
+test("assignVoices is deterministic across calls", () => {
+  const voices = ["af_heart", "af_bella", "am_adam", "bf_emma"];
+  const a = assignVoices(["osmagus", "mettka"], voices);
+  const b = assignVoices(["osmagus", "mettka"], voices);
+  assert.deepEqual(a, b);
+});
+
+test("assignVoices reserves the narrator voice for characters when others exist", () => {
+  const voices = ["af_heart", "af_bella", "am_adam"];
+  const { narrator, characters } = assignVoices(["osmagus"], voices, "af_heart");
+  assert.equal(narrator, "af_heart");
+  assert.notEqual(characters.osmagus, "af_heart");
+});
+
+test("assignVoices avoids collisions when enough voices exist", () => {
+  const voices = ["af_heart", "af_bella", "am_adam", "bf_emma", "bm_george"];
+  const { characters } = assignVoices(["a", "b", "c", "d"], voices, "af_heart");
+  const assigned = Object.values(characters);
+  assert.equal(new Set(assigned).size, assigned.length, "expected distinct voices per character");
+});
+
+test("assignVoices falls back to the full pool when only the narrator voice exists", () => {
+  const { narrator, characters } = assignVoices(["osmagus"], ["af_heart"], "af_heart");
+  assert.equal(narrator, "af_heart");
+  assert.equal(characters.osmagus, "af_heart");
+});
+
+test("filterVoicesByLanguage keeps only matching-language voices", () => {
+  const voices = {
+    af_heart: { language: "en-us" },
+    bf_emma: { language: "en-gb" },
+    jf_alpha: { language: "ja" },
+    zf_xiaobei: { language: "zh" }
+  };
+  assert.deepEqual(filterVoicesByLanguage(voices, "en"), ["af_heart", "bf_emma"]);
+  assert.deepEqual(filterVoicesByLanguage(voices, "ja"), ["jf_alpha"]);
+});
+
+test("filterVoicesByLanguage returns empty for an unmatched prefix", () => {
+  const voices = { af_heart: { language: "en-us" } };
+  assert.deepEqual(filterVoicesByLanguage(voices, "fr"), []);
+});
+
+test("stripSpeakerTags recovers plain book prose from tagged paragraphs", () => {
+  const prose = [
+    'narrator: Osmagus climbed the ridge as dusk closed in.',
+    'osmagus: "The horn needed seeing," he said. "Stop."',
+    "narrator: He turned toward the gate."
+  ].join("\n\n");
+  const clean = stripSpeakerTags(prose, new Set(["osmagus"]));
+  assert.equal(
+    clean,
+    [
+      "Osmagus climbed the ridge as dusk closed in.",
+      '"The horn needed seeing," he said. "Stop."',
+      "He turned toward the gate."
+    ].join("\n\n")
+  );
+});
+
+test("stripSpeakerTags passes untagged prose through unchanged", () => {
+  const prose = "Just an ordinary paragraph.\n\nAnother one.";
+  assert.equal(stripSpeakerTags(prose, new Set()), prose);
+});
+
+test("findUntaggedParagraphs flags paragraphs without a known tag", () => {
+  const prose = [
+    "narrator: Fine, tagged.",
+    "This paragraph has no tag at all.",
+    "osmagus: Also fine."
+  ].join("\n\n");
+  const untagged = findUntaggedParagraphs(prose, new Set(["osmagus"]));
+  assert.deepEqual(untagged, ["This paragraph has no tag at all."]);
+});
+
+test("findUntaggedParagraphs returns nothing when every paragraph is tagged", () => {
+  const prose = ["narrator: Fine.", "osmagus: Also fine."].join("\n\n");
+  assert.deepEqual(findUntaggedParagraphs(prose, new Set(["osmagus"])), []);
+});
+
+test("buildScenes replays the bible to resolve known speaker ids", () => {
+  const events: StoryEvent[] = [
+    {
+      seq: 0,
+      type: "scene_committed",
+      ts: "t0",
+      data: {
+        index: 0,
+        patch: { upsertCharacters: [{ id: "osmagus", name: "Osmagus" }] },
+        prose: "osmagus: \"The horn needed seeing.\""
+      }
+    }
+  ];
+  const scenes = buildScenes(events);
+  assert.equal(scenes.length, 1);
+  assert.equal(scenes[0].tagged, true);
+  assert.equal(scenes[0].segments[0].speaker, "osmagus");
+});

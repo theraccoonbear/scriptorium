@@ -145,6 +145,30 @@ test("critic checks voice drift", () => {
   assert.ok(CRITIC_SYSTEM.includes("confuses attribution"), "missing blocking threshold");
 });
 
+// --- issue #14: speaker tags for audiobook ---
+test("writer omits speaker tags by default", async () => {
+  const out = await write(mockRole, {
+    bible: emptyBible(), beat: testBeat, sceneIndex: 0, attempt: 0,
+    sceneWords: { min: 1200, max: 1800 }
+  });
+  assert.ok(!out.prompt.includes("SPEAKER TAGS"), "speaker tag block leaked into a run that didn't ask for it");
+});
+
+test("writer adds speaker tag instructions with valid bible ids when speakerTags is on", async () => {
+  const bible = emptyBible();
+  bible.characters["osmagus"] = { id: "osmagus", name: "Osmagus", traits: "", goal: "", voice: "", status: "active" };
+  bible.characters["mettka"] = { id: "mettka", name: "Mettka", traits: "", goal: "", voice: "", status: "active" };
+  const out = await write(mockRole, {
+    bible, beat: testBeat, sceneIndex: 0, attempt: 0,
+    sceneWords: { min: 1200, max: 1800 }, speakerTags: true
+  });
+  assert.ok(out.prompt.includes("SPEAKER TAGS"), "missing speaker tag block");
+  assert.ok(out.prompt.includes("narrator:"), "missing narrator tag instruction");
+  assert.ok(out.prompt.includes("osmagus"), "missing character id in valid tag list");
+  assert.ok(out.prompt.includes("mettka"), "missing second character id in valid tag list");
+  assert.ok(out.prompt.includes("Write dialogue normally"), "missing natural-dialogue instruction");
+});
+
 // --- issue #6: unaddressed practical gaps ---
 test("continuist can flag unaddressed practical gaps", () => {
   assert.ok(CONTINUIST_SYSTEM.includes("UNADDRESSED_PRACTICAL"), "missing type in enum");

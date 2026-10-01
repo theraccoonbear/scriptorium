@@ -467,8 +467,9 @@ export async function write(role: Role, params: {
   sceneWords: WordBudget;
   previousDraft?: string;
   previousScenes?: string[];
+  speakerTags?: boolean;
 } & CreativeFeedback): Promise<RoleOutput<string>> {
-  const { bible, beat, sceneIndex, attempt, sceneWords, previousDraft, previousScenes, issues, fresh } = params;
+  const { bible, beat, sceneIndex, attempt, sceneWords, previousDraft, previousScenes, speakerTags, issues, fresh } = params;
   // Voice sheets for every character in the bible — not just POV, so minor
   // characters arrive with their own register and voices cannot converge.
   const voiceSheets = Object.values(bible.characters)
@@ -477,6 +478,20 @@ export async function write(role: Role, params: {
     .join("\n");
   const voice = voiceSheets
     ? `VOICE SHEETS (keep every speaker in their own register — do not let voices converge):\n${voiceSheets}`
+    : "";
+  // Opt-in structural markup for the audiobook tool (config.speakerTags). Off
+  // by default — story.md stays plain prose unless a run explicitly asks for this.
+  const speakerTagBlock = speakerTags
+    ? (() => {
+        const ids = Object.keys(bible.characters);
+        const example = ids[0] || "character_id";
+        return [
+          "SPEAKER TAGS (required — this run feeds an audiobook pipeline):",
+          `- Start EVERY paragraph with a speaker tag and a colon: \`narrator: \` for description and action, or a character's bible id for the paragraph where they speak (e.g. \`${example}: \`).`,
+          `- Valid tags: narrator, ${ids.join(", ") || "(no characters yet)"}.`,
+          "- Write dialogue normally — ordinary quotation marks, ordinary attribution (\"Riggins said\", \"she whispered\"). Attribution and action beats are pulled out automatically by quote position, so you do not need to split a paragraph just because it mixes narration with a character's line."
+        ].join("\n");
+      })()
     : "";
   const fix = feedbackBlock(
     issues,
@@ -496,6 +511,7 @@ export async function write(role: Role, params: {
     `CONSTRAINTS:\n${beat.constraints.map((c) => `- ${c}`).join("\n")}`,
     `LENGTH TARGET: ${sceneWords.min}-${sceneWords.max} words. Land the ending once — do not restate the resolution or recap the scene.`,
     voice,
+    speakerTagBlock,
     draft,
     fix
   ].filter(Boolean).join("\n\n");
@@ -505,7 +521,7 @@ export async function write(role: Role, params: {
     prompt,
     temperature: role.temperature,
     timeoutMs: role.timeoutMs,
-    ctx: { bible, beat, sceneIndex, attempt }
+    ctx: { bible, beat, sceneIndex, attempt, speakerTags }
   });
   return { result: raw, prompt, system: WRITER_SYSTEM, raw };
 }
