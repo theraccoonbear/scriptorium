@@ -35,17 +35,29 @@ test("shots come on screen at their paragraph's start, frame-exact, covering the
   const s = tl.scenes[0];
   assert.equal(s.frames, 1800); // 60.01s rounds to 1800 frames
   // 01-03 starts 2s after 01-02 and 01-05 is 2s from the end: both too short (< 6s) and dropped.
-  assert.deepEqual(s.shots.map((x) => [x.key, x.startFrame, x.slotFrames]), [
-    ["scene-01-01", 0, 300],
-    ["scene-01-02", 300, 600],
-    ["scene-01-04", 900, 900]
+  // 01-04 is held 30s (> 25s), so its image gets two 15s camera moves.
+  assert.deepEqual(s.shots.map((x) => [x.key, x.file, x.startFrame, x.slotFrames]), [
+    ["scene-01-01", "art/scene-01-01.jpg", 0, 300],
+    ["scene-01-02", "art/scene-01-02.jpg", 300, 600],
+    ["scene-01-04", "art/scene-01-04.jpg", 900, 450],
+    ["scene-01-04#2", "art/scene-01-04.jpg", 1350, 450]
   ]);
   assert.equal(s.shots.reduce((n, x) => n + x.slotFrames, 0), s.frames);
   // Every clip but the last carries the crossfade into the next shot.
-  assert.deepEqual(s.shots.map((x) => x.clipFrames), [345, 645, 900]);
+  assert.deepEqual(s.shots.map((x) => x.clipFrames), [345, 645, 495, 450]);
   assert.equal(tl.totalFrames, 180 + 1800 + 45 + 600);
   assert.ok(tl.warnings.some((w) => w.startsWith("scene-01-03") && w.includes("never accepted")));
   assert.ok(tl.warnings.some((w) => w.startsWith("scene-01-05 dropped")));
+});
+
+test("long holds split into moves no longer than maxMoveSec; short ones don't", () => {
+  const tl = buildTimeline(manifest, timings, { maxMoveSec: 8 });
+  const s = tl.scenes[0];
+  // 10s -> 2 moves, 20s -> 3, 30s -> 4; every move <= 8s and the scene still adds up.
+  assert.equal(s.shots.length, 2 + 3 + 4);
+  assert.ok(s.shots.every((x) => x.slotFrames <= 240));
+  assert.equal(s.shots.reduce((n, x) => n + x.slotFrames, 0), s.frames);
+  assert.equal(buildTimeline(manifest, timings, { maxMoveSec: 100 }).scenes[0].shots.length, 3);
 });
 
 test("moves are deterministic and never repeat back to back", () => {
@@ -70,7 +82,10 @@ test("scene filter graph chains xfades at each shot's start and trims to the sce
   assert.ok(graph.includes("[v0][v1]xfade=transition=fade:duration=1.5:offset=10[x1]"));
   assert.ok(graph.includes("[x1][v2]xfade=transition=fade:duration=1.5:offset=30[x2]"));
   assert.ok(graph.includes("trim=end_frame=1800[out]"));
+  assert.ok(graph.includes("[x2][v3]xfade=transition=fade:duration=1.5:offset=45[x3]"));
   assert.ok(kenBurnsFilter("pan_left", 300).includes("d=300:s=1920x1080:fps=30"));
+  // Pronounced, eased motion: zooms reach 1.35x along a smoothstep curve.
+  assert.ok(kenBurnsFilter("zoom_in", 300).includes("z='1+0.35*((on/299)*(on/299)*(3-2*(on/299)))'"));
 });
 
 test("audio graph puts silence under the intro and gaps and pads each scene to its frame length", () => {
@@ -113,7 +128,7 @@ test("renderVideo writes the timeline, caches scene parts, and errors clearly wi
   assert.equal(result.durationSec, (180 + 1800 + 45 + 600) / 30);
   const outputs = calls.map((a) => a[a.length - 1].split("/").pop());
   assert.deepEqual(outputs, ["intro.mp4", "scene-01.mp4", "gap-45.mp4", "scene-02.mp4", "story.mp4", "thumbnail.jpg"]);
-  assert.equal(await readFile(join(runDir, "video", "parts.txt"), "utf8"), "file 'intro.mp4'\nfile 'scene-01.mp4'\nfile 'gap-45.mp4'\nfile 'scene-02.mp4'\n");
+  assert.equal(await readFile(join(runDir, "video", "parts", "parts.txt"), "utf8"), "file 'intro.mp4'\nfile 'scene-01.mp4'\nfile 'gap-45.mp4'\nfile 'scene-02.mp4'\n");
   assert.ok((await readFile(join(runDir, "video", "story.srt"), "utf8")).includes("Three."));
   assert.equal(JSON.parse(await readFile(join(runDir, "video", "timeline.json"), "utf8")).scenes.length, 2);
 

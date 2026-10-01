@@ -23,15 +23,16 @@ const HEIGHT = 1080;
 export interface VideoOptions {
   fadeSec?: number;     // crossfade between shots, default 1.5
   minShotSec?: number;  // shots on screen for less than this are dropped, default 6
+  maxMoveSec?: number;  // a shot held longer than this gets several camera moves on its image, default 25
   introSec?: number;    // cover card before the first scene, default 6
   gapSec?: number;      // black pause between scenes, default 1.5
 }
 
-export type Move = "zoom_in" | "zoom_out" | "pan_right" | "pan_left";
-const MOVES: Move[] = ["zoom_in", "zoom_out", "pan_right", "pan_left"];
+export type Move = "zoom_in" | "zoom_out" | "pan_right" | "pan_left" | "zoom_in_left" | "zoom_in_right";
+const MOVES: Move[] = ["zoom_in", "pan_right", "zoom_out", "pan_left", "zoom_in_left", "zoom_in_right"];
 
 export interface TimelineShot {
-  key: string;
+  key: string;             // art key, plus "#2", "#3"... for extra moves on a long-held image
   file: string;            // relative to the run dir
   startParagraph: number;
   startFrame: number;      // when it comes on screen, from scene start
@@ -77,6 +78,7 @@ export function moveFor(key: string, previous?: Move): Move {
 export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: VideoOptions = {}): Timeline {
   const fadeFrames = toFrames(opts.fadeSec ?? 1.5);
   const minFrames = Math.max(toFrames(opts.minShotSec ?? 6), fadeFrames + 1);
+  const maxMoveFrames = Math.max(toFrames(opts.maxMoveSec ?? 25), minFrames);
   const warnings: string[] = [];
   const entries = Object.entries(manifest);
   const coverEntry = manifest.cover;
@@ -116,12 +118,22 @@ export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: Vid
       warnings.push(`${kept.pop()!.key} dropped: on screen < ${sec(minFrames)}s at scene end`);
     }
 
-    const shots: TimelineShot[] = kept.map((c, k) => {
-      const next = k + 1 < kept.length ? kept[k + 1].startFrame : frames;
+    // A long-held image gets several equal camera moves (crossfading between
+    // them) so the picture keeps changing even while one shot owns the screen.
+    const segments: Array<(typeof kept)[number]> = [];
+    kept.forEach((c, k) => {
+      const end = k + 1 < kept.length ? kept[k + 1].startFrame : frames;
+      const n = Math.max(1, Math.ceil((end - c.startFrame) / maxMoveFrames));
+      for (let m = 0; m < n; m++) {
+        segments.push({ ...c, key: m === 0 ? c.key : `${c.key}#${m + 1}`, startFrame: c.startFrame + Math.round(((end - c.startFrame) * m) / n) });
+      }
+    });
+    const shots: TimelineShot[] = segments.map((c, k) => {
+      const next = k + 1 < segments.length ? segments[k + 1].startFrame : frames;
       const slotFrames = next - c.startFrame;
       const move = moveFor(c.key, previousMove);
       previousMove = move;
-      return { ...c, slotFrames, clipFrames: k + 1 < kept.length ? slotFrames + fadeFrames : slotFrames, move };
+      return { ...c, slotFrames, clipFrames: k + 1 < segments.length ? slotFrames + fadeFrames : slotFrames, move };
     });
     scenes.push({ index: t.index, audio: `audiobook/${t.file}`, frames, shots });
   }
@@ -144,15 +156,25 @@ export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: Vid
 
 // Crops to 16:9, upscales (zoompan rounds its crop to whole pixels; doing that
 // on a 4K source keeps the motion smooth at 1080p), then moves the camera.
+// Moves ease in and out (smoothstep) and travel far enough to read clearly:
+// zooms span 1.0-1.35x, pans cross ~25% of the frame at 1.35x.
 export function kenBurnsFilter(move: Move, frames: number): string {
   const n = Math.max(frames - 1, 1);
-  const t = `(on/${n})`;
-  const center = { x: "iw/2-(iw/zoom/2)", y: "ih/2-(ih/zoom/2)" };
+  const lin = `(on/${n})`;
+  const t = `(${lin}*${lin}*(3-2*${lin}))`;
+  const Z = "1.35";
+  const ZD = "0.35"; // Z - 1, as a literal so the ffmpeg expression stays exact
+  const zIn = `1+${ZD}*${t}`;
+  const cx = "iw/2-(iw/zoom/2)";
+  const cy = "ih/2-(ih/zoom/2)";
   const motion: Record<Move, { z: string; x: string; y: string }> = {
-    zoom_in: { z: `1+0.15*${t}`, ...center },
-    zoom_out: { z: `1.15-0.15*${t}`, ...center },
-    pan_right: { z: "1.12", x: `(iw-iw/zoom)*${t}`, y: center.y },
-    pan_left: { z: "1.12", x: `(iw-iw/zoom)*(1-${t})`, y: center.y }
+    zoom_in: { z: zIn, x: cx, y: cy },
+    zoom_out: { z: `${Z}-${ZD}*${t}`, x: cx, y: cy },
+    pan_right: { z: Z, x: `(iw-iw/zoom)*${t}`, y: `(ih-ih/zoom)*(0.35+0.3*${t})` },
+    pan_left: { z: Z, x: `(iw-iw/zoom)*(1-${t})`, y: `(ih-ih/zoom)*(0.65-0.3*${t})` },
+    // Push in toward the left/right third of the frame.
+    zoom_in_left: { z: zIn, x: "(iw-iw/zoom)*0.15", y: cy },
+    zoom_in_right: { z: zIn, x: "(iw-iw/zoom)*0.85", y: cy }
   };
   const m = motion[move];
   return [
@@ -291,7 +313,9 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
   const run = opts.run ?? ffmpegRunner;
   const emit = opts.onProgress ?? (() => {});
   const outDir = join(runDir, "video");
-  await mkdir(outDir, { recursive: true });
+  // Silent intermediate clips (intro, scenes, gaps) live apart from the deliverables.
+  const partsDir = join(outDir, "parts");
+  await mkdir(partsDir, { recursive: true });
 
   const manifest: ArtManifest = JSON.parse(await readFile(join(runDir, "art", "art.json"), "utf8").catch(() => {
     throw new Error(`no art/art.json in ${runDir} — render the art first (art --out ${runDir})`);
@@ -309,12 +333,12 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
   await writeFile(join(outDir, "timeline.json"), JSON.stringify(timeline, null, 2) + "\n", "utf8");
 
   // Cache rendered parts: a part is redone only when its inputs or filter change.
-  const cachePath = join(outDir, "cache.json");
+  const cachePath = join(partsDir, "cache.json");
   let cache: Record<string, string> = {};
   try { cache = JSON.parse(await readFile(cachePath, "utf8")); } catch { /* first render */ }
   const renderPart = async (label: string, file: string, inputs: string[], filter: string, frames: number) => {
     const key = await fingerprint(runDir, inputs, filter);
-    const exists = await stat(join(outDir, file)).then(() => true, () => false);
+    const exists = await stat(join(partsDir, file)).then(() => true, () => false);
     if (!opts.force && exists && cache[file] === key) {
       emit({ type: "part_skipped", label });
       return;
@@ -328,7 +352,7 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
       "-frames:v", String(frames),
       ...ENCODE,
       "-an",
-      join(outDir, file)
+      join(partsDir, file)
     ]);
     cache[file] = key;
     await writeFile(cachePath, JSON.stringify(cache, null, 2) + "\n", "utf8");
@@ -343,8 +367,8 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
   for (const [k, scene] of timeline.scenes.entries()) {
     if (k > 0 && timeline.gapFrames > 0) {
       const gap = `gap-${String(timeline.gapFrames)}.mp4`;
-      if (!(await stat(join(outDir, gap)).then(() => true, () => false))) {
-        await run(["-f", "lavfi", "-i", `color=black:s=${WIDTH}x${HEIGHT}:r=${FPS}`, "-frames:v", String(timeline.gapFrames), ...ENCODE, "-an", join(outDir, gap)]);
+      if (!(await stat(join(partsDir, gap)).then(() => true, () => false))) {
+        await run(["-f", "lavfi", "-i", `color=black:s=${WIDTH}x${HEIGHT}:r=${FPS}`, "-frames:v", String(timeline.gapFrames), ...ENCODE, "-an", join(partsDir, gap)]);
       }
       parts.push(gap);
     }
@@ -355,10 +379,10 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
 
   // Join the parts without re-encoding and lay the narration under them.
   emit({ type: "muxing" });
-  await writeFile(join(outDir, "parts.txt"), parts.map((p) => `file '${p}'`).join("\n") + "\n", "utf8");
+  await writeFile(join(partsDir, "parts.txt"), parts.map((p) => `file '${p}'`).join("\n") + "\n", "utf8");
   const video = join(outDir, "story.mp4");
   await run([
-    "-f", "concat", "-safe", "0", "-i", join(outDir, "parts.txt"),
+    "-f", "concat", "-safe", "0", "-i", join(partsDir, "parts.txt"),
     ...timeline.scenes.flatMap((s) => ["-i", join(runDir, s.audio)]),
     "-filter_complex", audioFilterGraph(timeline),
     "-map", "0:v", "-map", "[aout]",
