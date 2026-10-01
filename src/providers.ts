@@ -77,12 +77,19 @@ export class MockProvider {
         return JSON.stringify({ ok: true, issues: [] });
       case "worldgate":
         return JSON.stringify({ ok: true, issues: [] });
-      case "artdirector":
-        return JSON.stringify({
-          prompt: ctx.mode === "cover"
-            ? `Mock cover montage of ${ctx.beats?.length ?? 0} scenes.`
-            : `Mock still of scene ${(ctx.sceneIndex ?? 0) + 1} at ${ctx.beat?.location ?? "an unknown place"}.`
-        });
+      case "artdirector": {
+        if (ctx.mode === "cover") {
+          return JSON.stringify({ prompt: `Mock cover montage of ${ctx.beats?.length ?? 0} scenes.` });
+        }
+        // Evenly spaced 1-based starts across the scene's paragraphs.
+        const count = Math.max(1, ctx.paragraphCount ?? 1);
+        const n = Math.max(1, Math.min(ctx.shots ?? 1, count));
+        const shots = Array.from({ length: n }, (_, k) => ({
+          start_paragraph: Math.floor((k * count) / n) + 1,
+          prompt: `Mock shot ${k + 1} of scene ${(ctx.sceneIndex ?? 0) + 1} at ${ctx.beat?.location ?? "an unknown place"}.`
+        }));
+        return JSON.stringify({ shots });
+      }
       default:
         return "";
     }

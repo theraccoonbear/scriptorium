@@ -51,9 +51,9 @@ test("buildArtJobs maps events to files, keeping the latest prompt per scene and
     ev(7, "cover_art", { sceneCount: 3, prompt: "a bigger montage" })
   ];
   assert.deepEqual(buildArtJobs(events), [
-    { key: "scene-01", prompt: "a dog on a path" },
-    { key: "scene-02", prompt: "a hedgehog in a burrow" },
-    { key: "scene-03", prompt: "a wellspring" },
+    { key: "scene-01", prompt: "a dog on a path", sceneIndex: 0, startParagraph: 0 },
+    { key: "scene-02", prompt: "a hedgehog in a burrow", sceneIndex: 1, startParagraph: 0 },
+    { key: "scene-03", prompt: "a wellspring", sceneIndex: 2, startParagraph: 0 },
     { key: "cover", prompt: "a bigger montage" }
   ]);
   assert.deepEqual(buildArtJobs([ev(0, "scene_committed", { index: 0 })]), []);
@@ -162,4 +162,27 @@ test("a failed generation is retried as another attempt", async () => {
   assert.equal(result.rendered, 1);
   assert.equal(result.failed, 0);
   assert.equal(result.manifest["scene-01"].attempts, 2);
+});
+
+test("buildArtJobs makes one job per shot, keyed by scene and shot, with its anchor paragraph", () => {
+  const events = [
+    ev(0, "scene_art", { sceneIndex: 0, prompt: "a", shots: [{ startParagraph: 0, prompt: "a" }, { startParagraph: 7, prompt: "b" }] }),
+    ev(1, "scene_art", { sceneIndex: 1, prompt: "legacy single prompt" })
+  ];
+  assert.deepEqual(buildArtJobs(events), [
+    { key: "scene-01-01", prompt: "a", sceneIndex: 0, startParagraph: 0 },
+    { key: "scene-01-02", prompt: "b", sceneIndex: 0, startParagraph: 7 },
+    { key: "scene-02", prompt: "legacy single prompt", sceneIndex: 1, startParagraph: 0 }
+  ]);
+});
+
+test("the manifest records each image's scene and anchor paragraph, and keeps anchors current on skip", async () => {
+  const runDir = await tmp();
+  const shots = (second: number) => [ev(0, "scene_art", { sceneIndex: 0, prompt: "a", shots: [{ startParagraph: 0, prompt: "a" }, { startParagraph: second, prompt: "b" }] })];
+  await renderArt(shots(5), { runDir, backend: new MockImageBackend() });
+  const again = await renderArt(shots(6), { runDir, backend: new MockImageBackend() });
+  assert.equal(again.skipped, 2);
+  const manifest: ArtManifest = JSON.parse(await readFile(join(runDir, "art", "art.json"), "utf8"));
+  assert.equal(manifest["scene-01-02"].sceneIndex, 0);
+  assert.equal(manifest["scene-01-02"].startParagraph, 6);
 });

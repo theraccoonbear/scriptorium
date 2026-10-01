@@ -3,7 +3,7 @@ import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders, listModels } from "./providers.ts";
-import { runStory, renderStory } from "./engine.ts";
+import { runStory, renderStory, redirectArt } from "./engine.ts";
 import { replay } from "./bible.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
 import { makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
@@ -21,6 +21,8 @@ const USAGE = `scriptorium <command> [options]
   audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>]
                                                          render the run's scenes to WAV
   art   --out <dir> [--config <file>] [--force]          render the run's art prompts to images
+  artdirect --out <dir> [--config <file>]               redo the art direction (shots + cover) for an
+                                                         existing run, then render the images
   models --config <file> --provider <name>              list model ids a provider serves
 
 Options:
@@ -216,6 +218,27 @@ async function main() {
     const log = new EventLog(values.out);
     await log.load();
     console.log(command === "show" ? renderStory(log.events) : JSON.stringify(replay(log.events), null, 2));
+    return;
+  }
+
+  if (command === "artdirect") {
+    if (!values.out) {
+      throw new Error("--out is required");
+    }
+    const config = JSON.parse(await readFile(values.config, "utf8"));
+    const log = new EventLog(values.out);
+    const scenes = await redirectArt({
+      config,
+      log,
+      roles: buildRoleProviders(config),
+      runDir: values.out,
+      onScene: (i, shots) => console.error(`[scriptorium] ${c.ok(`scene ${i + 1}: ${shots} shot${shots === 1 ? "" : "s"}`)}`)
+    });
+    if (scenes === 0) {
+      throw new Error(`no committed scenes in ${values.out}`);
+    }
+    const result = await renderRunArt(values.out, config, log.events, values.force);
+    if (result.failed > 0) process.exitCode = 1;
     return;
   }
 

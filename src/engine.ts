@@ -1,8 +1,8 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import { mulberry32, pick } from "./rng.ts";
-import { direct, createAndDirect, buildWorld, write, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
-import { findUntaggedParagraphs, stripSpeakerTags } from "./audiobook.ts";
+import { shotCountFor, direct, createAndDirect, buildWorld, write, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
+import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
 import { EventLog } from "./eventlog.ts";
@@ -13,6 +13,7 @@ import type {
   GateResult,
   Issue,
   RoleOutput,
+  Role,
   Roles,
   SceneArtData,
   SceneCommittedData,
@@ -404,22 +405,14 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       previousScenes.push(prose);
       if (runDir) await writeStoryIncremental(runDir, log.events);
 
-      // Art Director: image prompt for this scene. The scene is already canon, so a failure only warns.
+      // Art Director: a sequence of shots for this scene, each anchored to the
+      // paragraph where it comes on screen. The scene is already canon, so a failure only warns.
       if (roles.artdirector) {
         const artRole = roles.artdirector;
-        await nonFatal(`scene ${i + 1} art prompt`, async () => {
-          t0 = Date.now();
-          const out = await artDirect(artRole, {
-            bible,
-            mode: "scene",
-            beat: beat.result,
-            prose: stripSpeakerTags(prose, new Set(Object.keys(bible.characters))),
-            sceneIndex: i,
-            previousPrompts: sceneArtPrompts(log.events)
-          });
-          recordTiming("artdirector", Date.now() - t0);
+        await nonFatal(`scene ${i + 1} art prompts`, async () => {
+          const out = await directSceneArt(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events));
           if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector", out);
-          const art: SceneArtData = { sceneIndex: i, prompt: out.result.prompt };
+          const art: SceneArtData = { sceneIndex: i, prompt: out.result.prompt, shots: out.result.shots };
           await log.append("scene_art", art);
         });
       }
@@ -440,14 +433,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   if (roles.artdirector && committed.length > 0 && lastCover?.sceneCount !== committed.length) {
     const artRole = roles.artdirector;
     await nonFatal("cover art prompt", async () => {
-      const t0 = Date.now();
-      const out = await artDirect(artRole, {
-        bible,
-        mode: "cover",
-        beats: committed.map((d) => d.beat),
-        previousPrompts: sceneArtPrompts(log.events)
-      });
-      recordTiming("artdirector", Date.now() - t0);
+      const out = await directCoverArt(artRole, bible, committed, sceneArtPrompts(log.events));
       if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
       const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
       await log.append("cover_art", cover);
@@ -458,8 +444,82 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   return bible;
 }
 
+async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, beat: Beat, prose: string, sceneIndex: number, previousPrompts: string[]) {
+  const t0 = Date.now();
+  // Same paragraph numbering as the audiobook's timings.json.
+  const paragraphs = sceneParagraphs(prose, new Set(Object.keys(bible.characters)));
+  const out = await artDirect(role, {
+    bible,
+    mode: "scene",
+    beat,
+    paragraphs,
+    shots: shotCountFor(paragraphs, config.artWordsPerShot),
+    sceneIndex,
+    previousPrompts
+  });
+  recordTiming("artdirector", Date.now() - t0);
+  return out;
+}
+
+async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[]) {
+  const t0 = Date.now();
+  const out = await artDirect(role, { bible, mode: "cover", beats: committed.map((d) => d.beat), previousPrompts });
+  recordTiming("artdirector", Date.now() - t0);
+  return out;
+}
+
+// Re-runs the Art Director over an existing run's committed scenes and cover,
+// appending fresh scene_art / cover_art events (the newest per scene wins).
+// For runs made before shots existed, or to re-shoot after a prompt change.
+// Story canon is untouched. Fails fast: unlike a live run there is no scene to protect.
+export async function redirectArt({ config, log, roles, runDir, onScene }: {
+  config: StoryConfig;
+  log: EventLog;
+  roles: Roles;
+  runDir?: string;
+  onScene?: (sceneIndex: number, shots: number) => void;
+}): Promise<number> {
+  const artRole = roles.artdirector;
+  if (!artRole) throw new Error("config has no artdirector role");
+  await log.load();
+  let seq = 0;
+  if (runDir) {
+    try {
+      seq = (await readdir(runDir)).filter((f) => f.endsWith(".md")).length;
+    } catch { /* empty dir */ }
+  }
+  const events = [...log.events];
+  const committed: SceneCommittedData[] = [];
+  const prompts: string[] = [];
+  for (const [n, e] of events.entries()) {
+    if (e.type !== "scene_committed") continue;
+    const d = e.data as SceneCommittedData;
+    committed.push(d);
+    // The bible as it stood right after this scene committed — what the live run saw.
+    const bible = replay(events.slice(0, n + 1));
+    const out = await directSceneArt(artRole, config, bible, d.beat, d.prose, d.index, prompts);
+    if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-redo", out);
+    const art: SceneArtData = { sceneIndex: d.index, prompt: out.result.prompt, shots: out.result.shots };
+    await log.append("scene_art", art);
+    prompts.push(...(out.result.shots ?? []).map((s) => s.prompt));
+    onScene?.(d.index, out.result.shots?.length ?? 1);
+  }
+  if (committed.length > 0) {
+    const out = await directCoverArt(artRole, replay(events), committed, prompts);
+    if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover-redo", out);
+    const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
+    await log.append("cover_art", cover);
+  }
+  return committed.length;
+}
+
 function sceneArtPrompts(events: StoryEvent[]): string[] {
-  return events.filter((e) => e.type === "scene_art").map((e) => (e.data as SceneArtData).prompt);
+  return events
+    .filter((e) => e.type === "scene_art")
+    .flatMap((e) => {
+      const d = e.data as SceneArtData;
+      return d.shots ? d.shots.map((s) => s.prompt) : [d.prompt];
+    });
 }
 
 // Runs presentation-only work (e.g. art prompts) whose failure must never fail the run.

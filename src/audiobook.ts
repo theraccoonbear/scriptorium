@@ -14,6 +14,9 @@ const SAMPLE_RATE = 24000;
 export interface SpeakerSegment {
   speaker: string; // "narrator" or a bible character id
   text: string;
+  // Scene paragraph index (see sceneParagraphs) of each "\n\n"-separated piece
+  // of `text`, so audio timings can be mapped back to paragraphs.
+  paragraphs: number[];
 }
 
 export interface Scene {
@@ -40,8 +43,9 @@ function mergeConsecutive(segments: SpeakerSegment[]): SpeakerSegment[] {
     const last = merged[merged.length - 1];
     if (last && last.speaker === seg.speaker) {
       last.text = `${last.text}\n\n${seg.text}`;
+      last.paragraphs = [...last.paragraphs, ...seg.paragraphs];
     } else {
-      merged.push({ ...seg });
+      merged.push({ ...seg, paragraphs: [...seg.paragraphs] });
     }
   }
   return merged;
@@ -54,8 +58,8 @@ function mergeConsecutive(segments: SpeakerSegment[]): SpeakerSegment[] {
 // (action, attribution) read by the narrator; only the quoted spans are
 // voiced as that character. Quotes are paired by position, not nesting —
 // adequate for standard double-quoted dialogue, not for quotes-within-quotes.
-function splitByQuotes(speaker: string, text: string): SpeakerSegment[] {
-  const parts: SpeakerSegment[] = [];
+function splitByQuotes(speaker: string, text: string, paragraph: number): SpeakerSegment[] {
+  const parts: Array<{ speaker: string; text: string }> = [];
   let i = 0;
   while (i < text.length) {
     const open = text.indexOf('"', i);
@@ -74,7 +78,7 @@ function splitByQuotes(speaker: string, text: string): SpeakerSegment[] {
     i = close + 1;
   }
   return parts
-    .map((p) => ({ ...p, text: p.text.trim() }))
+    .map((p) => ({ ...p, text: p.text.trim(), paragraphs: [paragraph] }))
     .filter((p) => p.text.length > 0);
 }
 
@@ -112,24 +116,38 @@ export function findUntaggedParagraphs(prose: string, knownSpeakers: ReadonlySet
     });
 }
 
+function rawParagraphs(prose: string): string[] {
+  return prose.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean).map(stripMarkdown);
+}
+
+// The scene's paragraphs as read aloud, speaker tags removed. This numbering is
+// shared by the art director (shots anchor to a paragraph) and the audiobook
+// (timings.json gives each paragraph's start time), so the two line up.
+export function sceneParagraphs(prose: string, knownSpeakers: ReadonlySet<string>): string[] {
+  return rawParagraphs(prose).map((para) => {
+    const m = para.match(TAG_LINE);
+    return m && (m[1] === "narrator" || knownSpeakers.has(m[1])) ? m[2].trim() : para;
+  });
+}
+
 export function parseScene(index: number, prose: string, knownSpeakers: ReadonlySet<string>): Scene {
-  const paragraphs = prose.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean).map(stripMarkdown);
+  const paragraphs = rawParagraphs(prose);
   const segments: SpeakerSegment[] = [];
   let tagged = false;
-  for (const para of paragraphs) {
+  for (const [p, para] of paragraphs.entries()) {
     const m = para.match(TAG_LINE);
     if (m && m[1] === "narrator") {
       tagged = true;
-      segments.push({ speaker: "narrator", text: m[2].trim() });
+      segments.push({ speaker: "narrator", text: m[2].trim(), paragraphs: [p] });
     } else if (m && knownSpeakers.has(m[1])) {
       tagged = true;
-      segments.push(...splitByQuotes(m[1], m[2].trim()));
+      segments.push(...splitByQuotes(m[1], m[2].trim(), p));
     } else {
-      segments.push({ speaker: "narrator", text: para });
+      segments.push({ speaker: "narrator", text: para, paragraphs: [p] });
     }
   }
   if (!tagged) {
-    return { index, tagged: false, segments: [{ speaker: "narrator", text: paragraphs.join("\n\n") }] };
+    return { index, tagged: false, segments: [{ speaker: "narrator", text: paragraphs.join("\n\n"), paragraphs: paragraphs.map((_, p) => p) }] };
   }
   return { index, tagged: true, segments: mergeConsecutive(segments) };
 }
@@ -237,6 +255,59 @@ function concatFloat32(chunks: Float32Array[]): Float32Array {
   return out;
 }
 
+// One TTS pass over `text`, yielding audio per sentence-ish chunk.
+export type Synthesize = (text: string, voice: string) => AsyncIterable<{ text: string; audio: Float32Array }>;
+
+export interface SynthesizedScene {
+  audio: Float32Array;
+  paragraphStarts: number[]; // seconds from scene start, indexed by scene paragraph
+}
+
+// Synthesizes a scene piece by piece (one piece = one paragraph's share of a
+// segment) so each paragraph's start offset in the audio is known exactly.
+// Kokoro already synthesizes sentence by sentence, so splitting at paragraph
+// boundaries costs nothing extra.
+export async function synthesizeScene(
+  scene: Scene,
+  voiceFor: (speaker: string) => string,
+  synth: Synthesize,
+  onChunk: (segmentIndex: number, speaker: string, text: string) => void = () => {},
+  onSegment: (segmentIndex: number, speaker: string) => void = () => {}
+): Promise<SynthesizedScene> {
+  const chunks: Float32Array[] = [];
+  const starts: Array<number | undefined> = [];
+  let samples = 0;
+  for (const [s, seg] of scene.segments.entries()) {
+    const pieces = seg.text.split("\n\n");
+    const aligned = pieces.length === seg.paragraphs.length;
+    const work = aligned ? pieces.map((text, k) => ({ text, paragraph: seg.paragraphs[k] })) : [{ text: seg.text, paragraph: seg.paragraphs[0] }];
+    for (const { text, paragraph } of work) {
+      if (paragraph !== undefined && starts[paragraph] === undefined) starts[paragraph] = samples / SAMPLE_RATE;
+      for await (const chunk of synth(text, voiceFor(seg.speaker))) {
+        chunks.push(chunk.audio);
+        samples += chunk.audio.length;
+        onChunk(s, seg.speaker, chunk.text);
+      }
+    }
+    onSegment(s, seg.speaker);
+  }
+  // A paragraph with no audio of its own (shouldn't happen) starts where the previous one did.
+  const paragraphStarts: number[] = [];
+  let last = 0;
+  for (let p = 0; p < starts.length; p++) {
+    last = starts[p] ?? last;
+    paragraphStarts.push(Math.round(last * 1000) / 1000);
+  }
+  return { audio: concatFloat32(chunks), paragraphStarts };
+}
+
+export interface SceneTiming {
+  index: number;
+  file: string;
+  durationSec: number;
+  paragraphStarts: number[];
+}
+
 // Synthesizes one WAV per scene under `<runDir>/audiobook/`. Long text always
 // goes through tts.stream() — tts.generate() silently truncates anything past
 // ~509 tokens, which would drop the tail of a full-length scene.
@@ -266,31 +337,40 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   const outDir = `${opts.runDir}/audiobook`;
   await mkdir(outDir, { recursive: true });
 
-  for (const scene of scenes) {
-    onProgress({ type: "scene_start", index: scene.index, total: scenes.length, segments: scene.segments.length });
-    const chunks: Float32Array[] = [];
-    for (let s = 0; s < scene.segments.length; s++) {
-      const seg = scene.segments[s];
-      const voice = seg.speaker === "narrator"
-        ? assignment.narrator
-        : (assignment.characters[seg.speaker] ?? assignment.narrator);
-      // tts.stream(text, opts) — the plain-string convenience form — pushes
-      // text into an internal TextSplitterStream but never closes it, so the
-      // final sentence in any fixed string never flushes: the for-await below
-      // hangs on it, and Node silently exits once nothing else holds the event
-      // loop open. Build and close our own stream instead.
-      const splitter = new TextSplitterStream();
-      splitter.push(seg.text);
-      splitter.close();
-      for await (const { text, audio } of tts.stream(splitter, { voice: voice as VoiceId })) {
-        chunks.push(audio.audio);
-        onProgress({ type: "chunk_done", sceneIndex: scene.index, segmentIndex: s, segments: scene.segments.length, speaker: seg.speaker, text });
-      }
-      onProgress({ type: "segment_done", sceneIndex: scene.index, segmentIndex: s, segments: scene.segments.length, speaker: seg.speaker });
+  // tts.stream(text, opts) — the plain-string convenience form — pushes text
+  // into an internal TextSplitterStream but never closes it, so the final
+  // sentence in any fixed string never flushes: the for-await hangs on it, and
+  // Node silently exits once nothing else holds the event loop open. Build and
+  // close our own stream instead.
+  const synth: Synthesize = async function* (text, voice) {
+    const splitter = new TextSplitterStream();
+    splitter.push(text);
+    splitter.close();
+    for await (const { text: said, audio } of tts.stream(splitter, { voice: voice as VoiceId })) {
+      yield { text: said, audio: audio.audio };
     }
-    const combined = new RawAudio(concatFloat32(chunks), SAMPLE_RATE);
-    const path = `${outDir}/scene-${String(scene.index + 1).padStart(2, "0")}.wav`;
-    await combined.save(path);
+  };
+  const voiceFor = (speaker: string) => speaker === "narrator"
+    ? assignment.narrator
+    : (assignment.characters[speaker] ?? assignment.narrator);
+
+  const timings: SceneTiming[] = [];
+  for (const scene of scenes) {
+    const segments = scene.segments.length;
+    onProgress({ type: "scene_start", index: scene.index, total: scenes.length, segments });
+    const { audio, paragraphStarts } = await synthesizeScene(
+      scene,
+      voiceFor,
+      synth,
+      (segmentIndex, speaker, text) => onProgress({ type: "chunk_done", sceneIndex: scene.index, segmentIndex, segments, speaker, text }),
+      (segmentIndex, speaker) => onProgress({ type: "segment_done", sceneIndex: scene.index, segmentIndex, segments, speaker })
+    );
+    const file = `scene-${String(scene.index + 1).padStart(2, "0")}.wav`;
+    const path = `${outDir}/${file}`;
+    await new RawAudio(audio, SAMPLE_RATE).save(path);
+    timings.push({ index: scene.index, file, durationSec: Math.round((audio.length / SAMPLE_RATE) * 1000) / 1000, paragraphStarts });
+    // Written after every scene so a partial run still has usable timings.
+    await writeFile(`${outDir}/timings.json`, JSON.stringify({ sampleRate: SAMPLE_RATE, scenes: timings }, null, 2) + "\n", "utf8");
     onProgress({ type: "scene_done", index: scene.index, path });
   }
 
