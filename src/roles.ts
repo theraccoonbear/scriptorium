@@ -103,7 +103,8 @@ SPEC ISSUE TYPES (for reviewing beat specs and bible patches, not prose):
 - POV_LEAK: spec requires information the POV character cannot plausibly have
 - WRONG_PAYOFF: a payoff doesn't match its setup, or a required setup is missing
 - INADEQUATE_SPEC: required fields missing/empty, duplicate names, or output too generic to use
-- REHASH: the beat re-litigates an already-resolved decision without introducing new pressure`;
+- REHASH: the beat re-litigates an already-resolved decision without introducing new pressure
+- OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events`;
 
 // Shared issue contract for ALL gates. One schema, one dedup key — a gate that
 // omits `constraint` degrades repeat-detection to prose quotes that change every
@@ -219,8 +220,11 @@ Allowed types:
 - CANON_CONTRADICTION: the spec conflicts with established bible facts
 - POV_LEAK: the spec requires the POV character to know something they cannot plausibly know
 - WRONG_PAYOFF: a payoff doesn't match its setup, or an overdue setup is missing from payoffs
+- OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events
+- REHASH: the beat re-decides something already closed, or restates a turn the story already made
 
 CHECK SPECIFICALLY:
+- If the STORY CONTEXT lays out what happens in this scene (by scene number), check the spec against it FIRST. Every event the author lists for this scene must be in the spec; no event the author assigns to a later scene may be. A spec that goes somewhere else — however well-made — is OFF_PLAN. Bridging from where the last scene actually ended to the plan's events is fine.
 - Read mustReveal against every constraint. If the reveal would itself violate a constraint (e.g. the reveal says a problem is solved/compensated while a constraint says it must remain unresolved), flag UNSATISFIABLE_CONSTRAINT.
 - Read constraints against each other. Two constraints that cannot hold in the same scene = UNSATISFIABLE_CONSTRAINT.
 - Read the conflict and payoffs against the bible and prior scenes.
@@ -502,7 +506,7 @@ export async function createAndDirect(role: Role, params: {
     charNames ? `USE THESE CHARACTER NAMES: ${charNames}` : "",
     locNames ? `USE THESE LOCATION NAMES: ${locNames}` : "",
     `TENSION TARGET (1-10): ${tension}`,
-    `REQUIRED COMPLICATION: ${complication}`,
+    complicationLine(complication, context),
     fix
   ].filter(Boolean).join("\n\n");
   const { result, system, raw } = await callJson(role, {
@@ -516,6 +520,14 @@ export async function createAndDirect(role: Role, params: {
   return { bible, beat: foundation.beat as Beat, prompt, system, raw };
 }
 
+// The engine's random complication is a nudge for open-ended stories. When the
+// author has planned the story, the plan wins and the complication is optional.
+function complicationLine(complication: string, context: string | undefined): string {
+  return context
+    ? `SUGGESTED COMPLICATION (optional — use it only if it fits the author's plan for this scene; never bend the plan to fit it): ${complication}`
+    : `REQUIRED COMPLICATION: ${complication}`;
+}
+
 export async function direct(role: Role, params: {
   bible: Bible;
   sceneIndex: number;
@@ -523,19 +535,25 @@ export async function direct(role: Role, params: {
   tension: number;
   complication: string;
   overdue: Setup[];
+  context?: string;
 } & CreativeFeedback): Promise<RoleOutput<Beat>> {
-  const { bible, sceneIndex, total, tension, complication, overdue, issues, fresh } = params;
+  const { bible, sceneIndex, total, tension, complication, overdue, context, issues, fresh } = params;
   const fix = feedbackBlock(
     issues,
     fresh,
     "YOUR PREVIOUS BEAT SPEC WAS REJECTED — START FROM SCRATCH with a different approach. DO NOT reuse the previous spec's framing.",
     "YOUR PREVIOUS BEAT SPEC WAS REJECTED. ISSUES TO FIX:"
   );
+  const plan = context
+    ? `THE AUTHOR'S PLAN COMES FIRST: if the STORY CONTEXT lays out what happens in scene ${sceneIndex + 1}, this beat must deliver exactly those events — draw the goal, conflict, location, mustReveal and constraints from them — and nothing the author assigns to a later scene. Where the last scene ended somewhere the plan didn't expect, bridge from where it actually ended to the plan's events.`
+    : "";
   const prompt = [
+    context ? `STORY CONTEXT (provided by author):\n${context}` : "",
     renderBible(bible),
     `SCENE ${sceneIndex + 1} OF ${total}`,
+    plan,
     `TENSION TARGET (1-10): ${tension}`,
-    `REQUIRED COMPLICATION: ${complication}`,
+    complicationLine(complication, context),
     `OVERDUE SETUPS TO PAY OFF: ${overdue.map((s) => s.id).join(", ") || "none"}`,
     fix
   ].filter(Boolean).join("\n\n");
@@ -800,7 +818,7 @@ export async function reviewBeat(role: Role, params: {
     renderBible(bible),
     `SCENE ${sceneIndex + 1} OF ${total}`,
     `TENSION TARGET (1-10): ${tension}`,
-    `REQUIRED COMPLICATION: ${complication}`,
+    complicationLine(complication, context),
     overdue ? `OVERDUE SETUPS TO PAY OFF: ${overdue.map((s) => s.id).join(", ") || "none"}` : "",
     `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`,
     priorIssues

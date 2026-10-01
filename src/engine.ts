@@ -243,7 +243,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
             recordTiming("director", Date.now() - t0);
             if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "creator" : `creator-g${generation}`, beat);
           } else {
-            beat = await direct(roles.director, { bible, sceneIndex: i, total, tension, complication, overdue, issues, fresh });
+            beat = await direct(roles.director, { bible, sceneIndex: i, total, tension, complication, overdue, context: config.context, issues, fresh });
             recordTiming("director", Date.now() - t0);
             if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "director" : `director-g${generation}`, beat);
           }
