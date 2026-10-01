@@ -68,6 +68,9 @@ export interface StoryObject {
 export interface Bible {
   premise: string;
   tone: string;
+  // How the world is portrayed in pictures — medium, rendering, palette,
+  // light, line. Decided with the tone; every image of the story uses it.
+  artStyle?: string;
   characters: Record<string, Character>;
   locations: Record<string, Location>;
   objects: Record<string, StoryObject>;

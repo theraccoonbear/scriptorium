@@ -292,3 +292,26 @@ test("a reworded repeat of the same complaint counts as already flagged", async 
   const scene2 = log.events.filter((e) => e.type === "scene_committed")[1].data as SceneCommittedData;
   assert.equal(scene2.attempts, 2);
 });
+
+test("the Creator's art style lands in the bible; a run made without one gets it once from the Art Director", async () => {
+  const { storyArtStyle } = await import("../src/visualrefs.ts");
+  const config = await loadConfig({ scenes: 1 });
+  const log = new EventLog(await tmp());
+  const bible = await runStory({ config, log, roles: buildRoleProviders(config) });
+  assert.equal(bible.artStyle, "Muted ink and watercolor illustration, grey-green palette, soft diffuse light.");
+  assert.equal(storyArtStyle(log.events), bible.artStyle);
+  assert.equal(log.events.filter((e) => e.type === "art_style").length, 0);
+
+  // Simulate a run from before art styles: strip the style from the creator's bible.
+  const old = new EventLog(await tmp());
+  for (const e of log.events.filter((x) => x.type === "scene_committed")) {
+    const d = structuredClone(e.data) as SceneCommittedData;
+    if (d.bible) delete d.bible.artStyle;
+    await old.append("scene_committed", d);
+  }
+  assert.equal(storyArtStyle(old.events), undefined);
+  await redirectArt({ config, log: old, roles: buildRoleProviders(config) });
+  assert.equal(storyArtStyle(old.events), "Mock woodcut style.");
+  await redirectArt({ config, log: old, roles: buildRoleProviders(config) });
+  assert.equal(old.events.filter((e) => e.type === "art_style").length, 1, "defined once, then reused");
+});

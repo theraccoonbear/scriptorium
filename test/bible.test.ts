@@ -61,3 +61,11 @@ test("key objects are canon: shown in the bible, and a recorded description can'
   const legacy = replay([{ seq: 0, type: "scene_committed", ts: "t", data: { index: 0, bible: { premise: "p", characters: {}, locations: {} }, patch: {} } }]);
   assert.deepEqual(legacy.objects, {});
 });
+
+test("the art style shows in the bible next to the tone", () => {
+  const b = emptyBible();
+  b.tone = "wry";
+  assert.ok(!renderBible(b).includes("ART STYLE"));
+  b.artStyle = "Ink and wash.";
+  assert.ok(renderBible(b).includes("TONE: wry\n\nART STYLE: Ink and wash."));
+});

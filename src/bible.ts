@@ -118,6 +118,7 @@ export function renderBible(bible: Bible): string {
   return [
     `PREMISE: ${bible.premise}`,
     `TONE: ${bible.tone}`,
+    ...(bible.artStyle ? [`ART STYLE: ${bible.artStyle}`] : []),
     `CHARACTERS:\n${chars || "(none)"}`,
     `LOCATIONS:\n${locs || "(none)"}`,
     `KEY OBJECTS (physical descriptions are canon):\n${objects || "(none)"}`,

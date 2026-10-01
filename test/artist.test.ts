@@ -237,3 +237,24 @@ test("the inspector checks references (characters, places, props) and real-perso
   assert.ok(INSPECTOR_SYSTEM.includes("PROP reference"));
   assert.ok(INSPECTOR_SYSTEM.includes("REAL PERSON"));
 });
+
+test("every image is generated and inspected with the story's art style; changing it re-renders", async () => {
+  const runDir = await tmp();
+  const styled = (style: string) => [
+    ev(0, "art_style", { style }),
+    ev(1, "visual_ref", { kind: "character", id: "a", appearance: "x", prompt: "portrait a" }),
+    ev(2, "scene_art", { sceneIndex: 0, prompt: "s1", shots: [{ startParagraph: 0, prompt: "s1", characters: ["a"] }] })
+  ];
+  const backend = new MockImageBackend();
+  const inspector = new MockInspector();
+  await renderArt(styled("woodcut"), { runDir, backend, inspector });
+  assert.deepEqual(backend.calls.map((c) => c.style), ["woodcut", "woodcut"]);
+  assert.deepEqual(inspector.calls.map((c) => c.style), ["woodcut", "woodcut"]);
+  const same = new MockImageBackend();
+  await renderArt(styled("woodcut"), { runDir, backend: same });
+  assert.equal(same.calls.length, 0);
+  const changed = new MockImageBackend();
+  const r = await renderArt(styled("oil painting"), { runDir, backend: changed });
+  assert.equal(r.rendered, 2);
+  assert.equal(r.manifest["character-a"].style, "oil painting");
+});

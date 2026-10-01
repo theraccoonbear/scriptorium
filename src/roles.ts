@@ -32,12 +32,14 @@ Output ONLY JSON with this shape:
 {
   "premise":string,
   "tone":string,
+  "art_style":string,
   "characters":[{"id":string,"name":string,"traits":string,"goal":string,"voice":string,"gender":"female"|"male"|""}],
   "locations":[{"id":string,"name":string,"description":string}],
   "objects":[{"id":string,"name":string,"description":string,"owner":characterId}],
   "threads":[{"id":string,"title":string,"status":"open"}],
   "beat":{"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[]}
 }
+art_style: how this world is portrayed in pictures, decided with the tone — one or two sentences naming the medium and rendering (e.g. gouache illustration, ink and watercolor, oil painting, woodcut), palette, light, line quality, level of detail, and mood. Specific enough that two illustrators would produce images that look like the same book. Suited to this story's genre and tone; never name a living artist.
 Each character needs a distinct voice that will guide the Writer.
 objects: the story's KEY OBJECTS — signature items a character carries or uses, or things the plot turns on (an instrument, a relic, a letter). Usually 0-3. The description is canon for every later scene and image, so make it physically exact and true to what that kind of object really is: overall size AND width or thickness at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"), shape, materials, and how it is held or used. A real-world kind of object (an alpenhorn, a longbow) must have that object's real form and handling unless the premise deliberately changes it.
 Give each character's gender as "female" or "male" when the story has one in mind; use "" for unspecified, non-binary, or genderless characters. It picks their audiobook narration voice.
@@ -270,10 +272,13 @@ ${ISSUE_RULES}
 export const ARTDIRECTOR_SYSTEM = `You are the Art Director. You write prompts for an image-generation model; you never write story prose.
 Each prompt becomes ONE still image shown (with a slow pan/zoom, crossfading into the next) while the narration plays.
 
+ART STYLE: every image of a story shares one art style, given as ART STYLE (canon). Render every prompt in exactly that style and end every prompt with it verbatim — never drift toward another medium, palette, or level of realism, for any kind of image. If ART STYLE is "(none yet)", REFERENCES mode must define one in "art_style" (one or two sentences: medium and rendering, palette, light, line, detail, mood; suited to the genre and tone; no living artist names) and use it.
+
 MODES:
 - REFERENCES: create the canonical look of the story's recurring visuals — the reference image every later image of them is generated from and checked against.
   Output ONLY JSON:
-  {"characters":[{"id":string,"appearance":string,"prompt":string}],
+  {"art_style":string,
+   "characters":[{"id":string,"appearance":string,"prompt":string}],
    "locations":[{"id":string,"appearance":string,"prompt":string}],
    "props":[{"id":string,"name":string,"appearance":string,"prompt":string}]}
   - characters / locations: one entry for EACH listed id, using exactly those ids.
@@ -282,7 +287,7 @@ MODES:
   - props: beyond those, the story's other KEY OBJECTS — things that recur or matter visually and would otherwise be drawn differently every time (a signature instrument, a sacred relic, a letter that drives the plot). Only objects the STORY TEXT shows; not clothing or scenery; skip any already in KNOWN PROPS. id is a short snake_case slug; name is what the story calls it. Usually 0-2 per call; never more than 4.
   - Match the bible (including recorded gender) and everything the STORY MENTIONS and STORY TEXT show — pronouns, age, build, hair, beard, clothing, materials, landmarks. Never contradict the story; invent only what it leaves open.
   - appearance: one or two sentences fixing what never changes, concrete and distinctive so two things can never be confused. Characters: height and build, age, skin, hair and facial hair (style and color), face, signature clothing or gear. Locations: terrain, architecture, landmarks, materials, vegetation, characteristic light. Props: true size AND proportions — overall length/height plus width or diameter at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"); the image model cannot infer proportions from length alone. Then the silhouette that makes it that kind of object — what an expert would recognize it by — then materials, colors, markings, condition — and how it is held, carried, or used whenever that changes how it looks in a scene (an instrument's playing position, a weapon's carry).
-  - prompt: characters — a full-body reference portrait of that one character in a neutral pose, plain softly lit background, no other figures. Locations — a wide establishing view of the place with NO people, showing what defines it. Props — the object alone, whole and centered, on a plain background, drawn at its true proportions (state the length-to-width relationship explicitly, e.g. "long and slender, like a five-foot pole") and showing the shape that identifies it (a long or large object is shown at full length; say so explicitly). All in the art style that suits the story's genre and tone; use the same art-style phrase in every reference — later scene prompts will repeat it.
+  - prompt: characters — a full-body reference portrait of that one character in a neutral pose, plain softly lit background, no other figures. Locations — a wide establishing view of the place with NO people, showing what defines it. Props — the object alone, whole and centered, on a plain background, drawn at its true proportions (state the length-to-width relationship explicitly, e.g. "long and slender, like a five-foot pole") and showing the shape that identifies it (a long or large object is shown at full length; say so explicitly). All in the story's ART STYLE.
   - Every character must look ORIGINAL: never resemble, evoke, or be described in terms of any real person, actor, or celebrity.
 - SCENE: break the committed scene into SHOTS — a sequence of stills that follows the narration. The scene is given as numbered paragraphs, and you are told how many shots to make. Each shot starts at a paragraph and stays on screen until the next shot's paragraph is read aloud.
   Output ONLY JSON:
@@ -300,7 +305,7 @@ PROMPT RULES:
 - One paragraph, 60-120 words, in present tense, describing what the camera sees: subject, action, setting, lighting, mood, composition, and art style.
 - Never use character or place names — the image model does not know who or where they are, and each image is generated on its own. In EVERY prompt, describe each character present by appearance (height and build, age, hair, clothing), never by name alone.
 - CANONICAL APPEARANCES: when given, describe each character, location, and prop with its canonical appearance — same features, colors, materials, and landmarks, every time. Never contradict it.
-- VISUAL CONTINUITY: describe each recurring character the same way in every shot, and if PREVIOUS ART PROMPTS are given, keep each character's appearance (age, build, hair, clothing) and the overall art style consistent with them. Only change a look if the scene's prose changes it. Repeat the same art-style phrase in every prompt — each image is generated separately.
+- VISUAL CONTINUITY: describe each recurring character the same way in every shot, and if PREVIOUS ART PROMPTS are given, keep each character's appearance (age, build, hair, clothing) and the overall art style consistent with them. Only change a look if the scene's prose changes it. Each image is generated separately, so every prompt must carry the ART STYLE verbatim.
 - Wide landscape framing (16:9) with the subject away from the very edges, since the image will be panned and cropped.
 - No text, captions, logos, or speech bubbles in the image.
 - Nothing graphic: imply violence through tension and aftermath, not gore.`;
@@ -348,6 +353,7 @@ async function callJson(role: Role, req: JsonCallRequest, retries = 1): Promise<
 interface CreatorFoundation {
   premise?: string;
   tone?: string;
+  art_style?: string;
   characters?: { id?: string; name?: string; traits?: string; goal?: string; voice?: string; gender?: string }[];
   locations?: { id?: string; name?: string; description?: string }[];
   objects?: { id?: string; name?: string; description?: string; owner?: string }[];
@@ -359,6 +365,7 @@ function applyBibleData(data: CreatorFoundation): Bible {
   const bible = emptyBible();
   bible.premise = data.premise || "";
   bible.tone = data.tone || "";
+  if (data.art_style?.trim()) bible.artStyle = data.art_style.trim();
   for (const c of data.characters || []) {
     if (c.id) {
       bible.characters[c.id] = { id: c.id, name: c.name || c.id, traits: c.traits || "", goal: c.goal || "", voice: c.voice || "", status: "active" };
@@ -848,6 +855,7 @@ export interface ArtReference {
 
 export interface ArtDirection {
   prompt: string;              // cover prompt, the first shot's, or the first reference's
+  artStyle?: string;           // references mode, when the story had no style yet
   shots?: ArtShot[];           // scene mode only
   references?: ArtReference[]; // references mode only
 }
@@ -940,6 +948,8 @@ export async function artDirect(role: Role, params: {
   storyText?: string[];
   // canonical looks already established
   appearances?: RefAppearances;
+  // the story's art style (bible canon); absent = the Art Director defines one
+  artStyle?: string;
   // earlier art prompts, oldest first, for visual continuity
   previousPrompts?: string[];
 }): Promise<RoleOutput<ArtDirection>> {
@@ -951,6 +961,8 @@ export async function artDirect(role: Role, params: {
   const locationIds = params.locationIds ?? [];
   const objectIds = params.objectIds ?? [];
   const parts = [renderBible(bible)];
+  const artStyle = params.artStyle ?? bible.artStyle;
+  parts.push(`ART STYLE (canon — every prompt renders in exactly this and ends with it verbatim): ${artStyle ?? "(none yet)"}`);
   const looks = [
     ...Object.entries(appearances.characters).filter(([id]) => bible.characters[id]).map(([id, a]) => `- character ${id} (${bible.characters[id].name}): ${a}`),
     ...Object.entries(appearances.locations).filter(([id]) => bible.locations[id]).map(([id, a]) => `- location ${id} (${bible.locations[id].name}): ${a}`),
@@ -993,7 +1005,7 @@ export async function artDirect(role: Role, params: {
     system: ARTDIRECTOR_SYSTEM,
     prompt,
     ctx: {
-      mode, beat, sceneIndex, beats, shots, paragraphCount: paragraphs.length, characterIds, locationIds, objectIds,
+      mode, beat, sceneIndex, beats, shots, paragraphCount: paragraphs.length, characterIds, locationIds, objectIds, artStyle,
       knownIds: Object.keys(bible.characters), locationIdsKnown: Object.keys(bible.locations), propIds: knownProps
     }
   });
@@ -1009,7 +1021,8 @@ export async function artDirect(role: Role, params: {
   if (mode === "references") {
     const redo = new Set([...(params.redoProps ?? []), ...objectIds]);
     const references = normalizeReferences(result, { characters: new Set(characterIds), locations: new Set(locationIds), knownProps: new Set(knownProps.filter((id) => !redo.has(id))) });
-    return { result: { prompt: references[0]?.prompt ?? "", references }, prompt, system, raw };
+    const defined = !artStyle && typeof (result as { art_style?: unknown }).art_style === "string" ? (result as { art_style: string }).art_style.trim() : "";
+    return { result: { prompt: references[0]?.prompt ?? "", references, ...(defined ? { artStyle: defined } : {}) }, prompt, system, raw };
   }
   const out = result as Partial<ArtDirection>;
   if (typeof out.prompt !== "string" || !out.prompt.trim()) {

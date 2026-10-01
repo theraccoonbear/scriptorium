@@ -351,3 +351,17 @@ test("art director makes prop references for canon objects under their bible ids
   assert.ok(out.prompt.includes("OBJECTS NEEDING REFERENCES (canon — props with these ids): horn (the alpenhorn)"));
   assert.ok(out.result.references?.some((r) => r.kind === "prop" && r.id === "horn"));
 });
+
+// --- art style: one per story, decided with the tone ---
+test("the art style is canon: the Creator decides it, every art prompt carries it, and a styleless story gets one", async () => {
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("every image of a story shares one art style"));
+  const bible = emptyBible();
+  bible.artStyle = "Gouache illustration, warm earth palette.";
+  const scene = await artDirect(mockRole, { bible, mode: "scene", paragraphs: ["A.", "B.", "C.", "D."], shots: 2 });
+  assert.ok(scene.prompt.includes("ART STYLE (canon — every prompt renders in exactly this and ends with it verbatim): Gouache illustration, warm earth palette."));
+  const refs = await artDirect(mockRole, { bible, mode: "references", appearances: { characters: {}, locations: {}, props: {} } });
+  assert.equal(refs.result.artStyle, undefined, "a story with a style never gets a new one");
+  const bare = await artDirect(mockRole, { bible: emptyBible(), mode: "references", appearances: { characters: {}, locations: {}, props: {} } });
+  assert.ok(bare.prompt.includes("ART STYLE (canon — every prompt renders in exactly this and ends with it verbatim): (none yet)"));
+  assert.equal(bare.result.artStyle, "Mock woodcut style.");
+});
