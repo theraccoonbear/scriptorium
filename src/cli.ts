@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { basename } from "node:path";
-import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders, listModels } from "./providers.ts";
-import { runStory, renderStory, redirectArt } from "./engine.ts";
+import { renderStory, redirectArt } from "./engine.ts";
 import { replay } from "./bible.ts";
-import { generateAudiobook, parseVoiceGenders, writeVoiceMap } from "./audiobook.ts";
-import { renderVideo } from "./video.ts";
-import { makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
+import { parseVoiceGenders } from "./audiobook.ts";
+import { artStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
+import { make } from "./make.ts";
 import { c } from "./colors.ts";
-import type { StoryConfig, StoryEvent } from "./types.ts";
 
 const USAGE = `scriptorium <command> [options]
 
+  make  <story.json> [--only <steps>] [--from <step>] [--force]
+        run a story file's whole pipeline: story → art → audiobook → video.
+        Re-running finishes whatever's missing. Steps: story, art, audiobook, video.
+        --force allows changed story settings for a story already in progress
   run   --config <file> [--out <prefix>] [--scenes N] [--premise "..."] [--setting "..."]
         [--context <file.md> ...] [--max-attempts N|unlimited] [--speaker-tags]
         generate (or resume) a story
@@ -49,9 +50,12 @@ Options:
                           audiobook: set character genders for voice matching
                           (overrides the bible; needed for runs made before
                           characters had a recorded gender)
-  --force                 art: re-render images whose prompt is unchanged
+  --force                 art/audiobook/video: re-render even when unchanged
+                          make: allow changed settings for a story in progress
 
 Examples:
+  npm run make -- stories/example.json
+  npm run make -- stories/example.json --from audiobook
   npm run story -- --scenes 8
   npm run story -- --context my-story.md --scenes 5
   npm run story -- --context world.md --context hero.md --context rival.md --scenes 3
@@ -112,36 +116,11 @@ async function updateManifest(runDir: string, config: string): Promise<unknown[]
   return manifest;
 }
 
-// Renders a run's scene_art/cover_art prompts into <runDir>/art/. Shared by `run` and `art`.
-async function renderRunArt(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined) {
-  const artist = resolveArtistConfig(config.artist);
-  const result = await renderArt(events, {
-    runDir,
-    backend: makeImageBackend(artist.image),
-    inspector: artist.inspector ? makeInspector(artist.inspector) : undefined,
-    maxAttempts: artist.maxAttempts,
-    maxReferences: artist.maxReferences,
-    referenceSize: artist.referenceSize,
-    inspectSize: artist.inspectSize,
-    force,
-    onProgress: (event) => {
-      if (event.type === "job_start") console.error(`[scriptorium] ${c.blue(c.bold(`${event.key} (${event.index + 1}/${event.total})`))}`);
-      else if (event.type === "job_skipped") console.error(`[scriptorium] ${c.dim(`${event.key} unchanged — skipping (${event.file})`)}`);
-      else if (event.type === "attempt_rejected") console.error(`[scriptorium]   ${c.retry(`attempt ${event.attempt} rejected: ${event.issues.join("; ")}`)}`);
-      else if (event.type === "job_done") console.error(`[scriptorium] ${event.accepted ? c.ok(`${event.key} written`) : c.retry(`${event.key} kept after ${event.attempts} rejected attempts`)} ${c.dim(event.file)}`);
-      else if (event.type === "job_failed") console.error(`[scriptorium] ${c.fail(`${event.key} failed: ${event.error}`)}`);
-    }
-  });
-  if (result.rendered + result.failed > 0) {
-    console.log(`${c.ok(`art: ${result.rendered} rendered, ${result.skipped} unchanged, ${result.failed} failed →`)} ${c.cyan(result.outDir + "/")}`);
-  }
-  return result;
-}
-
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
+    allowPositionals: true,
     options: {
       config: { type: "string", default: "story.config.json" },
       out: { type: "string" },
@@ -159,6 +138,7 @@ async function main() {
       "voice-gender": { type: "string" },
       force: { type: "boolean" },
       redo: { type: "string" },
+      only: { type: "string" },
       note: { type: "string" }
     }
   });
@@ -174,11 +154,16 @@ async function main() {
     return;
   }
 
+  if (command === "make") {
+    const storyFile = positionals[0];
+    if (!storyFile) throw new Error("usage: make <story.json> [--only <steps>] [--from <step>] [--force]");
+    await make(storyFile, { only: values.only, from: values.from, force: values.force });
+    return;
+  }
+
   if (command === "run") {
     const config = JSON.parse(await readFile(values.config, "utf8"));
     const runDir = await resolveRunDir(values.out);
-    const log = new EventLog(runDir);
-    const roles = buildRoleProviders(config);
     const scenes = values.scenes ? Number(values.scenes) : undefined;
     // --max-attempts N = limit revision attempts; --max-attempts 0 or "unlimited" = unbounded
     let maxAttempts = undefined;
@@ -187,34 +172,19 @@ async function main() {
       maxAttempts = (v === "0" || v === "unlimited" || v === "inf") ? Infinity : Number(v);
       if (Number.isNaN(maxAttempts)) throw new Error("--max-attempts must be a number, 0, or 'unlimited'");
     }
+    await updateManifest(runDir, values.config);
     // --context file.md (repeatable) provides pre-seeded story details; files
     // are combined under headers naming each source.
-    const contextPaths = values.context ?? [];
-    const context = combineContexts(await Promise.all(contextPaths.map(async (p) => contextFile(p, await readFile(p, "utf8")))));
-    const contextFiles = contextPaths.map((p) => basename(p));
-    await updateManifest(runDir, values.config);
-    await runStory({
-      config: {
-        ...config,
-        premise: values.premise,
-        setting: values.setting || config.setting,
-        context,
-        contextFiles,
-        speakerTags: values["speaker-tags"] ?? config.speakerTags
-      },
-      log,
-      roles,
-      scenes,
-      maxAttempts,
-      runDir,
-      onScene: (s) => {
-        console.log(`${c.ok(`scene ${s.index + 1} committed`)} ${c.dim(`(tension ${s.tension}, attempts ${s.attempts})`)}`);
-      }
+    const { log } = await storyStep({
+      config, runDir, scenes, maxAttempts,
+      premise: values.premise, setting: values.setting,
+      contextPaths: values.context ?? [],
+      speakerTags: values["speaker-tags"]
     });
     // Render the Art Director's prompts to images. Presentation only: a failure here warns, never fails the run.
-    if (roles.artdirector) {
+    if (buildRoleProviders(config).artdirector) {
       try {
-        await renderRunArt(runDir, config, log.events, false);
+        await artStep(runDir, config, log.events, false);
       } catch (err) {
         console.error(`[scriptorium] ${c.retry(`art rendering failed (non-fatal): ${err instanceof Error ? err.message : String(err)} — retry with: node src/cli.ts art --out ${runDir} --config ${values.config}`)}`);
       }
@@ -248,20 +218,7 @@ async function main() {
     }
     const log = new EventLog(values.out);
     await log.load();
-    const result = await renderVideo(log.events, {
-      runDir: values.out,
-      force: values.force,
-      onProgress: (event) => {
-        if (event.type === "warning") console.error(`[scriptorium] ${c.retry(event.message)}`);
-        else if (event.type === "part_start") console.error(`[scriptorium] ${c.blue(c.bold(event.label))} ${c.dim(`(${Math.round(event.seconds)}s of video)`)}`);
-        else if (event.type === "part_skipped") console.error(`[scriptorium] ${c.dim(`${event.label} unchanged — skipping`)}`);
-        else if (event.type === "part_done") console.error(`[scriptorium] ${c.ok(`${event.label} rendered in ${Math.round(event.elapsedMs / 1000)}s`)}`);
-        else if (event.type === "muxing") console.error(`[scriptorium] ${c.dim("joining parts and adding narration...")}`);
-      }
-    });
-    const m = Math.floor(result.durationSec / 60);
-    const s = Math.round(result.durationSec % 60);
-    console.log(`${c.ok(`${m}m ${s}s video written to`)} ${c.cyan(result.video)} ${c.dim("(+ thumbnail.jpg, story.srt)")}`);
+    await videoStep(values.out, log.events, values.force);
     return;
   }
 
@@ -284,7 +241,7 @@ async function main() {
     if (scenes === 0) {
       throw new Error(`no committed scenes in ${values.out}`);
     }
-    const result = await renderRunArt(values.out, config, log.events, values.force);
+    const result = await artStep(values.out, config, log.events, values.force);
     if (result.failed > 0) process.exitCode = 1;
     return;
   }
@@ -296,7 +253,7 @@ async function main() {
     const config = JSON.parse(await readFile(values.config, "utf8"));
     const log = new EventLog(values.out);
     await log.load();
-    const result = await renderRunArt(values.out, config, log.events, values.force);
+    const result = await artStep(values.out, config, log.events, values.force);
     if (result.rendered + result.skipped + result.failed === 0) {
       throw new Error(`no scene_art/cover_art events in ${values.out} — was the run made with an artdirector role?`);
     }
@@ -310,22 +267,12 @@ async function main() {
     }
     const log = new EventLog(values.out);
     await log.load();
-    const result = await generateAudiobook(log.events, {
-      runDir: values.out,
+    await audiobookStep(values.out, log.events, {
       narratorVoice: values["narrator-voice"],
       language: values.language,
       characterGenders: parseVoiceGenders(values["voice-gender"]),
-      onProgress: (event) => {
-        if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);
-        else if (event.type === "model_ready") console.error(`[scriptorium] ${c.ok("model ready")}`);
-        else if (event.type === "scene_start") console.error(`[scriptorium] ${c.blue(c.bold(`scene ${event.index + 1}/${event.total}`))} ${c.dim(`(${event.segments} segment${event.segments === 1 ? "" : "s"})`)}`);
-        else if (event.type === "chunk_done") console.error(`[scriptorium]   ${c.dim(`[${event.speaker}] ${event.text.slice(0, 60)}${event.text.length > 60 ? "..." : ""}`)}`);
-        else if (event.type === "segment_done") console.error(`[scriptorium]   ${c.dim(`segment ${event.segmentIndex + 1}/${event.segments} (${event.speaker}) done`)}`);
-        else if (event.type === "scene_done") console.error(`[scriptorium] ${c.ok(`scene ${event.index + 1} written`)} ${c.dim(event.path)}`);
-      }
+      force: values.force
     });
-    await writeVoiceMap(result.outDir, result.voices);
-    console.log(`${c.ok(`${result.scenes} scene${result.scenes === 1 ? "" : "s"} rendered to`)} ${c.cyan(result.outDir + "/")}`);
     return;
   }
 

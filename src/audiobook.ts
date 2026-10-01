@@ -4,7 +4,8 @@
 // - Tagged prose (speakerTags on, see src/roles.ts write()): paragraphs start
 //   with `narrator:` or a bible character id, and each speaker gets their own
 //   voice. Detection is per scene, not per run — a run can mix both.
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { replay } from "./bible.ts";
 import type { SceneCommittedData, StoryEvent } from "./types.ts";
 
@@ -261,12 +262,14 @@ export interface AudiobookOptions {
   // Overrides/sets character genders for voice matching (e.g. runs made before
   // the bible recorded gender): character id -> "female" | "male".
   characterGenders?: Record<string, string>;
+  force?: boolean;  // re-render scenes whose text and voice settings are unchanged
   onProgress?: (event: AudiobookProgress) => void;
 }
 
 export type AudiobookProgress =
   | { type: "model_loading" }
   | { type: "model_ready" }
+  | { type: "scene_skipped"; index: number; path: string }
   | { type: "scene_start"; index: number; total: number; segments: number }
   | { type: "chunk_done"; sceneIndex: number; segmentIndex: number; segments: number; speaker: string; text: string }
   | { type: "segment_done"; sceneIndex: number; segmentIndex: number; segments: number; speaker: string }
@@ -275,7 +278,26 @@ export type AudiobookProgress =
 export interface AudiobookResult {
   outDir: string;
   scenes: number;
+  rendered: number;
+  skipped: number;
   voices: VoiceAssignment;
+}
+
+// audiobook/audio.json: what each scene's WAV was made from, so a re-run can
+// skip scenes that would come out the same — without loading the model.
+export interface AudioManifest {
+  scenes: Record<string, string>;  // WAV file -> render key
+  voices?: VoiceAssignment;
+}
+
+// Everything that determines a scene's audio: its speakers and text, and the
+// voice settings (narrator, language, character genders, model).
+export function sceneRenderKey(scene: Scene, settings: Record<string, unknown>): string {
+  return createHash("sha1").update(JSON.stringify({ segments: scene.segments.map((s) => [s.speaker, s.text]), settings })).digest("hex");
+}
+
+export function sceneFile(index: number): string {
+  return `scene-${String(index + 1).padStart(2, "0")}.wav`;
 }
 
 function concatFloat32(chunks: Float32Array[]): Float32Array {
@@ -349,6 +371,60 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   const bible = replay(events);
   const scenes = buildScenes(events);
   const onProgress = opts.onProgress ?? (() => {});
+  const outDir = `${opts.runDir}/audiobook`;
+  await mkdir(outDir, { recursive: true });
+
+  const genders: Record<string, string | undefined> = {};
+  for (const ch of Object.values(bible.characters)) genders[ch.id] = ch.gender;
+  Object.assign(genders, opts.characterGenders);
+  const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
+  const dtype = opts.dtype ?? "q8";
+  const settings = { narratorVoice: opts.narratorVoice ?? null, language: opts.language ?? "en", genders, modelId, dtype };
+
+  // Skip scenes whose WAV exists and was made from the same text and settings.
+  let manifest: AudioManifest | undefined;
+  try { manifest = JSON.parse(await readFile(`${outDir}/audio.json`, "utf8")); } catch { /* first render, or made before audio.json */ }
+  let previous: SceneTiming[] = [];
+  try { previous = (JSON.parse(await readFile(`${outDir}/timings.json`, "utf8")) as { scenes: SceneTiming[] }).scenes; } catch { /* none yet */ }
+  const exists = async (f: string) => stat(`${outDir}/${f}`).then(() => true, () => false);
+  const keys = new Map(scenes.map((sc) => [sc.index, sceneRenderKey(sc, settings)]));
+  if (!manifest) {
+    manifest = { scenes: {} };
+    // An audiobook made before audio.json existed: adopt its finished scenes
+    // (WAV + timing + voice map) as current rather than re-render them all.
+    // Voice settings changed since? --force re-renders.
+    let voices: VoiceAssignment | undefined;
+    try { voices = JSON.parse(await readFile(`${outDir}/voices.json`, "utf8")); } catch { /* none */ }
+    if (voices) {
+      manifest.voices = voices;
+      for (const scene of scenes) {
+        const file = sceneFile(scene.index);
+        if (previous.some((t) => t.index === scene.index) && (await exists(file))) manifest.scenes[file] = keys.get(scene.index)!;
+      }
+    }
+  }
+  const todo: Scene[] = [];
+  const timings = new Map<number, SceneTiming>();
+  for (const scene of scenes) {
+    const file = sceneFile(scene.index);
+    const timing = previous.find((t) => t.index === scene.index);
+    if (!opts.force && manifest.scenes[file] === keys.get(scene.index) && timing && (await exists(file))) {
+      timings.set(scene.index, timing);
+      onProgress({ type: "scene_skipped", index: scene.index, path: `${outDir}/${file}` });
+    } else {
+      todo.push(scene);
+    }
+  }
+  const writeTimings = () => writeFile(`${outDir}/timings.json`, JSON.stringify({ sampleRate: SAMPLE_RATE, scenes: [...timings.values()].sort((a, b) => a.index - b.index) }, null, 2) + "\n", "utf8");
+  const writeManifest = () => writeFile(`${outDir}/audio.json`, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+
+  if (todo.length === 0) {
+    // Nothing to render: don't load the model at all.
+    await writeTimings();
+    await writeManifest();  // persists an adopted pre-manifest audiobook
+    if (!manifest.voices) throw new Error(`${outDir}/audio.json has no voice map — re-run with --force`);
+    return { outDir, scenes: scenes.length, rendered: 0, skipped: scenes.length, voices: manifest.voices };
+  }
 
   onProgress({ type: "model_loading" });
   const { KokoroTTS, TextSplitterStream } = await import("kokoro-js");
@@ -357,23 +433,15 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   // discover the set at runtime (Object.keys widens to string[]) so we can stay
   // decoupled from that list — see assignVoices, which is plain-string in/out.
   type VoiceId = keyof InstanceType<typeof KokoroTTS>["voices"];
-  const tts = await KokoroTTS.from_pretrained(opts.modelId ?? DEFAULT_MODEL_ID, {
-    dtype: opts.dtype ?? "q8",
-    device: opts.device ?? "cpu"
-  });
+  const tts = await KokoroTTS.from_pretrained(modelId, { dtype, device: opts.device ?? "cpu" });
   onProgress({ type: "model_ready" });
   const voiceIds = filterVoicesByLanguage(tts.voices, opts.language ?? "en");
   if (voiceIds.length === 0) {
     throw new Error(`no voices found for language prefix "${opts.language ?? "en"}"`);
   }
-  const genders: Record<string, string | undefined> = {};
-  for (const ch of Object.values(bible.characters)) genders[ch.id] = ch.gender;
-  Object.assign(genders, opts.characterGenders);
   const voiceGenders = Object.fromEntries(voiceIds.map((id) => [id, (tts.voices as Record<string, { gender?: string }>)[id]?.gender]));
   const assignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice, { genders, voiceGenders });
-
-  const outDir = `${opts.runDir}/audiobook`;
-  await mkdir(outDir, { recursive: true });
+  manifest.voices = assignment;
 
   // tts.stream(text, opts) — the plain-string convenience form — pushes text
   // into an internal TextSplitterStream but never closes it, so the final
@@ -392,8 +460,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     ? assignment.narrator
     : (assignment.characters[speaker] ?? assignment.narrator);
 
-  const timings: SceneTiming[] = [];
-  for (const scene of scenes) {
+  for (const scene of todo) {
     const segments = scene.segments.length;
     onProgress({ type: "scene_start", index: scene.index, total: scenes.length, segments });
     const { audio, paragraphStarts } = await synthesizeScene(
@@ -403,16 +470,18 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
       (segmentIndex, speaker, text) => onProgress({ type: "chunk_done", sceneIndex: scene.index, segmentIndex, segments, speaker, text }),
       (segmentIndex, speaker) => onProgress({ type: "segment_done", sceneIndex: scene.index, segmentIndex, segments, speaker })
     );
-    const file = `scene-${String(scene.index + 1).padStart(2, "0")}.wav`;
+    const file = sceneFile(scene.index);
     const path = `${outDir}/${file}`;
     await new RawAudio(audio, SAMPLE_RATE).save(path);
-    timings.push({ index: scene.index, file, durationSec: Math.round((audio.length / SAMPLE_RATE) * 1000) / 1000, paragraphStarts });
-    // Written after every scene so a partial run still has usable timings.
-    await writeFile(`${outDir}/timings.json`, JSON.stringify({ sampleRate: SAMPLE_RATE, scenes: timings }, null, 2) + "\n", "utf8");
+    timings.set(scene.index, { index: scene.index, file, durationSec: Math.round((audio.length / SAMPLE_RATE) * 1000) / 1000, paragraphStarts });
+    manifest.scenes[file] = keys.get(scene.index)!;
+    // Written after every scene so an interrupted run resumes where it stopped.
+    await writeTimings();
+    await writeManifest();
     onProgress({ type: "scene_done", index: scene.index, path });
   }
 
-  return { outDir, scenes: scenes.length, voices: assignment };
+  return { outDir, scenes: scenes.length, rendered: todo.length, skipped: scenes.length - todo.length, voices: assignment };
 }
 
 // writeFile import kept for callers that want to persist the voice map

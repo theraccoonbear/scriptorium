@@ -1,0 +1,12 @@
+{
+  "config": "../story.config.json",
+  "out": "../runs/mock-story",
+  "premise": "a lighthouse keeper finds a letter addressed to her",
+  "setting": "a remote northern coast, 1890s",
+  "context": [
+    "../contexts/nightsoil-and-stablemans-guild.md"
+  ],
+  "scenes": 2,
+  "maxAttempts": 3,
+  "speakerTags": true
+}

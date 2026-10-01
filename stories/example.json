@@ -1,0 +1,16 @@
+{
+  "config": "../story.opencode-go.config.json",
+  "out": "../runs/guild",
+  "premise": "a young apprentice of the Nightsoil Guild tries to win his own route",
+  "setting": "Highburrow, a cramped hill town in a D&D-style fantasy world",
+  "context": [
+    "../contexts/nightsoil-and-stablemans-guild.md"
+  ],
+  "scenes": 3,
+  "maxAttempts": "unlimited",
+  "speakerTags": true,
+  "audiobook": {
+    "narratorVoice": "af_heart",
+    "language": "en"
+  }
+}
