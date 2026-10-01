@@ -269,18 +269,51 @@ export function buildSrt(timeline: Timeline, timings: Timings, paragraphsByScene
 
 // ---- rendering ----
 
-export type Runner = (args: string[]) => Promise<void>;
+export type Runner = (args: string[], opts?: { quiet?: boolean }) => Promise<void>;
 
-export const ffmpegRunner: Runner = (args) => new Promise((resolve, reject) => {
-  const child = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", "-stats", "-y", ...args], { stdio: ["ignore", "inherit", "inherit"] });
+export const ffmpegRunner: Runner = (args, { quiet = false } = {}) => new Promise((resolve, reject) => {
+  // Live progress only when one ffmpeg runs at a time; parallel renders would interleave it.
+  const child = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", quiet ? "-nostats" : "-stats", "-y", ...args], { stdio: ["ignore", "inherit", quiet ? "ignore" : "inherit"] });
   child.on("error", (err) => reject(new Error(`could not run ffmpeg: ${err.message}`)));
   child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}`))));
 });
 
-const ENCODE = ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-r", String(FPS)];
+// H.264 encoders. NVENC (NVIDIA's hardware encoder) is ~3x faster for the same
+// size and quality on slow Ken Burns footage; x264 runs anywhere.
+export type Encoder = "nvenc" | "x264";
+export type EncoderChoice = Encoder | "auto";
+
+export function encodeArgs(encoder: Encoder): string[] {
+  const codec = encoder === "nvenc"
+    ? ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "26", "-b:v", "0"]
+    : ["-c:v", "libx264", "-preset", "medium", "-crf", "18"];
+  return [...codec, "-pix_fmt", "yuv420p", "-r", String(FPS)];
+}
+
+// "auto" uses NVENC if a one-frame test encode works (an NVIDIA GPU, a driver
+// and an ffmpeg built with it), and x264 otherwise.
+export async function resolveEncoder(choice: EncoderChoice, run: Runner): Promise<Encoder> {
+  if (choice !== "auto") return choice;
+  try {
+    await run(["-f", "lavfi", "-i", "color=black:s=256x256:r=30", "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-"], { quiet: true });
+    return "nvenc";
+  } catch {
+    return "x264";
+  }
+}
+
+// Runs tasks with at most `limit` in flight, in order of submission.
+async function pool(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < tasks.length) await tasks[next++]();
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, tasks.length)) }, worker));
+}
 
 export type VideoProgress =
   | { type: "warning"; message: string }
+  | { type: "encoder"; encoder: Encoder; parallel: number }
   | { type: "part_start"; label: string; seconds: number }
   | { type: "part_skipped"; label: string }
   | { type: "part_done"; label: string; elapsedMs: number }
@@ -290,6 +323,8 @@ export interface RenderOptions extends VideoOptions {
   runDir: string;
   run?: Runner;
   force?: boolean;
+  encoder?: EncoderChoice;  // default "auto"
+  parallel?: number;        // scenes rendered at once, default 3
   onProgress?: (event: VideoProgress) => void;
 }
 
@@ -332,12 +367,21 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
   for (const w of timeline.warnings) emit({ type: "warning", message: w });
   await writeFile(join(outDir, "timeline.json"), JSON.stringify(timeline, null, 2) + "\n", "utf8");
 
-  // Cache rendered parts: a part is redone only when its inputs or filter change.
+  const encoder = await resolveEncoder(opts.encoder ?? "auto", run);
+  const parallel = Math.max(1, Math.floor(opts.parallel ?? 3));
+  const ENCODE = encodeArgs(encoder);
+  emit({ type: "encoder", encoder, parallel });
+
+  // Cache rendered parts: a part is redone only when its inputs, filter or
+  // encoder change (parts from different encoders are never joined together).
   const cachePath = join(partsDir, "cache.json");
   let cache: Record<string, string> = {};
   try { cache = JSON.parse(await readFile(cachePath, "utf8")); } catch { /* first render */ }
-  const renderPart = async (label: string, file: string, inputs: string[], filter: string, frames: number) => {
-    const key = await fingerprint(runDir, inputs, filter);
+  // Parts finish out of order when rendered in parallel: serialize the cache writes.
+  let saving: Promise<void> = Promise.resolve();
+  const saveCache = () => (saving = saving.then(() => writeFile(cachePath, JSON.stringify(cache, null, 2) + "\n", "utf8")));
+  const renderPart = async (label: string, file: string, inputs: string[], filter: string, frames: number, quiet = false) => {
+    const key = await fingerprint(runDir, inputs, `${filter}|${encoder}`);
     const exists = await stat(join(partsDir, file)).then(() => true, () => false);
     if (!opts.force && exists && cache[file] === key) {
       emit({ type: "part_skipped", label });
@@ -353,9 +397,9 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
       ...ENCODE,
       "-an",
       join(partsDir, file)
-    ]);
+    ], { quiet });
     cache[file] = key;
-    await writeFile(cachePath, JSON.stringify(cache, null, 2) + "\n", "utf8");
+    await saveCache();
     emit({ type: "part_done", label, elapsedMs: Date.now() - t0 });
   };
 
@@ -364,18 +408,20 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
     await renderPart("intro", "intro.mp4", [timeline.cover], introFilterGraph(timeline.introFrames), timeline.introFrames);
     parts.push("intro.mp4");
   }
+  const gap = `gap-${String(timeline.gapFrames)}-${encoder}.mp4`;
+  if (timeline.scenes.length > 1 && timeline.gapFrames > 0 && !(await stat(join(partsDir, gap)).then(() => true, () => false))) {
+    await run(["-f", "lavfi", "-i", `color=black:s=${WIDTH}x${HEIGHT}:r=${FPS}`, "-frames:v", String(timeline.gapFrames), ...ENCODE, "-an", join(partsDir, gap)]);
+  }
+  // Scenes are independent: render several at once. The zoom filter is
+  // single-threaded, so this is what puts the other cores to work.
+  const sceneJobs: Array<() => Promise<void>> = [];
   for (const [k, scene] of timeline.scenes.entries()) {
-    if (k > 0 && timeline.gapFrames > 0) {
-      const gap = `gap-${String(timeline.gapFrames)}.mp4`;
-      if (!(await stat(join(partsDir, gap)).then(() => true, () => false))) {
-        await run(["-f", "lavfi", "-i", `color=black:s=${WIDTH}x${HEIGHT}:r=${FPS}`, "-frames:v", String(timeline.gapFrames), ...ENCODE, "-an", join(partsDir, gap)]);
-      }
-      parts.push(gap);
-    }
+    if (k > 0 && timeline.gapFrames > 0) parts.push(gap);
     const file = `scene-${String(scene.index + 1).padStart(2, "0")}.mp4`;
-    await renderPart(`scene ${scene.index + 1} (${scene.shots.length} shots)`, file, scene.shots.map((s) => s.file), sceneFilterGraph(scene, timeline.fadeFrames), scene.frames);
+    sceneJobs.push(() => renderPart(`scene ${scene.index + 1} (${scene.shots.length} shots)`, file, scene.shots.map((s) => s.file), sceneFilterGraph(scene, timeline.fadeFrames), scene.frames, parallel > 1));
     parts.push(file);
   }
+  await pool(sceneJobs, parallel);
 
   // Join the parts without re-encoding and lay the narration under them.
   emit({ type: "muxing" });

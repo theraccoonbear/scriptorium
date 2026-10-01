@@ -21,6 +21,7 @@ export interface StoryFile {
   maxAttempts?: number | "unlimited";
   speakerTags?: boolean;
   audiobook?: { narratorVoice?: string; language?: string; voiceGenders?: Record<string, string> };
+  video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
 }
 
 export interface ResolvedStory {
@@ -35,6 +36,7 @@ export interface ResolvedStory {
   maxAttempts?: number;
   speakerTags?: boolean;
   audiobook: NonNullable<StoryFile["audiobook"]>;
+  video: NonNullable<StoryFile["video"]>;
 }
 
 export const STEPS = ["story", "art", "audiobook", "video"] as const;
@@ -65,7 +67,8 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     scenes: raw.scenes,
     maxAttempts: attempts,
     speakerTags: raw.speakerTags,
-    audiobook: raw.audiobook ?? {}
+    audiobook: raw.audiobook ?? {},
+    video: raw.video ?? {}
   };
 }
 
@@ -142,7 +145,7 @@ const defaultRunners: StepRunners = {
       narratorVoice: s.audiobook.narratorVoice, language: s.audiobook.language, characterGenders: s.audiobook.voiceGenders
     });
   },
-  video: async (s, events) => { await videoStep(s.runDir, events, false); }
+  video: async (s, events) => { await videoStep(s.runDir, events, false, s.video); }
 };
 
 const SETTINGS_FILE = "story-settings.json";
