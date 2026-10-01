@@ -9,12 +9,19 @@
     "go-critic": { "type": "opencode-go", "api": "chat", "model": "space-bunny-free", "maxTokens": 8192 },
     "haiku": { "type": "anthropic", "model": "claude-haiku-4-5-20251001", "apiKeyEnv": "ANTHROPIC_API_KEY", "maxTokens": 4096 }
   },
+  "artist": {
+    "image": { "type": "gemini", "model": "gemini-3.1-flash-image", "aspectRatio": "16:9" },
+    "inspector": { "type": "gemini", "model": "gemini-3.8-flash" },
+    "maxAttempts": 3,
+    "maxReferences": 3
+  },
   "roles": {
     "worldbuilder": { "provider": "haiku", "temperature": 0.9 },
     "director": { "provider": "haiku", "temperature": 0.7 },
     "writer": { "provider": "haiku", "temperature": 0.9 },
     "continuist": { "provider": "haiku", "temperature": 0.1 },
     "critic": { "provider": "haiku", "temperature": 0.5 },
-    "archivist": { "provider": "haiku", "temperature": 0.1 }
+    "archivist": { "provider": "haiku", "temperature": 0.1 },
+    "artdirector": { "provider": "haiku", "temperature": 0.7 }
   }
 }

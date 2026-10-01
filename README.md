@@ -17,6 +17,11 @@ State lives in an append-only JSONL event log. The bible is always rebuilt by re
     node src/cli.js run  --config story.config.json --out runs/demo-b --scenes 10
     node src/cli.js show --out runs/demo-b
     node src/cli.js bible --out runs/demo-b
+    npm run art -- --out runs/demo-b      # re-render or retry a run's images
+
+## Art
+
+With an `artdirector` role configured, each committed scene gets a `scene_art` image prompt and the finished run gets a `cover_art` prompt, and `run` renders them to images automatically when the story finishes (a rendering failure only warns; the story is already written). The images land in `<run>/art/scene-NN.jpg` and `cover.jpg` (the extension follows whatever image type the model returns) using the `artist` block of the config: an `image` backend (Gemini, `GEMINI_API_KEY`) and an optional `inspector` that checks each image against its prompt and the earlier images, and asks for a regeneration with a revised prompt, up to `maxAttempts` per image. Earlier images are passed as references so characters and style stay consistent. `art/art.json` records each image's prompt, attempts and any unresolved issues; re-running skips images whose prompt is unchanged (`--force` re-renders everything). Set `"inspector": null` to skip review, or `"type": "mock"` for offline placeholders.
 
 ## Configure
 

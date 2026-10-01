@@ -229,13 +229,13 @@ function requestJson(
 
 // POST with timeout and retry on network errors, 429 and 5xx.
 // Timeout scales 1.5x per retry attempt.
-async function postJson(url: string, headers: Record<string, string | undefined>, body: unknown, spec: ProviderSpec & { role?: string } = { type: "" }): Promise<any> {
+export async function postJson(url: string, headers: Record<string, string | undefined>, body: unknown, spec: ProviderSpec & { role?: string } = { type: "" }): Promise<any> {
   const attempts = (spec.retries ?? 1) + 1;
   const bodyStr = JSON.stringify(body);
   const allHeaders: Record<string, string | undefined> = { "user-agent": SCRIPTORIUM_UA, ...headers };
   let lastErr: unknown;
   const timeout = spec.timeoutMs ?? 180000;
-  const model = (body as { model?: string } | null)?.model || "?";
+  const model = (body as { model?: string } | null)?.model || spec.model || "?";
   const role = spec?.role || "?";
   const promptKB = (bodyStr.length / 1024).toFixed(1);
   const tag = c.label(role, model);
@@ -273,7 +273,7 @@ async function postJson(url: string, headers: Record<string, string | undefined>
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-function requireKey(envName: string): string {
+export function requireKey(envName: string): string {
   const key = process.env[envName];
   if (!key) {
     throw new Error(`Missing environment variable ${envName}`);
