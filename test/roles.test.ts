@@ -380,3 +380,27 @@ test("a JSON role that hits the output limit fails once with the reason; the wri
   const draft = await write(limited("The ridge was cold and"), { bible: emptyBible(), beat: testBeat, sceneIndex: 0, attempt: 0, sceneWords: { min: 1200, max: 1800 } });
   assert.equal(draft.result, "The ridge was cold and");
 });
+
+// --- the director follows the author's plan ---
+import { direct, reviewBeat } from "../src/roles.ts";
+
+test("the director sees the author's plan, and the plan outranks the random complication", async () => {
+  const beatRole = { provider: { complete: async () => JSON.stringify(testBeat) }, temperature: 0 };
+  const params = { bible: emptyBible(), sceneIndex: 1, total: 3, tension: 7, complication: "An ally withholds a crucial fact.", overdue: [] };
+  const planned = await direct(beatRole, { ...params, context: "Scene 2 — The hold: the sigil door opens." });
+  assert.ok(planned.prompt.includes("STORY CONTEXT (provided by author):\nScene 2 — The hold"));
+  assert.ok(planned.prompt.includes("THE AUTHOR'S PLAN COMES FIRST"));
+  assert.ok(planned.prompt.includes("SUGGESTED COMPLICATION (optional"));
+  assert.ok(!planned.prompt.includes("REQUIRED COMPLICATION"));
+  const open = await direct(beatRole, params);
+  assert.ok(open.prompt.includes("REQUIRED COMPLICATION: An ally withholds"));
+  assert.ok(!open.prompt.includes("STORY CONTEXT"));
+});
+
+test("the beat gate flags a beat that leaves the author's plan", async () => {
+  assert.ok(BEAT_GATE_SYSTEM.includes("OFF_PLAN"));
+  assert.ok(BEAT_GATE_SYSTEM.includes("check the spec against it FIRST"));
+  const gateRole = { provider: { complete: async () => JSON.stringify({ ok: true, issues: [] }) }, temperature: 0 };
+  const out = await reviewBeat(gateRole, { bible: emptyBible(), beat: testBeat, sceneIndex: 1, total: 3, tension: 7, complication: "x", context: "plan" });
+  assert.ok(out.prompt.includes("SUGGESTED COMPLICATION (optional"));
+});
