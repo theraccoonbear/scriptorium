@@ -276,3 +276,11 @@ test("normalizeGender and --voice-gender parsing", () => {
   assert.throws(() => parseVoiceGenders("osmagus"), /id=gender/);
   assert.throws(() => parseVoiceGenders("osmagus=tall"), /not female or male/);
 });
+
+test("the TTS model cache is shared outside the repo, overridable", async () => {
+  const { modelCacheDir } = await import("../src/audiobook.ts");
+  assert.equal(modelCacheDir({ SCRIPTORIUM_MODEL_CACHE: "/models" }), "/models");
+  assert.equal(modelCacheDir({ XDG_CACHE_HOME: "/xdg" }), "/xdg/scriptorium/models");
+  assert.ok(modelCacheDir({}).endsWith("/.cache/scriptorium/models"));
+  assert.ok(!modelCacheDir({}).includes("node_modules"));
+});
