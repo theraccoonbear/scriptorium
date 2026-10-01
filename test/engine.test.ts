@@ -407,3 +407,26 @@ test("references for a big cast are made in batches of 3, and earlier batches su
   assert.deepEqual(batches[0].characterIds.length, 1);
   assert.ok(batches.every((b) => b.characterIds.length + b.locationIds.length <= 3));
 });
+
+// --- issue #45: author direction ---
+test("an author art style overrides the Creator's, is recorded once, and reaches art direction", async () => {
+  const { storyArtStyle } = await import("../src/visualrefs.ts");
+  const config = await loadConfig({ scenes: 1, artStyle: "Cinematic, photorealistic, dramatic." });
+  const roles = buildRoleProviders(config);
+  const prompts: string[] = [];
+  const real = roles.artdirector!.provider.complete.bind(roles.artdirector!.provider);
+  roles.artdirector!.provider = { complete: async (req) => { if (req.role === "artdirector") prompts.push(req.prompt); return real(req); } };
+  const dir = await tmp();
+  const log = new EventLog(dir);
+  const bible = await runStory({ config, log, roles });
+  assert.notEqual(bible.artStyle, config.artStyle, "the Creator still picked its own");
+  assert.equal(storyArtStyle(log.events), "Cinematic, photorealistic, dramatic.");
+  assert.ok(prompts.length > 0 && prompts.every((p) => p.includes("ART STYLE (canon — every prompt renders in exactly this and ends with it verbatim): Cinematic, photorealistic, dramatic.")));
+  // Resuming with the same style records nothing new; a new style is recorded.
+  await runStory({ config, log: new EventLog(dir), roles: buildRoleProviders(config) });
+  const again = new EventLog(dir);
+  await runStory({ config: { ...config, artStyle: "Woodcut." }, log: again, roles: buildRoleProviders(config) });
+  const styles = again.events.filter((e) => e.type === "art_style").map((e) => (e.data as { style: string }).style);
+  assert.deepEqual(styles, ["Cinematic, photorealistic, dramatic.", "Woodcut."]);
+  assert.equal(storyArtStyle(again.events), "Woodcut.");
+});

@@ -547,10 +547,35 @@ export function timeoutForRole(roleName: string): number {
 }
 
 // Resolve config.roles -> { director, writer, critic, archivist } provider instances.
+// Creative layers that take author direction, by the role label each call
+// carries ("creator" runs on the director's model but is its own layer).
+// "artist" is the image model, handled by the art step.
+export const DIRECTION_LAYERS = [
+  "contextgate", "worldbuilder", "worldgate", "creator", "director", "beatgate",
+  "writer", "continuist", "critic", "archivist", "patchgate", "artdirector", "artist"
+] as const;
+
+export function checkDirection(direction: Record<string, string> | undefined): void {
+  const unknown = Object.keys(direction ?? {}).filter((k) => !(DIRECTION_LAYERS as readonly string[]).includes(k));
+  if (unknown.length > 0) throw new Error(`direction: unknown layer ${unknown.map((k) => `"${k}"`).join(", ")} (layers: ${DIRECTION_LAYERS.join(", ")})`);
+}
+
+// Appends the author's direction for a call's layer to its prompt.
+export function withDirection(provider: Provider, direction: Record<string, string>): Provider {
+  return {
+    complete: (req) => {
+      const note = direction[req.role]?.trim();
+      return provider.complete(note ? { ...req, prompt: `${req.prompt}\n\nAUTHOR DIRECTION for the ${req.role} (follow it; it overrides your defaults):\n${note}` } : req);
+    }
+  };
+}
+
 export function buildRoleProviders(config: StoryConfig): Roles {
+  checkDirection(config.direction);
   const instances: Record<string, Provider> = {};
   for (const [name, spec] of Object.entries(config.providers)) {
-    instances[name] = makeProvider(spec);
+    const provider = makeProvider(spec);
+    instances[name] = config.direction && Object.keys(config.direction).length > 0 ? withDirection(provider, config.direction) : provider;
   }
   const roles: Record<string, Role> = {};
   for (const [role, cfg] of Object.entries(config.roles)) {

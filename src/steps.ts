@@ -67,6 +67,7 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
     maxReferences: artist.maxReferences,
     referenceSize: artist.referenceSize,
     inspectSize: artist.inspectSize,
+    direction: config.direction?.artist,
     force,
     onProgress: (event) => {
       if (event.type === "job_start") console.error(`[scriptorium] ${c.blue(c.bold(`${event.key} (${event.index + 1}/${event.total})`))}`);

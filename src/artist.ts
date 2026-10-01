@@ -24,6 +24,7 @@ export interface ImageRequest {
   references: Image[];
   aspectRatio?: string;  // overrides the backend's default (portraits are 3:4)
   style?: string;        // the story's art style, sent with every image
+  direction?: string;    // the author's art direction for the image model, sent with every image
 }
 
 export const PORTRAIT_LABEL = "Canonical look of a character who appears in this image — match their face, build, hair, colors and clothing exactly:";
@@ -50,6 +51,7 @@ export interface InspectRequest {
   image: Image;
   references: Image[];
   style?: string;
+  direction?: string;
 }
 
 export interface Inspector {
@@ -66,6 +68,7 @@ CHECK FOR:
 - REFERENCE MATCH: each character must match their CHARACTER PORTRAIT (face, build, hair and facial hair color, clothing); the setting must keep the LOCATION reference's landmarks, architecture and materials (any camera angle is fine); each key object must match its PROP reference (shape, materials, colors, markings). A different-looking person, place or object in their stead is an issue.
 - CONTINUITY: the overall art style must match the other reference images.
 - REAL PERSON: any figure that looks like a recognizable real person, actor, or celebrity.
+- AUTHOR DIRECTION: if given, the image must satisfy it (it is the author's explicit instruction for every image).
 - STYLE: if an ART STYLE is given, the image must be rendered in it (medium, palette, line, level of realism). A different medium or a jump in realism is an issue.
 - ARTIFACTS: malformed anatomy, extra or missing limbs, melted faces, garbled objects.
 - TEXT: any visible text, captions, logos, watermarks, or speech bubbles.
@@ -167,6 +170,7 @@ export interface ManifestEntry {
   refId?: string;
   prompt: string;       // the Art Director's prompt (the skip key)
   finalPrompt: string;  // the prompt that produced the kept image
+  direction?: string;   // the author's art direction it was rendered under (also a skip key)
   style?: string;       // the art style it was rendered in (also a skip key)
   attempts: number;
   accepted: boolean;    // false = attempts ran out; the last image was kept anyway
@@ -184,6 +188,7 @@ export type ArtProgress =
 
 export interface ArtOptions {
   runDir: string;
+  direction?: string;      // the author's art direction for the image model (direction.artist)
   backend: ImageBackend;
   inspector?: Inspector;   // omitted = one shot per image, no review
   maxAttempts?: number;    // per image, default 3
@@ -244,6 +249,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   // One art style for the whole story, sent with every image request — not left
   // to each prompt to restate.
   const style = storyArtStyle(events);
+  const direction = opts.direction?.trim() || undefined;
   const jobs = buildArtJobs(events);
   const rendered: Image[] = [];                // scene shots and cover, in order
   const refs = new Map<string, Image>();       // refKey(kind, id) -> reference image
@@ -279,7 +285,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
 
   for (const [index, job] of jobs.entries()) {
     const prior = manifest[job.key];
-    if (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && existing.has(prior.file)) {
+    if (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && existing.has(prior.file)) {
       // Same image, but keep its placement current in case the shot's anchor moved.
       prior.sceneIndex = job.sceneIndex;
       prior.startParagraph = job.startParagraph;
@@ -292,7 +298,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const references = referencesFor(job);
     try {
       const forInspection = (img: Image) => shrink(img, inspectSize);
-      const entry = await renderOne(job, references, opts.backend, opts.inspector, maxAttempts, emit, style, forInspection);
+      const entry = await renderOne(job, references, opts.backend, opts.inspector, maxAttempts, emit, style, forInspection, direction);
       const file = `${job.key}.${extensionFor(entry.image.mimeType)}`;
       await writeFile(join(outDir, file), entry.image.data);
       manifest[job.key] = {
@@ -303,6 +309,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         prompt: job.prompt,
         finalPrompt: entry.finalPrompt,
         ...(style ? { style } : {}),
+        ...(direction ? { direction } : {}),
         attempts: entry.attempts,
         accepted: entry.accepted,
         issues: entry.issues
@@ -332,7 +339,8 @@ async function renderOne(
   maxAttempts: number,
   emit: (event: ArtProgress) => void,
   style?: string,
-  forInspection: (img: Image) => Promise<Image> = async (img) => img
+  forInspection: (img: Image) => Promise<Image> = async (img) => img,
+  direction?: string
 ): Promise<{ image: Image; finalPrompt: string; attempts: number; accepted: boolean; issues: string[] }> {
   let prompt = job.prompt;
   let image: Image | undefined;
@@ -340,7 +348,7 @@ async function renderOne(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // A failed generation (timeout, blocked or empty reply) uses up an attempt rather than the whole image.
     try {
-      image = await backend.generate({ prompt, references, ...(style ? { style } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : {}) });
+      image = await backend.generate({ prompt, references, ...(style ? { style } : {}), ...(direction ? { direction } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : {}) });
     } catch (err) {
       issues = [`generation failed: ${err instanceof Error ? err.message : String(err)}`];
       emit({ type: "attempt_rejected", key: job.key, attempt, issues });
@@ -348,7 +356,7 @@ async function renderOne(
       continue;
     }
     if (!inspector) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [] };
-    const verdict = await inspector.inspect({ prompt, image: await forInspection(image), references, ...(style ? { style } : {}) });
+    const verdict = await inspector.inspect({ prompt, image: await forInspection(image), references, ...(style ? { style } : {}), ...(direction ? { direction } : {}) });
     if (verdict.ok) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [] };
     issues = verdict.issues;
     emit({ type: "attempt_rejected", key: job.key, attempt, issues });
@@ -380,9 +388,10 @@ export class GeminiImageBackend implements ImageBackend {
   spec: GeminiSpec;
   constructor(spec: GeminiSpec) { this.spec = spec; }
 
-  async generate({ prompt, references, aspectRatio, style }: ImageRequest): Promise<Image> {
+  async generate({ prompt, references, aspectRatio, style, direction }: ImageRequest): Promise<Image> {
     const parts: GeminiPart[] = [];
     if (style) parts.push({ text: `ART STYLE — every image of this story uses exactly this style; render in it regardless of the references' subjects: ${style}` });
+    if (direction) parts.push({ text: `AUTHOR ART DIRECTION — applies to every image; follow it exactly: ${direction}` });
     for (const ref of references) {
       parts.push({ text: ref.label ?? SCENE_LABEL });
       parts.push(imagePart(ref));
@@ -411,9 +420,10 @@ export class GeminiInspector implements Inspector {
   spec: GeminiSpec;
   constructor(spec: GeminiSpec) { this.spec = spec; }
 
-  async inspect({ prompt, image, references, style }: InspectRequest): Promise<Inspection> {
+  async inspect({ prompt, image, references, style, direction }: InspectRequest): Promise<Inspection> {
     const parts: GeminiPart[] = [{ text: `PROMPT:\n${prompt}` }];
     if (style) parts.push({ text: `ART STYLE:\n${style}` });
+    if (direction) parts.push({ text: `AUTHOR DIRECTION:\n${direction}` });
     parts.push({ text: "CANDIDATE IMAGE:" }, imagePart(image));
     for (const ref of references) {
       const kind = ref.label === PORTRAIT_LABEL ? "CHARACTER PORTRAIT" : ref.label === LOCATION_LABEL ? "LOCATION" : ref.label === PROP_LABEL ? "PROP" : "art style only";

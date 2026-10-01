@@ -51,6 +51,19 @@ npm run make -- stories/keeper.json --from audiobook   # just the later steps
 npm run make -- stories/keeper.json --only art,video
 ```
 
+Story files can also steer each creative layer directly. `artStyle` fixes the art style, overriding the Creator's choice. `direction` holds notes for individual layers, each added to that layer's prompts as instructions it must follow:
+
+```jsonc
+  "artStyle": "Cinematic, photorealistic, dramatic: like a frame from a fantasy action film",
+  "direction": {
+    "writer": "Keep fights fast and physical; short sentences in action.",
+    "artdirector": "Favor low angles and dynamic action framing.",
+    "artist": "Shallow depth of field, film grain, no painterly look."
+  }
+```
+
+The layers are `contextgate`, `worldbuilder`, `worldgate`, `creator`, `director`, `beatgate`, `writer`, `continuist`, `critic`, `archivist`, `patchgate`, `artdirector` and `artist`. `artist` notes go with every image request and inspection. A misspelled layer is an error rather than silently ignored. Use context files for story facts, and `direction` for how each layer should work.
+
 Re-running `make` finishes whatever's missing: the story resumes from its event log, and art, audio and video skip finished work. That covers a crash, running out of credits, or a deleted image you want regenerated. The run records its premise, setting, context and speaker tags, and `make` refuses to change them for a story already in progress unless you pass `--force`. Use a new `out` for a new story. `stories/mock.json` runs the whole pipeline offline; `stories/example.json` is a real one.
 
 The individual commands below still work for one-off steps.
