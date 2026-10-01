@@ -315,3 +315,54 @@ test("the Creator's art style lands in the bible; a run made without one gets it
   await redirectArt({ config, log: old, roles: buildRoleProviders(config) });
   assert.equal(old.events.filter((e) => e.type === "art_style").length, 1, "defined once, then reused");
 });
+
+// --- issue #33: multiple context files ---
+test("a contradictory context stops the run before anything is generated", async () => {
+  const config = await loadConfig({ scenes: 1, context: "### from a.md\n\nHe is 4'8\".\n\n### from b.md\n\nHe is 5'2\".", contextFiles: ["a.md", "b.md"] });
+  const roles = buildRoleProviders(config);
+  const called: string[] = [];
+  const real = roles.continuist.provider.complete.bind(roles.continuist.provider);
+  roles.continuist.provider = {
+    complete: async (req) => {
+      called.push(req.role);
+      if (req.role === "contextgate") {
+        return JSON.stringify({ ok: false, issues: [{ type: "CONTEXT_CONTRADICTION", entity: "his height", constraint: "", detail: 'a.md: "4\'8"" vs b.md: "5\'2""' }] });
+      }
+      return real(req);
+    }
+  };
+  const log = new EventLog(await tmp());
+  await assert.rejects(runStory({ config, log, roles }), /context gate[\s\S]*a\.md: "4'8"" vs b\.md: "5'2""/);
+  assert.deepEqual(called, ["contextgate"], "nothing else ran");
+  assert.equal(log.events.filter((e) => e.type === "scene_committed").length, 0);
+});
+
+test("a run remembers its context: resuming without --context reuses it, and the gate runs only before scene 1", async () => {
+  const context = "### from world.md\n\nA lighthouse.";
+  const config = await loadConfig({ scenes: 2, context, contextFiles: ["world.md"] });
+  const dir = await tmp();
+  const calls: string[] = [];
+  const contextSeenBy = new Set<string>();
+  // The continuist also serves as the beat and context gates in this config.
+  const track = (roles: ReturnType<typeof buildRoleProviders>) => {
+    const real = roles.continuist.provider.complete.bind(roles.continuist.provider);
+    roles.continuist.provider = {
+      complete: async (req) => {
+        calls.push(req.role);
+        if (req.prompt.includes("A lighthouse.")) contextSeenBy.add(req.role);
+        return real(req);
+      }
+    };
+    return roles;
+  };
+  await runStory({ config, log: new EventLog(dir), roles: track(buildRoleProviders(config)), scenes: 1 });
+  assert.equal(calls.filter((r) => r === "contextgate").length, 1);
+  const { context: _, contextFiles: __, ...noContext } = config;
+  const log = new EventLog(dir);
+  calls.length = 0;
+  contextSeenBy.clear();
+  await runStory({ config: noContext, log, roles: track(buildRoleProviders(noContext)) });
+  assert.equal(calls.filter((r) => r === "contextgate").length, 0, "no gate on resume past scene 1");
+  assert.equal(log.events.filter((e) => e.type === "run_context").length, 1);
+  assert.ok(contextSeenBy.has("continuist"), "scene 2's reviewers still see the stored context");
+});

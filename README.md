@@ -43,7 +43,7 @@ npm run video -- --out runs/keeper-<timestamp>
 
 | Command | What it does |
 |---|---|
-| `run --config <file> [--out <prefix>] [--scenes N] [--premise ".."] [--setting ".."] [--context <file.md>] [--max-attempts N\|unlimited] [--speaker-tags]` | Generate a story, then render its art. `--out` is a prefix (`runs/keeper` → `runs/keeper-<timestamp>`); pointing it at an existing run directory resumes that run. |
+| `run --config <file> [--out <prefix>] [--scenes N] [--premise ".."] [--setting ".."] [--context <file.md> …] [--max-attempts N\|unlimited] [--speaker-tags]` | Generate a story, then render its art. `--out` is a prefix (`runs/keeper` → `runs/keeper-<timestamp>`); pointing it at an existing run directory resumes that run. |
 | `fork --from <dir> --at <sceneCount> --out <dir>` | Branch a run after a given scene. |
 | `show --out <dir>` / `bible --out <dir>` | Print the story as markdown / the current bible as JSON. |
 | `audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>] [--voice-gender id=male,…]` | Narrate each scene to `audiobook/scene-NN.wav` with local Kokoro TTS. |
@@ -58,6 +58,7 @@ npm shortcuts: `story` (real config), `story:mock`, `art`, `artdirect`, `video`,
 
 | Role | Job | Required |
 |---|---|---|
+| **contextgate** | Before anything is generated, checks the author's context files for contradictions between them or with the premise. | optional (falls back to the continuist) |
 | **worldbuilder** | Names characters and places that belong in the setting. | optional |
 | **creator** | Builds the foundation: premise, tone, **art style**, cast (with gender), locations, **key objects**, threads, and scene 1's beat. Runs on the `director`'s provider. | — |
 | **director** | Plans each later scene as a JSON beat spec — never prose. | yes |
@@ -86,7 +87,11 @@ A reviewer that only repeats complaints it already made counts as approving. Rep
 
 ### Context files
 
-`--context <file.md>` hands your own notes to the worldbuilder and the creator: characters, places, history, and how things really work. Use it for facts the models get wrong, such as how an unusual object is held or played. See `contexts/` for examples.
+`--context <file.md>` hands your own notes to every role that plans or reviews the story: characters, places, history, and how things really work. Use it for facts the models get wrong, such as how an unusual object is held or played. See `contexts/` for examples.
+
+`--context` can be repeated to mix and match, for example `--context world.md --context hero.md --context rival.md`. Each file goes in under a `### from <file>` header, so every role can tell where a detail came from. The run remembers its context, so resuming without `--context` uses the same files.
+
+Before anything is generated, the **context gate** checks the combined files. It looks for hard contradictions: two files disagreeing about a fact, a file conflicting with the premise or setting, or a file contradicting itself. If it finds one, the run stops before spending anything and lists each conflict with both sides quoted. Mixing that's merely unusual, such as a character from one file dropped into another file's world, is the point and passes.
 
 ## Audiobook
 
