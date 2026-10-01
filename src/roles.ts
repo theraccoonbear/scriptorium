@@ -262,13 +262,21 @@ export const ARTDIRECTOR_SYSTEM = `You are the Art Director. You write prompts f
 Each prompt becomes ONE still image shown (with a slow pan/zoom, crossfading into the next) while the narration plays.
 
 MODES:
+- PORTRAITS: create the canonical look for each listed character — the reference every later image of them is checked against.
+  Output ONLY JSON:
+  {"portraits":[{"id":string,"appearance":string,"prompt":string}]}
+  - Match the bible's recorded gender, and everything the STORY MENTIONS show about them — pronouns, age, build, hair, beard, clothing, gear. Never contradict the story; invent only what it leaves open.
+  - appearance: one or two sentences fixing what never changes about how they look: height and build, age, skin, hair and facial hair (style and color), face, and signature clothing or gear. Concrete and distinctive, so two characters can never be confused. Consistent with the bible's traits and what the story says about them.
+  - prompt: a full-body character reference portrait of that one character standing in a neutral pose, plain softly lit background, no other figures, in the art style that suits the story's genre and tone. Use the same art-style phrase in every portrait — later scene prompts will repeat it.
+  - Every character must look ORIGINAL: never resemble, evoke, or be described in terms of any real person, actor, or celebrity.
 - SCENE: break the committed scene into SHOTS — a sequence of stills that follows the narration. The scene is given as numbered paragraphs, and you are told how many shots to make. Each shot starts at a paragraph and stays on screen until the next shot's paragraph is read aloud.
   Output ONLY JSON:
-  {"shots":[{"start_paragraph":number,"prompt":string}]}
+  {"shots":[{"start_paragraph":number,"prompt":string,"characters":[characterId]}]}
   - The first shot starts at paragraph 1. start_paragraph values strictly increase.
   - Cut where the action, setting, or focus actually changes, not at even intervals. Spread shots across the WHOLE scene, through to its ending.
   - Each shot depicts a moment that actually happens in its own stretch of paragraphs — never invent events.
   - Vary the framing across shots: wide establishing views, medium shots of characters interacting, close-ups on hands, faces, and objects that matter.
+  - characters: the bible ids of every character visible in the shot (empty for none). Their portraits are given to the image model as references.
 - COVER: one montage/compilation image that sums up the whole story's action, for a video thumbnail and opening card. Combine the key characters, places, and conflicts into a single composition with a clear focal point.
   Output ONLY JSON:
   {"prompt":string}
@@ -276,6 +284,7 @@ MODES:
 PROMPT RULES:
 - One paragraph, 60-120 words, in present tense, describing what the camera sees: subject, action, setting, lighting, mood, composition, and art style.
 - Never use character or place names — the image model does not know who or where they are, and each image is generated on its own. In EVERY prompt, describe each character present by appearance (height and build, age, hair, clothing), never by name alone.
+- CHARACTER APPEARANCES: when given, describe each character with their canonical appearance — same features, colors, and clothing, every time. Never contradict it.
 - VISUAL CONTINUITY: describe each recurring character the same way in every shot, and if PREVIOUS ART PROMPTS are given, keep each character's appearance (age, build, hair, clothing) and the overall art style consistent with them. Only change a look if the scene's prose changes it. Repeat the same art-style phrase in every prompt — each image is generated separately.
 - Wide landscape framing (16:9) with the subject away from the very edges, since the image will be panned and cropped.
 - No text, captions, logos, or speech bubbles in the image.
@@ -791,16 +800,24 @@ export async function reviewPatch(role: Role, params: {
   });
 }
 
-export type ArtMode = "scene" | "cover";
+export type ArtMode = "scene" | "cover" | "portraits";
 
 export interface ArtShot {
   startParagraph: number; // 0-based index into the scene's paragraphs
   prompt: string;
+  characters?: string[];  // bible ids of the characters in the shot
+}
+
+export interface ArtPortrait {
+  characterId: string;
+  appearance: string;
+  prompt: string;
 }
 
 export interface ArtDirection {
-  prompt: string;     // cover prompt, or the first shot's prompt in scene mode
-  shots?: ArtShot[];  // scene mode only
+  prompt: string;            // cover prompt, the first shot's, or the first portrait's
+  shots?: ArtShot[];         // scene mode only
+  portraits?: ArtPortrait[]; // portraits mode only
 }
 
 // One shot per ~45s of narration: at ~150 wpm that is ~110 words.
@@ -816,19 +833,40 @@ export function shotCountFor(paragraphs: string[], wordsPerShot = DEFAULT_WORDS_
 
 // Validates the model's shots: in-range 1-based starts converted to 0-based,
 // sorted, one shot per start, and the first shot pinned to the scene's start.
-export function normalizeShots(raw: unknown, paragraphCount: number): ArtShot[] {
+// A shot's characters are kept only if they're known bible ids.
+export function normalizeShots(raw: unknown, paragraphCount: number, knownIds?: ReadonlySet<string>): ArtShot[] {
   const list = Array.isArray((raw as { shots?: unknown })?.shots) ? (raw as { shots: unknown[] }).shots : [];
-  const byStart = new Map<number, string>();
+  const byStart = new Map<number, ArtShot>();
   for (const item of list) {
-    const r = item as { start_paragraph?: unknown; prompt?: unknown };
+    const r = item as { start_paragraph?: unknown; prompt?: unknown; characters?: unknown };
     const start = Number(r.start_paragraph);
     if (!Number.isInteger(start) || start < 1 || start > paragraphCount) continue;
     if (typeof r.prompt !== "string" || !r.prompt.trim()) continue;
-    if (!byStart.has(start - 1)) byStart.set(start - 1, r.prompt.trim());
+    if (byStart.has(start - 1)) continue;
+    const shot: ArtShot = { startParagraph: start - 1, prompt: r.prompt.trim() };
+    if (knownIds && Array.isArray(r.characters)) {
+      shot.characters = [...new Set(r.characters.map(String).filter((id) => knownIds.has(id)))];
+    }
+    byStart.set(start - 1, shot);
   }
-  const shots = [...byStart.entries()].sort(([a], [b]) => a - b).map(([startParagraph, prompt]) => ({ startParagraph, prompt }));
+  const shots = [...byStart.values()].sort((a, b) => a.startParagraph - b.startParagraph);
   if (shots.length > 0) shots[0].startParagraph = 0;
   return shots;
+}
+
+// Keeps one portrait per requested character with a non-empty look and prompt.
+export function normalizePortraits(raw: unknown, wanted: ReadonlySet<string>): ArtPortrait[] {
+  const list = Array.isArray((raw as { portraits?: unknown })?.portraits) ? (raw as { portraits: unknown[] }).portraits : [];
+  const out = new Map<string, ArtPortrait>();
+  for (const item of list) {
+    const r = item as { id?: unknown; appearance?: unknown; prompt?: unknown };
+    const id = String(r.id ?? "");
+    if (!wanted.has(id) || out.has(id)) continue;
+    if (typeof r.appearance !== "string" || !r.appearance.trim()) continue;
+    if (typeof r.prompt !== "string" || !r.prompt.trim()) continue;
+    out.set(id, { characterId: id, appearance: r.appearance.trim(), prompt: r.prompt.trim() });
+  }
+  return [...out.values()];
 }
 
 export async function artDirect(role: Role, params: {
@@ -841,18 +879,37 @@ export async function artDirect(role: Role, params: {
   sceneIndex?: number;
   // cover mode: every committed beat, in order
   beats?: Beat[];
-  // earlier scene_art prompts, oldest first, for visual continuity
+  // portraits mode: the bible ids to create a canonical look for, and the
+  // passages where the story mentions each (pronouns and physical details)
+  characterIds?: string[];
+  mentions?: Record<string, string[]>;
+  // canonical looks already established (character id -> appearance)
+  appearances?: Record<string, string>;
+  // earlier art prompts, oldest first, for visual continuity
   previousPrompts?: string[];
 }): Promise<RoleOutput<ArtDirection>> {
-  const { bible, mode, beat, sceneIndex, beats, previousPrompts = [] } = params;
+  const { bible, mode, beat, sceneIndex, beats, appearances = {}, previousPrompts = [] } = params;
   const paragraphs = params.paragraphs ?? [];
   const shots = params.shots ?? shotCountFor(paragraphs);
+  const characterIds = params.characterIds ?? [];
   const parts = [renderBible(bible)];
+  const looks = Object.entries(appearances).filter(([id]) => bible.characters[id]);
+  if (looks.length > 0) {
+    parts.push(`CHARACTER APPEARANCES (canonical — use these):\n${looks.map(([id, a]) => `- ${id} (${bible.characters[id].name}): ${a}`).join("\n")}`);
+  }
   if (mode === "scene") {
     parts.push(`MODE: SCENE (scene ${(sceneIndex ?? 0) + 1})`);
     if (beat) parts.push(`BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`);
     parts.push(`COMMITTED SCENE (${paragraphs.length} numbered paragraphs):\n${paragraphs.map((p, n) => `[${n + 1}] ${p}`).join("\n\n")}`);
     parts.push(`Make ${shots} shots.`);
+  } else if (mode === "portraits") {
+    parts.push("MODE: PORTRAITS");
+    const mentions = params.mentions ?? {};
+    const quoted = characterIds
+      .filter((id) => (mentions[id] ?? []).length > 0)
+      .map((id) => `${id}:\n${mentions[id].map((m) => `  > ${m}`).join("\n")}`);
+    if (quoted.length > 0) parts.push(`STORY MENTIONS (how the story so far describes them):\n${quoted.join("\n\n")}`);
+    parts.push(`Create portraits for: ${characterIds.join(", ")}`);
   } else {
     parts.push("MODE: COVER");
     const summary = (beats ?? []).map((b, n) => `${n + 1}. [${b.location}] ${b.goal} — ${b.conflict}`).join("\n");
@@ -868,12 +925,17 @@ export async function artDirect(role: Role, params: {
     role: "artdirector",
     system: ARTDIRECTOR_SYSTEM,
     prompt,
-    ctx: { mode, beat, sceneIndex, beats, shots, paragraphCount: paragraphs.length }
+    ctx: { mode, beat, sceneIndex, beats, shots, paragraphCount: paragraphs.length, characterIds, knownIds: Object.keys(bible.characters) }
   });
   if (mode === "scene") {
-    const normalized = normalizeShots(result, paragraphs.length);
+    const normalized = normalizeShots(result, paragraphs.length, new Set(Object.keys(bible.characters)));
     if (normalized.length === 0) throw new Error("art director returned no usable shots");
     return { result: { prompt: normalized[0].prompt, shots: normalized }, prompt, system, raw };
+  }
+  if (mode === "portraits") {
+    const portraits = normalizePortraits(result, new Set(characterIds));
+    if (portraits.length === 0) throw new Error("art director returned no usable portraits");
+    return { result: { prompt: portraits[0].prompt, portraits }, prompt, system, raw };
   }
   const out = result as Partial<ArtDirection>;
   if (typeof out.prompt !== "string" || !out.prompt.trim()) {

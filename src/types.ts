@@ -117,6 +117,16 @@ export interface SceneCommittedData {
 export interface ArtShotData {
   startParagraph: number; // 0-based paragraph index (shared with audiobook timings.json)
   prompt: string;
+  characters?: string[];  // bible ids of characters in the shot; their portraits are its references
+}
+
+// A character's canonical look, made once when they enter canon. `appearance`
+// is reused verbatim in scene prompts; the rendered portrait is passed as a
+// reference image to every shot the character appears in.
+export interface CharacterArtData {
+  characterId: string;
+  appearance: string;
+  prompt: string;
 }
 
 export interface SceneArtData {

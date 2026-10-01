@@ -78,6 +78,15 @@ export class MockProvider {
       case "worldgate":
         return JSON.stringify({ ok: true, issues: [] });
       case "artdirector": {
+        if (ctx.mode === "portraits") {
+          return JSON.stringify({
+            portraits: (ctx.characterIds ?? []).map((id: string) => ({
+              id,
+              appearance: `Mock look for ${id}.`,
+              prompt: `Mock full-body portrait of ${id}.`
+            }))
+          });
+        }
         if (ctx.mode === "cover") {
           return JSON.stringify({ prompt: `Mock cover montage of ${ctx.beats?.length ?? 0} scenes.` });
         }
@@ -86,7 +95,8 @@ export class MockProvider {
         const n = Math.max(1, Math.min(ctx.shots ?? 1, count));
         const shots = Array.from({ length: n }, (_, k) => ({
           start_paragraph: Math.floor((k * count) / n) + 1,
-          prompt: `Mock shot ${k + 1} of scene ${(ctx.sceneIndex ?? 0) + 1} at ${ctx.beat?.location ?? "an unknown place"}.`
+          prompt: `Mock shot ${k + 1} of scene ${(ctx.sceneIndex ?? 0) + 1} at ${ctx.beat?.location ?? "an unknown place"}.`,
+          characters: (ctx.knownIds ?? []).slice(0, 1)
         }));
         return JSON.stringify({ shots });
       }

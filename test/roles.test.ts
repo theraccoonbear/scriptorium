@@ -185,7 +185,7 @@ test("continuist can flag unaddressed practical gaps", () => {
 test("art director prompt covers both modes, continuity, and video framing", () => {
   assert.ok(ARTDIRECTOR_SYSTEM.includes('{"prompt":string}'), "missing output shape");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("- SCENE:"), "missing scene mode");
-  assert.ok(ARTDIRECTOR_SYSTEM.includes('{"shots":[{"start_paragraph":number,"prompt":string}]}'), "missing shots output shape");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes('{"shots":[{"start_paragraph":number,"prompt":string,"characters":[characterId]}]}'), "missing shots output shape");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("first shot starts at paragraph 1"), "missing first-shot anchor rule");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("Spread shots across the WHOLE scene"), "missing whole-scene coverage rule");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("Vary the framing"), "missing framing variety rule");
@@ -272,4 +272,39 @@ test("creator and archivist are asked for character gender", async () => {
   const { ARCHIVIST_SYSTEM } = await import("../src/roles.ts");
   assert.ok(ARCHIVIST_SYSTEM.includes('"gender"?:"female"|"male"|""'), "archivist patch shape missing gender");
   assert.ok(ARCHIVIST_SYSTEM.includes("Never change an existing character's recorded gender"));
+});
+
+// --- issue #29: canonical character portraits ---
+import { normalizePortraits } from "../src/roles.ts";
+
+test("art director prompt covers portraits, canonical appearances, and no real-person likeness", () => {
+  assert.ok(ARTDIRECTOR_SYSTEM.includes('{"portraits":[{"id":string,"appearance":string,"prompt":string}]}'));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("- PORTRAITS:"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("never resemble, evoke, or be described in terms of any real person"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("CHARACTER APPEARANCES: when given, describe each character with their canonical appearance"));
+});
+
+test("portrait mode lists who needs one; scene mode gets canonical appearances and validates shot characters", async () => {
+  const bible = emptyBible();
+  bible.characters["osmagus"] = { id: "osmagus", name: "Osmagus", traits: "", goal: "", voice: "", status: "active" };
+  bible.characters["merta"] = { id: "merta", name: "Merta", traits: "", goal: "", voice: "", status: "active" };
+  const portraits = await artDirect(mockRole, { bible, mode: "portraits", characterIds: ["merta"], appearances: { osmagus: "stocky, red-bearded" } });
+  assert.ok(portraits.prompt.includes("Create portraits for: merta"));
+  assert.ok(portraits.prompt.includes("- osmagus (Osmagus): stocky, red-bearded"));
+  assert.deepEqual(portraits.result.portraits?.map((p) => p.characterId), ["merta"]);
+
+  const scene = await artDirect(mockRole, { bible, mode: "scene", paragraphs: ["A.", "B.", "C.", "D."], shots: 2, appearances: { osmagus: "stocky, red-bearded" } });
+  assert.ok(scene.prompt.includes("CHARACTER APPEARANCES"));
+  assert.deepEqual(normalizeShots({ shots: [{ start_paragraph: 1, prompt: "p", characters: ["osmagus", "ghost", "osmagus"] }] }, 4, new Set(["osmagus"])),
+    [{ startParagraph: 0, prompt: "p", characters: ["osmagus"] }]);
+});
+
+test("normalizePortraits keeps one valid portrait per requested character", () => {
+  const out = normalizePortraits({ portraits: [
+    { id: "a", appearance: "tall", prompt: "portrait a" },
+    { id: "a", appearance: "short", prompt: "dupe" },
+    { id: "b", appearance: "", prompt: "no look" },
+    { id: "zzz", appearance: "x", prompt: "not requested" }
+  ] }, new Set(["a", "b"]));
+  assert.deepEqual(out, [{ characterId: "a", appearance: "tall", prompt: "portrait a" }]);
 });

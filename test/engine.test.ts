@@ -7,7 +7,7 @@ import { EventLog } from "../src/eventlog.ts";
 import { buildRoleProviders } from "../src/providers.ts";
 import { redirectArt, runStory, tensionAt } from "../src/engine.ts";
 import { replay } from "../src/bible.ts";
-import type { CoverArtData, SceneArtData, SceneCommittedData } from "../src/types.ts";
+import type { CharacterArtData, CoverArtData, SceneArtData, SceneCommittedData } from "../src/types.ts";
 
 async function loadConfig(overrides = {}) {
   const config = JSON.parse(await readFile(new URL("../story.config.json", import.meta.url), "utf8"));
@@ -87,9 +87,9 @@ test("art director emits one scene_art per scene and one cover_art, without touc
   // Each scene's art is a sequence of shots anchored to its paragraphs, starting at the first.
   assert.ok(art.every((a) => (a.shots?.length ?? 0) >= 1 && a.shots![0].startParagraph === 0));
   assert.ok(art.every((a) => a.shots!.every((s, k, all) => k === 0 || s.startParagraph > all[k - 1].startParagraph)));
-  // Each scene's art follows its own commit.
+  // Scene 1's commit is followed by the cast's portraits, then the scene's art.
   const types = log.events.map((e) => e.type);
-  assert.deepEqual(types.slice(0, 2), ["scene_committed", "scene_art"]);
+  assert.deepEqual(types.slice(0, 4), ["scene_committed", "character_art", "character_art", "scene_art"]);
   const covers = log.events.filter((e) => e.type === "cover_art").map((e) => e.data as CoverArtData);
   assert.equal(covers.length, 1);
   assert.equal(covers[0].sceneCount, 3);
@@ -155,4 +155,61 @@ test("creator-assigned gender lands in the bible", async () => {
   const bible = await runStory({ config, log, roles: buildRoleProviders(config) });
   assert.equal(bible.characters.keeper.gender, "female");
   assert.equal(bible.characters.voice.gender, undefined);
+});
+
+// --- issue #29: canonical character portraits ---
+test("portraits are made once per character, and scene shots name who appears", async () => {
+  const config = await loadConfig({ scenes: 3 });
+  const log = new EventLog(await tmp());
+  const bible = await runStory({ config, log, roles: buildRoleProviders(config) });
+  const portraits = log.events.filter((e) => e.type === "character_art").map((e) => e.data as CharacterArtData);
+  assert.deepEqual(portraits.map((p) => p.characterId).sort(), Object.keys(bible.characters).sort());
+  assert.ok(portraits.every((p) => p.appearance && p.prompt));
+  const shots = log.events.filter((e) => e.type === "scene_art").flatMap((e) => (e.data as SceneArtData).shots ?? []);
+  assert.ok(shots.every((s) => (s.characters ?? []).every((id) => bible.characters[id])));
+  assert.ok(shots.some((s) => (s.characters ?? []).length > 0));
+});
+
+test("a portrait failure doesn't stop scene art or the run", async () => {
+  const config = await loadConfig({ scenes: 2 });
+  const log = new EventLog(await tmp());
+  const roles = buildRoleProviders(config);
+  const artdirector = roles.artdirector!;
+  const real = artdirector.provider.complete.bind(artdirector.provider);
+  artdirector.provider = { complete: async (req) => { if ((req.ctx as { mode?: string })?.mode === "portraits") throw new Error("boom"); return real(req); } };
+  const bible = await runStory({ config, log, roles });
+  assert.equal(bible.sceneCount, 2);
+  assert.equal(log.events.filter((e) => e.type === "character_art").length, 0);
+  assert.equal(log.events.filter((e) => e.type === "scene_art").length, 2);
+});
+
+test("redirectArt adds portraits for an existing run, keeping any that exist", async () => {
+  const config = await loadConfig({ scenes: 1 });
+  const { artdirector: _, ...noArtRoles } = config.roles;
+  const plain = { ...config, roles: noArtRoles };
+  const dir = await tmp();
+  await runStory({ config: plain, log: new EventLog(dir), roles: buildRoleProviders(plain) });
+  const log = new EventLog(dir);
+  await log.load();
+  await log.append("character_art", { characterId: "keeper", appearance: "kept look", prompt: "kept" });
+  const made: string[][] = [];
+  await redirectArt({ config, log, roles: buildRoleProviders(config), onPortraits: (ids) => made.push(ids) });
+  assert.deepEqual(made, [["voice"]]);
+  const looks = log.events.filter((e) => e.type === "character_art").map((e) => e.data as CharacterArtData);
+  assert.equal(looks.find((p) => p.characterId === "keeper")!.appearance, "kept look");
+});
+
+test("characterMentions finds paragraphs naming a character by any part of their name", async () => {
+  const { characterMentions } = await import("../src/engine.ts");
+  const { emptyBible } = await import("../src/bible.ts");
+  const bible = emptyBible();
+  bible.characters.pip = { id: "pip", name: "Pip Goldleaf", traits: "", goal: "", voice: "", status: "active" };
+  bible.characters.mekka = { id: "mekka", name: "Mekka Brighthorn", traits: "", goal: "", voice: "", status: "active" };
+  const events = [{ seq: 0, type: "scene_committed", ts: "t", data: { index: 0, prose: "narrator: Pip ran ahead. The boy laughed.\n\nnarrator: The ridge was cold.\n\nnarrator: Goldleaf, Mekka called. She waited." } }];
+  const m = characterMentions(bible, events, ["pip", "mekka"]);
+  assert.deepEqual(m.pip, ["Pip ran ahead. The boy laughed.", "Goldleaf, Mekka called. She waited."]);
+  assert.deepEqual(m.mekka, ["Goldleaf, Mekka called. She waited."]);
+  // "Pip" must match as a word, not inside "Pipe".
+  const pipe = characterMentions(bible, [{ seq: 0, type: "scene_committed", ts: "t", data: { index: 0, prose: "The Pipe sang." } }], ["pip"]);
+  assert.deepEqual(pipe, {});
 });

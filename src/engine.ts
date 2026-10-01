@@ -9,6 +9,7 @@ import { EventLog } from "./eventlog.ts";
 import type {
   Beat,
   Bible,
+  CharacterArtData,
   CoverArtData,
   GateResult,
   Issue,
@@ -405,12 +406,20 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       previousScenes.push(prose);
       if (runDir) await writeStoryIncremental(runDir, log.events);
 
-      // Art Director: a sequence of shots for this scene, each anchored to the
-      // paragraph where it comes on screen. The scene is already canon, so a failure only warns.
+      // Art Director: canonical portraits for any character that just entered
+      // canon (the Creator's cast with scene 1, the Archivist's additions later),
+      // then a sequence of shots for this scene, each anchored to the paragraph
+      // where it comes on screen. The scene is already canon, so failures only warn.
       if (roles.artdirector) {
         const artRole = roles.artdirector;
+        await nonFatal(`scene ${i + 1} character portraits`, async () => {
+          const out = await directPortraits(artRole, bible, log.events);
+          if (!out) return;
+          if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-portraits", out);
+          for (const p of out.result.portraits ?? []) await log.append("character_art", p satisfies CharacterArtData);
+        });
         await nonFatal(`scene ${i + 1} art prompts`, async () => {
-          const out = await directSceneArt(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events));
+          const out = await directSceneArt(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events), characterAppearances(log.events));
           if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector", out);
           const art: SceneArtData = { sceneIndex: i, prompt: out.result.prompt, shots: out.result.shots };
           await log.append("scene_art", art);
@@ -433,7 +442,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   if (roles.artdirector && committed.length > 0 && lastCover?.sceneCount !== committed.length) {
     const artRole = roles.artdirector;
     await nonFatal("cover art prompt", async () => {
-      const out = await directCoverArt(artRole, bible, committed, sceneArtPrompts(log.events));
+      const out = await directCoverArt(artRole, bible, committed, sceneArtPrompts(log.events), characterAppearances(log.events));
       if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
       const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
       await log.append("cover_art", cover);
@@ -444,7 +453,37 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   return bible;
 }
 
-async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, beat: Beat, prose: string, sceneIndex: number, previousPrompts: string[]) {
+// Up to `limit` paragraphs of committed prose that mention each character by
+// any part of their name — where the story establishes pronouns and looks.
+export function characterMentions(bible: Bible, events: StoryEvent[], ids: string[], limit = 4, maxChars = 400): Record<string, string[]> {
+  const known = new Set(Object.keys(bible.characters));
+  const paragraphs = events
+    .filter((e) => e.type === "scene_committed")
+    .flatMap((e) => sceneParagraphs((e.data as SceneCommittedData).prose, known));
+  const out: Record<string, string[]> = {};
+  for (const id of ids) {
+    const names = (bible.characters[id]?.name ?? id).split(/\s+/).filter((w) => w.length >= 3).map((w) => w.replace(/[^\p{L}'-]/gu, ""));
+    if (names.length === 0) continue;
+    const pattern = new RegExp(`\\b(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`);
+    const hits = paragraphs.filter((p) => pattern.test(p)).slice(0, limit);
+    if (hits.length > 0) out[id] = hits.map((p) => (p.length > maxChars ? `${p.slice(0, maxChars)}…` : p));
+  }
+  return out;
+}
+
+// Portraits for characters in the bible that have no character_art yet; null when none are missing.
+async function directPortraits(role: Role, bible: Bible, events: StoryEvent[]) {
+  const have = characterAppearances(events);
+  const missing = Object.keys(bible.characters).filter((id) => !have[id]).sort();
+  if (missing.length === 0) return null;
+  const t0 = Date.now();
+  const mentions = characterMentions(bible, events, missing);
+  const out = await artDirect(role, { bible, mode: "portraits", characterIds: missing, mentions, appearances: have });
+  recordTiming("artdirector", Date.now() - t0);
+  return out;
+}
+
+async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, beat: Beat, prose: string, sceneIndex: number, previousPrompts: string[], appearances: Record<string, string>) {
   const t0 = Date.now();
   // Same paragraph numbering as the audiobook's timings.json.
   const paragraphs = sceneParagraphs(prose, new Set(Object.keys(bible.characters)));
@@ -455,29 +494,32 @@ async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, bea
     paragraphs,
     shots: shotCountFor(paragraphs, config.artWordsPerShot),
     sceneIndex,
+    appearances,
     previousPrompts
   });
   recordTiming("artdirector", Date.now() - t0);
   return out;
 }
 
-async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[]) {
+async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[], appearances: Record<string, string>) {
   const t0 = Date.now();
-  const out = await artDirect(role, { bible, mode: "cover", beats: committed.map((d) => d.beat), previousPrompts });
+  const out = await artDirect(role, { bible, mode: "cover", beats: committed.map((d) => d.beat), appearances, previousPrompts });
   recordTiming("artdirector", Date.now() - t0);
   return out;
 }
 
-// Re-runs the Art Director over an existing run's committed scenes and cover,
-// appending fresh scene_art / cover_art events (the newest per scene wins).
+// Re-runs the Art Director over an existing run: portraits for any character
+// without one (existing portraits are kept so looks stay stable), then fresh
+// scene_art / cover_art events (the newest per scene wins).
 // For runs made before shots existed, or to re-shoot after a prompt change.
 // Story canon is untouched. Fails fast: unlike a live run there is no scene to protect.
-export async function redirectArt({ config, log, roles, runDir, onScene }: {
+export async function redirectArt({ config, log, roles, runDir, onScene, onPortraits }: {
   config: StoryConfig;
   log: EventLog;
   roles: Roles;
   runDir?: string;
   onScene?: (sceneIndex: number, shots: number) => void;
+  onPortraits?: (characterIds: string[]) => void;
 }): Promise<number> {
   const artRole = roles.artdirector;
   if (!artRole) throw new Error("config has no artdirector role");
@@ -488,6 +530,13 @@ export async function redirectArt({ config, log, roles, runDir, onScene }: {
       seq = (await readdir(runDir)).filter((f) => f.endsWith(".md")).length;
     } catch { /* empty dir */ }
   }
+  const portraits = await directPortraits(artRole, replay(log.events), log.events);
+  if (portraits) {
+    if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-portraits-redo", portraits);
+    for (const p of portraits.result.portraits ?? []) await log.append("character_art", p satisfies CharacterArtData);
+    onPortraits?.((portraits.result.portraits ?? []).map((p) => p.characterId));
+  }
+  const appearances = characterAppearances(log.events);
   const events = [...log.events];
   const committed: SceneCommittedData[] = [];
   const prompts: string[] = [];
@@ -497,7 +546,7 @@ export async function redirectArt({ config, log, roles, runDir, onScene }: {
     committed.push(d);
     // The bible as it stood right after this scene committed — what the live run saw.
     const bible = replay(events.slice(0, n + 1));
-    const out = await directSceneArt(artRole, config, bible, d.beat, d.prose, d.index, prompts);
+    const out = await directSceneArt(artRole, config, bible, d.beat, d.prose, d.index, prompts, appearances);
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-redo", out);
     const art: SceneArtData = { sceneIndex: d.index, prompt: out.result.prompt, shots: out.result.shots };
     await log.append("scene_art", art);
@@ -505,12 +554,24 @@ export async function redirectArt({ config, log, roles, runDir, onScene }: {
     onScene?.(d.index, out.result.shots?.length ?? 1);
   }
   if (committed.length > 0) {
-    const out = await directCoverArt(artRole, replay(events), committed, prompts);
+    const out = await directCoverArt(artRole, replay(events), committed, prompts, appearances);
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover-redo", out);
     const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
     await log.append("cover_art", cover);
   }
   return committed.length;
+}
+
+// Canonical looks so far: character id -> appearance (newest portrait wins).
+function characterAppearances(events: StoryEvent[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const e of events) {
+    if (e.type === "character_art") {
+      const d = e.data as CharacterArtData;
+      out[d.characterId] = d.appearance;
+    }
+  }
+  return out;
 }
 
 function sceneArtPrompts(events: StoryEvent[]): string[] {
