@@ -557,8 +557,9 @@ export async function write(role: Role, params: {
   previousDraft?: string;
   previousScenes?: string[];
   speakerTags?: boolean;
+  suggestions?: Issue[];  // optional craft notes (advisory critic) — take or leave
 } & CreativeFeedback): Promise<RoleOutput<string>> {
-  const { bible, beat, sceneIndex, attempt, sceneWords, previousDraft, previousScenes, speakerTags, issues, fresh } = params;
+  const { bible, beat, sceneIndex, attempt, sceneWords, previousDraft, previousScenes, speakerTags, issues, fresh, suggestions } = params;
   // Voice sheets for every character in the bible — not just POV, so minor
   // characters arrive with their own register and voices cannot converge.
   const voiceSheets = Object.values(bible.characters)
@@ -589,6 +590,9 @@ export async function write(role: Role, params: {
     "THE REVIEWERS REJECTED THE PREVIOUS DRAFT. ISSUES TO FIX:",
     fresh ? "" : "\n\nPreserve everything that works in the previous draft. Fix only the issues above."
   );
+  const advice = suggestions && suggestions.length > 0
+    ? `OPTIONAL SUGGESTIONS from the critic (not required — adopt any that make the scene better while you fix the issues above; ignore the rest):\n${suggestions.map((i) => `- ${renderIssue(normalizeIssue(i))}`).join("\n")}`
+    : "";
   const draft = previousDraft && !fresh ? `PREVIOUS DRAFT:\n${previousDraft}` : "";
   const priorProse = (previousScenes || [])
     .map((s, idx) => `--- SCENE ${idx + 1} (already committed) ---\n${s}`)
@@ -602,7 +606,8 @@ export async function write(role: Role, params: {
     voice,
     speakerTagBlock,
     draft,
-    fix
+    fix,
+    advice
   ].filter(Boolean).join("\n\n");
   let raw: string;
   try {

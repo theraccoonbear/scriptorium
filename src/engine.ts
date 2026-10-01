@@ -29,6 +29,7 @@ import type {
   VisualRefData,
   WorldOutput
 } from "./types.ts";
+import { CRITIC_MODES } from "./types.ts";
 
 export const COMPLICATIONS = [
   "An ally withholds a crucial fact.",
@@ -109,6 +110,13 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   // maxAttempts = total drafts allowed. Infinity = unbounded until both reviewers approve.
   const defaultAttempts = (config.maxRevisions ?? 2) + 1;
   const maxAttempts = maxAttemptsOverride ?? defaultAttempts;
+  // The critic's say over a scene: blocking (default), advisory, or off (never called).
+  const criticMode = config.critic ?? "blocking";
+  if (!(CRITIC_MODES as readonly string[]).includes(criticMode)) {
+    throw new Error(`critic must be one of ${CRITIC_MODES.join(", ")} (got "${criticMode}")`);
+  }
+  const critic = criticMode === "off" ? undefined : roles.critic;
+  const advisory = criticMode === "advisory";
 
   if (runDir) {
     await mkdir(runDir, { recursive: true });
@@ -276,6 +284,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
 
       let prose = "";
       let verdict: Verdict = { ok: false, issues: [] };
+      let suggestions: Issue[] = [];   // advisory critic's notes for the next draft
       let attempt = 0;
       let stage = 1;          // 1 = surgical revisions, 2 = fresh stab
       let surgicalTries = 0;  // consecutive stage-1 failures
@@ -295,7 +304,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         }
         const fresh = stage === 2;
         t0 = Date.now();
-        const writeOut = await write(roles.writer, { bible, beat: beat.result, sceneIndex: i, attempt, sceneWords, issues: verdict.issues, previousDraft: prose, previousScenes, fresh, speakerTags: config.speakerTags });
+        const writeOut = await write(roles.writer, { bible, beat: beat.result, sceneIndex: i, attempt, sceneWords, issues: verdict.issues, suggestions, previousDraft: prose, previousScenes, fresh, speakerTags: config.speakerTags });
         recordTiming("writer", Date.now() - t0);
         if (runDir) await writeRoleOutput(runDir, ++seq, `writer-a${attempt}`, writeOut);
         prose = writeOut.result;
@@ -321,8 +330,8 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         };
         const [contRaw, criticOut] = await Promise.all([
           checkContinuity(roles.continuist, gateCtx),
-          roles.critic
-            ? review(roles.critic, gateCtx)
+          critic
+            ? review(critic, gateCtx)
             : Promise.resolve(null)
         ]);
         recordTiming("continuist", Date.now() - t0);
@@ -357,16 +366,22 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         const contNew = contOut ? contOut.result.issues.filter(isNew) : [];
         const criticNew = criticOut ? criticOut.result.issues.filter(isNew) : [];
         const contOk = contOut ? (contOut.result.ok || contNew.length === 0) : true;
-        const criticOk = criticOut ? (criticOut.result.ok || criticNew.length === 0) : true;
+        // An advisory critic never blocks: its notes go to the writer as optional
+        // suggestions, and only when the continuist sends the draft back anyway.
+        const criticOk = advisory || (criticOut ? (criticOut.result.ok || criticNew.length === 0) : true);
         const combined = [
           ...(contOut ? contOut.result.issues : []),
-          ...(criticOut ? criticOut.result.issues : [])
+          ...(criticOut && !advisory ? criticOut.result.issues : [])
         ];
         verdict = {
           ok: contOk && criticOk,
           issues: dedupIssues(combined).slice(0, 8)
         };
+        suggestions = advisory && criticOut ? dedupIssues(criticOut.result.issues).slice(0, 5) : [];
         if (verdict.ok) {
+          if (suggestions.length > 0) {
+            console.error(`[scriptorium]   ${c.dim(`critic (advisory): ${suggestions.length} note${suggestions.length === 1 ? "" : "s"} not applied — continuity is clean`)}`);
+          }
           const repeatOnly: string[] = [];
           if (contOut && !contOut.result.ok && contNew.length === 0) repeatOnly.push("continuist");
           if (criticOut && !criticOut.result.ok && criticNew.length === 0) repeatOnly.push("critic");
@@ -395,6 +410,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           beat = await produceBeat(dedupIssues(stuck));
           prose = "";
           verdict = { ok: false, issues: [] };
+          suggestions = [];
           contHistory.length = 0;
           criticHistory.length = 0;
           rounds.length = 0;
@@ -415,6 +431,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           beat = await produceBeat(verdict.issues);
           prose = "";
           verdict = { ok: false, issues: [] };
+          suggestions = [];
           contHistory.length = 0;
           criticHistory.length = 0;
           rounds.length = 0;
@@ -424,7 +441,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       }
 
       // Archivist writes the bible patch; the patch gate must approve before it applies.
-      const patchGateRole = roles.patchgate || roles.critic || roles.continuist;
+      const patchGateRole = roles.patchgate || critic || roles.continuist;
       const archOut = await gatedGenerate({
         label: "patch",
         feedback: [],

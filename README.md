@@ -116,6 +116,12 @@ The continuist and the critic review every draft in parallel, and both must appr
 
 A reviewer that only repeats complaints it already made counts as approving. Repeats are matched by meaning, not wording. A passage flagged in three drafts, by either reviewer, skips straight to a new beat: that's reviewers disagreeing, or a demand that can't be met. The continuist stays in its lane, and craft complaints from it are dropped. `--max-attempts` caps the drafts per scene (default 3). `unlimited` keeps going until both reviewers approve.
 
+`"critic"` in the config or story file sets how much say the critic has:
+
+- `"blocking"` (the default): both reviewers must approve, as above.
+- `"advisory"`: the critic never holds a scene back. Only the continuist can reject a draft. When it does, the writer gets the critic's notes as optional suggestions alongside the continuity fixes. A draft with clean continuity commits, and any critic notes are dropped.
+- `"off"`: the critic isn't called at all. This saves its calls.
+
 ### Context files
 
 `--context <file.md>` hands your own notes to every role that plans or reviews the story: characters, places, history, and how things really work. Use it for facts the models get wrong, such as how an unusual object is held or played. See `contexts/` for examples.

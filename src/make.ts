@@ -6,6 +6,7 @@ import { checkDirection } from "./providers.ts";
 import { formatSummary, readLedger, summarize } from "./usage.ts";
 import { artStep, audiobookStep, loadRun, readContexts, storyStep, videoStep } from "./steps.ts";
 import { c } from "./colors.ts";
+import { CRITIC_MODES } from "./types.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
 
 // A story file holds everything about one story — the config, premise,
@@ -29,6 +30,7 @@ export interface StoryFile {
   maxDraftsPerScene?: number;          // hard stop for a scene that won't settle (default 20)
   pricing?: StoryConfig["pricing"];    // per-model USD per million tokens, over the defaults
   artStyle?: string;                   // prescriptive art style; overrides the Creator's
+  critic?: StoryConfig["critic"];      // "blocking" (default), "advisory" or "off"
 }
 
 export interface ResolvedStory {
@@ -65,10 +67,14 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...(raw.artStyle ?? baseConfig.artStyle ? { artStyle: raw.artStyle ?? baseConfig.artStyle } : {}),
     ...(raw.budget ?? baseConfig.budget ? { budget: raw.budget ?? baseConfig.budget } : {}),
     ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
-    ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {})
+    ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {}),
+    ...(raw.critic ?? baseConfig.critic ? { critic: raw.critic ?? baseConfig.critic } : {})
   };
   if (config.budget !== undefined && !(typeof config.budget.usd === "number" && config.budget.usd > 0)) {
     throw new Error(`${path}: "budget" must look like { "usd": 5 }`);
+  }
+  if (config.critic !== undefined && !(CRITIC_MODES as readonly string[]).includes(config.critic)) {
+    throw new Error(`${path}: "critic" must be one of ${CRITIC_MODES.join(", ")}`);
   }
   checkDirection(config.direction);
   const contexts = raw.context === undefined ? [] : Array.isArray(raw.context) ? raw.context : [raw.context];

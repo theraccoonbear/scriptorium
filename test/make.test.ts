@@ -128,3 +128,10 @@ test("story files carry a budget, a draft cap and pricing; a malformed budget is
   const bad = await storyDir({ budget: 5 });
   await assert.rejects(loadStoryFile(bad.file), /"budget" must look like/);
 });
+
+test("story files set the critic mode and reject unknown ones", async () => {
+  const { file } = await storyDir({ critic: "advisory" });
+  assert.equal((await loadStoryFile(file)).config.critic, "advisory");
+  const bad = await storyDir({ critic: "polite" });
+  await assert.rejects(loadStoryFile(bad.file), /"critic" must be one of blocking, advisory, off/);
+});
