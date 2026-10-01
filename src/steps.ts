@@ -6,6 +6,7 @@ import { buildRoleProviders } from "./providers.ts";
 import { runStory } from "./engine.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
+import type { EncoderChoice } from "./video.ts";
 import { makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
 import { c } from "./colors.ts";
 import type { Bible, StoryConfig, StoryEvent } from "./types.ts";
@@ -110,12 +111,20 @@ export async function audiobookStep(runDir: string, events: StoryEvent[], opts: 
   return result;
 }
 
-export async function videoStep(runDir: string, events: StoryEvent[], force: boolean | undefined) {
+export interface VideoStepOptions {
+  encoder?: EncoderChoice;
+  parallel?: number;
+}
+
+export async function videoStep(runDir: string, events: StoryEvent[], force: boolean | undefined, opts: VideoStepOptions = {}) {
   const result = await renderVideo(events, {
     runDir,
     force,
+    encoder: opts.encoder,
+    parallel: opts.parallel,
     onProgress: (event) => {
-      if (event.type === "warning") console.error(`[scriptorium] ${c.retry(event.message)}`);
+      if (event.type === "encoder") console.error(`[scriptorium] ${c.dim(`encoding with ${event.encoder === "nvenc" ? "NVENC (GPU)" : "x264 (CPU)"}, ${event.parallel} scene${event.parallel === 1 ? "" : "s"} at a time`)}`);
+      else if (event.type === "warning") console.error(`[scriptorium] ${c.retry(event.message)}`);
       else if (event.type === "part_start") console.error(`[scriptorium] ${c.blue(c.bold(event.label))} ${c.dim(`(${Math.round(event.seconds)}s of video)`)}`);
       else if (event.type === "part_skipped") console.error(`[scriptorium] ${c.dim(`${event.label} unchanged — skipping`)}`);
       else if (event.type === "part_done") console.error(`[scriptorium] ${c.ok(`${event.label} rendered in ${Math.round(event.elapsedMs / 1000)}s`)}`);
