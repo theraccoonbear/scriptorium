@@ -6,6 +6,7 @@ import { buildRoleProviders, listModels } from "./providers.ts";
 import { runStory, renderStory, redirectArt } from "./engine.ts";
 import { replay } from "./bible.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
+import { renderVideo } from "./video.ts";
 import { makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
 import { c } from "./colors.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
@@ -21,6 +22,8 @@ const USAGE = `scriptorium <command> [options]
   audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>]
                                                          render the run's scenes to WAV
   art   --out <dir> [--config <file>] [--force]          render the run's art prompts to images
+  video --out <dir> [--force]                          assemble art + audiobook into video/story.mp4
+                                                         (Ken Burns shots, timed crossfades, subtitles)
   artdirect --out <dir> [--config <file>]               redo the art direction (shots + cover) for an
                                                          existing run, then render the images
   models --config <file> --provider <name>              list model ids a provider serves
@@ -218,6 +221,29 @@ async function main() {
     const log = new EventLog(values.out);
     await log.load();
     console.log(command === "show" ? renderStory(log.events) : JSON.stringify(replay(log.events), null, 2));
+    return;
+  }
+
+  if (command === "video") {
+    if (!values.out) {
+      throw new Error("--out is required");
+    }
+    const log = new EventLog(values.out);
+    await log.load();
+    const result = await renderVideo(log.events, {
+      runDir: values.out,
+      force: values.force,
+      onProgress: (event) => {
+        if (event.type === "warning") console.error(`[scriptorium] ${c.retry(event.message)}`);
+        else if (event.type === "part_start") console.error(`[scriptorium] ${c.blue(c.bold(event.label))} ${c.dim(`(${Math.round(event.seconds)}s of video)`)}`);
+        else if (event.type === "part_skipped") console.error(`[scriptorium] ${c.dim(`${event.label} unchanged — skipping`)}`);
+        else if (event.type === "part_done") console.error(`[scriptorium] ${c.ok(`${event.label} rendered in ${Math.round(event.elapsedMs / 1000)}s`)}`);
+        else if (event.type === "muxing") console.error(`[scriptorium] ${c.dim("joining parts and adding narration...")}`);
+      }
+    });
+    const m = Math.floor(result.durationSec / 60);
+    const s = Math.round(result.durationSec % 60);
+    console.log(`${c.ok(`${m}m ${s}s video written to`)} ${c.cyan(result.video)} ${c.dim("(+ thumbnail.jpg, story.srt)")}`);
     return;
   }
 
