@@ -117,12 +117,26 @@ export interface SceneCommittedData {
 export interface ArtShotData {
   startParagraph: number; // 0-based paragraph index (shared with audiobook timings.json)
   prompt: string;
-  characters?: string[];  // bible ids of characters in the shot; their portraits are its references
+  // What the shot shows, by reference id; their reference images are passed to the image model.
+  characters?: string[];  // bible character ids
+  location?: string;      // bible location id
+  props?: string[];       // visual_ref prop ids
 }
 
-// A character's canonical look, made once when they enter canon. `appearance`
-// is reused verbatim in scene prompts; the rendered portrait is passed as a
-// reference image to every shot the character appears in.
+// Canonical visual references: one image per character, location and key prop,
+// made once when it enters the story and passed to every image that shows it.
+// `appearance` is reused verbatim in scene prompts.
+export type VisualRefKind = "character" | "location" | "prop";
+
+export interface VisualRefData {
+  kind: VisualRefKind;
+  id: string;          // bible id for characters and locations; a slug the Art Director picks for props
+  name?: string;       // props: what the story calls it
+  appearance: string;
+  prompt: string;
+}
+
+// Legacy (pre-locations/props) portrait event; read as a character VisualRefData.
 export interface CharacterArtData {
   characterId: string;
   appearance: string;

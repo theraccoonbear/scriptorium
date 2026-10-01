@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   INSPECTOR_SYSTEM,
+  LOCATION_LABEL,
   PORTRAIT_LABEL,
+  PROP_LABEL,
   SCENE_LABEL,
   MockImageBackend,
   MockInspector,
@@ -189,39 +191,49 @@ test("the manifest records each image's scene and anchor paragraph, and keeps an
   assert.equal(manifest["scene-01-02"].startParagraph, 6);
 });
 
-// --- issue #29: canonical character portraits ---
-test("portraits render first, and each shot gets its characters' portraits as labelled references", async () => {
+// --- issue #29: canonical visual references ---
+test("references render first; each shot gets its characters, location and props as labelled references", async () => {
   const runDir = await tmp();
   const events = [
+    // A legacy portrait event still counts as a character reference.
     ev(0, "character_art", { characterId: "osmagus", appearance: "stocky", prompt: "portrait osmagus" }),
-    ev(1, "character_art", { characterId: "merta", appearance: "old", prompt: "portrait merta" }),
-    ev(2, "scene_art", { sceneIndex: 0, prompt: "s1", shots: [
-      { startParagraph: 0, prompt: "s1", characters: ["osmagus"] },
+    ev(1, "visual_ref", { kind: "character", id: "merta", appearance: "old", prompt: "portrait merta" }),
+    ev(2, "visual_ref", { kind: "location", id: "spires", appearance: "peaks", prompt: "place spires" }),
+    ev(3, "visual_ref", { kind: "prop", id: "horn", name: "alpenhorn", appearance: "wood", prompt: "prop horn" }),
+    ev(4, "scene_art", { sceneIndex: 0, prompt: "s1", shots: [
+      { startParagraph: 0, prompt: "s1", characters: ["osmagus"], location: "spires", props: ["horn"] },
       { startParagraph: 3, prompt: "s2", characters: [] },
-      { startParagraph: 6, prompt: "s3", characters: ["merta", "osmagus"] }
+      { startParagraph: 6, prompt: "s3", characters: ["merta", "osmagus"], location: "spires" }
     ] }),
-    ev(3, "cover_art", { sceneCount: 1, prompt: "cover" })
+    ev(5, "cover_art", { sceneCount: 1, prompt: "cover" })
   ];
-  assert.deepEqual(buildArtJobs(events).map((j) => j.key), ["character-merta", "character-osmagus", "scene-01-01", "scene-01-02", "scene-01-03", "cover"]);
+  assert.deepEqual(buildArtJobs(events).map((j) => j.key),
+    ["character-merta", "character-osmagus", "location-spires", "prop-horn", "scene-01-01", "scene-01-02", "scene-01-03", "cover"]);
   const backend = new MockImageBackend();
   const result = await renderArt(events, { runDir, backend });
-  assert.equal(result.rendered, 6);
+  assert.equal(result.rendered, 8);
   const call = (prompt: string) => backend.calls.find((c) => c.prompt === prompt)!;
   assert.equal(call("portrait merta").aspectRatio, "3:4");
-  assert.deepEqual(call("s1").references.map((r) => r.label), [PORTRAIT_LABEL]);
+  assert.equal(call("place spires").aspectRatio, "16:9");
+  assert.equal(call("prop horn").aspectRatio, "1:1");
+  assert.deepEqual(call("s1").references.map((r) => r.label), [PORTRAIT_LABEL, LOCATION_LABEL, PROP_LABEL]);
+  // No references for s2, so it leans on recent renders for style (only s1 exists yet).
   assert.deepEqual(call("s2").references.map((r) => r.label), [SCENE_LABEL]);
-  assert.deepEqual(call("s3").references.map((r) => r.label), [PORTRAIT_LABEL, PORTRAIT_LABEL, SCENE_LABEL, SCENE_LABEL]);
-  assert.equal(call("cover").references.filter((r) => r.label === PORTRAIT_LABEL).length, 2);
-  assert.equal(result.manifest["character-merta"].characterId, "merta");
-  assert.equal(result.manifest["character-merta"].sceneIndex, undefined);
+  assert.deepEqual(call("s3").references.map((r) => r.label), [PORTRAIT_LABEL, PORTRAIT_LABEL, LOCATION_LABEL, SCENE_LABEL]);
+  // The cover features the most-shown characters, place and prop.
+  assert.deepEqual(call("cover").references.filter((r) => r.label !== SCENE_LABEL).map((r) => r.label), [PORTRAIT_LABEL, PORTRAIT_LABEL, LOCATION_LABEL, PROP_LABEL]);
+  assert.equal(result.manifest["prop-horn"].refKind, "prop");
+  assert.equal(result.manifest["prop-horn"].sceneIndex, undefined);
 
-  // A skipped (unchanged) portrait is still passed as a reference on the next render.
+  // Skipped (unchanged) references are still passed on the next render.
   const again = new MockImageBackend();
-  await renderArt([...events, ev(4, "scene_art", { sceneIndex: 0, prompt: "new", shots: [{ startParagraph: 0, prompt: "new", characters: ["merta"] }] })], { runDir, backend: again });
-  assert.deepEqual(again.calls.map((c) => [c.prompt, c.references.filter((r) => r.label === PORTRAIT_LABEL).length]), [["new", 1]]);
+  await renderArt([...events, ev(6, "scene_art", { sceneIndex: 0, prompt: "new", shots: [{ startParagraph: 0, prompt: "new", characters: ["merta"], props: ["horn"] }] })], { runDir, backend: again });
+  // ("new" replaces scene 1 and is the first non-reference image, so there's no earlier render for style.)
+  assert.deepEqual(again.calls.map((c) => [c.prompt, c.references.map((r) => r.label)]), [["new", [PORTRAIT_LABEL, PROP_LABEL]]]);
 });
 
-test("the inspector checks likeness to portraits and resemblance to real people", () => {
-  assert.ok(INSPECTOR_SYSTEM.includes("CHARACTER LIKENESS"));
+test("the inspector checks references (characters, places, props) and real-person resemblance", () => {
+  assert.ok(INSPECTOR_SYSTEM.includes("REFERENCE MATCH"));
+  assert.ok(INSPECTOR_SYSTEM.includes("PROP reference"));
   assert.ok(INSPECTOR_SYSTEM.includes("REAL PERSON"));
 });

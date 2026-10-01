@@ -78,13 +78,13 @@ export class MockProvider {
       case "worldgate":
         return JSON.stringify({ ok: true, issues: [] });
       case "artdirector": {
-        if (ctx.mode === "portraits") {
+        if (ctx.mode === "references") {
+          const ref = (id: string) => ({ id, appearance: `Mock look for ${id}.`, prompt: `Mock reference image of ${id}.` });
           return JSON.stringify({
-            portraits: (ctx.characterIds ?? []).map((id: string) => ({
-              id,
-              appearance: `Mock look for ${id}.`,
-              prompt: `Mock full-body portrait of ${id}.`
-            }))
+            characters: (ctx.characterIds ?? []).map(ref),
+            locations: (ctx.locationIds ?? []).map(ref),
+            // One key prop for the whole story, found the first time.
+            props: (ctx.propIds ?? []).length === 0 ? [{ ...ref("mock_prop"), name: "mock prop" }] : []
           });
         }
         if (ctx.mode === "cover") {
@@ -96,7 +96,9 @@ export class MockProvider {
         const shots = Array.from({ length: n }, (_, k) => ({
           start_paragraph: Math.floor((k * count) / n) + 1,
           prompt: `Mock shot ${k + 1} of scene ${(ctx.sceneIndex ?? 0) + 1} at ${ctx.beat?.location ?? "an unknown place"}.`,
-          characters: (ctx.knownIds ?? []).slice(0, 1)
+          characters: (ctx.knownIds ?? []).slice(0, 1),
+          location: (ctx.locationIdsKnown ?? [])[0] ?? "",
+          props: (ctx.propIds ?? []).slice(0, 1)
         }));
         return JSON.stringify({ shots });
       }
