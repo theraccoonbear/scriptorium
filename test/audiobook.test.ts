@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assignVoices, buildScenes, filterVoicesByLanguage, findUntaggedParagraphs, parseScene, stripSpeakerTags } from "../src/audiobook.ts";
+import { assignVoices, buildScenes, filterVoicesByLanguage, findUntaggedParagraphs, parseScene, sceneParagraphs, stripSpeakerTags, synthesizeScene } from "../src/audiobook.ts";
+import type { Synthesize } from "../src/audiobook.ts";
 import type { StoryEvent } from "../src/types.ts";
 
 test("parseScene falls back to a single narrator segment when untagged", () => {
@@ -66,13 +67,13 @@ test("parseScene routes attribution and action inside a character paragraph to t
 test("parseScene keeps a pure-dialogue character paragraph as one segment", () => {
   const prose = 'mango: "What? Did you see something?"';
   const scene = parseScene(0, prose, new Set(["mango"]));
-  assert.deepEqual(scene.segments, [{ speaker: "mango", text: '"What? Did you see something?"' }]);
+  assert.deepEqual(scene.segments, [{ speaker: "mango", text: '"What? Did you see something?"', paragraphs: [0] }]);
 });
 
 test("parseScene sends a narrator-tagged paragraph entirely to narrator even if it contains quotes", () => {
   const prose = 'narrator: The sign read "No Entry" above the door.';
   const scene = parseScene(0, prose, new Set());
-  assert.deepEqual(scene.segments, [{ speaker: "narrator", text: 'The sign read "No Entry" above the door.' }]);
+  assert.deepEqual(scene.segments, [{ speaker: "narrator", text: 'The sign read "No Entry" above the door.', paragraphs: [0] }]);
 });
 
 test("parseScene strips leading heading markup", () => {
@@ -179,4 +180,48 @@ test("buildScenes replays the bible to resolve known speaker ids", () => {
   assert.equal(scenes.length, 1);
   assert.equal(scenes[0].tagged, true);
   assert.equal(scenes[0].segments[0].speaker, "osmagus");
+});
+
+// --- issue #23: paragraph numbering shared with the art director, and timings ---
+test("segments record which scene paragraphs they cover, through merges and quote splits", () => {
+  const known = new Set(["osmagus"]);
+  const prose = [
+    "narrator: The ridge was cold.",
+    'osmagus: "Hold," he said.',
+    "narrator: Dusk had nearly closed.",
+    'osmagus: "Now."'
+  ].join("\n\n");
+  const scene = parseScene(0, prose, known);
+  assert.deepEqual(scene.segments.map((s) => [s.speaker, s.paragraphs]), [
+    ["narrator", [0]],
+    ["osmagus", [1]],
+    ["narrator", [1, 2]],
+    ["osmagus", [3]]
+  ]);
+  const untagged = parseScene(0, "One.\n\nTwo.\n\nThree.", known);
+  assert.deepEqual(untagged.segments[0].paragraphs, [0, 1, 2]);
+});
+
+test("sceneParagraphs numbers paragraphs the way the audiobook reads them", () => {
+  const known = new Set(["osmagus"]);
+  const prose = '# The Horn\n\nnarrator: The ridge was cold.\n\nosmagus: "Hold," he said.\n\nunknown: stays as-is';
+  assert.deepEqual(sceneParagraphs(prose, known), ["The Horn", "The ridge was cold.", '"Hold," he said.', "unknown: stays as-is"]);
+  assert.equal(sceneParagraphs(prose, known).length, parseScene(0, prose, known).segments.flatMap((s) => s.paragraphs).at(-1)! + 1);
+});
+
+test("synthesizeScene reports each paragraph's start time in the scene audio", async () => {
+  const known = new Set(["osmagus"]);
+  const prose = ["narrator: One two.", 'osmagus: "Three," he said.', "narrator: Four."].join("\n\n");
+  const scene = parseScene(0, prose, known);
+  // Fake TTS: 0.1s of audio (2400 samples at 24kHz) per character.
+  const voices: string[] = [];
+  const synth: Synthesize = async function* (text, voice) {
+    voices.push(voice);
+    yield { text, audio: new Float32Array(text.length * 2400) };
+  };
+  const { audio, paragraphStarts } = await synthesizeScene(scene, (s) => (s === "narrator" ? "n" : "o"), synth);
+  // Pieces: "One two." (8) | '"Three,"' (8) | "he said." (8) | "Four." (5)
+  assert.deepEqual(paragraphStarts, [0, 0.8, 2.4]);
+  assert.equal(audio.length, (8 + 8 + 8 + 5) * 2400);
+  assert.deepEqual(voices, ["n", "o", "n", "n"]);
 });

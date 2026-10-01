@@ -57,25 +57,36 @@ RULES:
 - revised_prompt: when ok is false, rewrite the ORIGINAL prompt to fix the issues (make the missed detail explicit, restate character appearance, add "no text"). Keep the same scene and moment. When ok is true, return "".`;
 
 export interface ArtJob {
-  key: string;      // "scene-01" | "cover"
+  key: string;            // "scene-01-03" (scene 1, shot 3), "scene-01" (pre-shots events) or "cover"
   prompt: string;
+  sceneIndex?: number;
+  startParagraph?: number;
 }
 
-// Latest scene_art per scene (in scene order), then the latest cover_art.
+// Latest scene_art per scene (in scene order), one job per shot, then the latest cover_art.
 export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
-  const scenes = new Map<number, string>();
+  const scenes = new Map<number, SceneArtData>();
   let cover: CoverArtData | undefined;
   for (const e of events) {
     if (e.type === "scene_art") {
       const d = e.data as SceneArtData;
-      scenes.set(d.sceneIndex, d.prompt);
+      scenes.set(d.sceneIndex, d);
     } else if (e.type === "cover_art") {
       cover = e.data as CoverArtData;
     }
   }
   const jobs: ArtJob[] = [...scenes.entries()]
     .sort(([a], [b]) => a - b)
-    .map(([i, prompt]) => ({ key: `scene-${String(i + 1).padStart(2, "0")}`, prompt }));
+    .flatMap(([i, d]) => {
+      const scene = `scene-${String(i + 1).padStart(2, "0")}`;
+      if (!d.shots || d.shots.length === 0) return [{ key: scene, prompt: d.prompt, sceneIndex: i, startParagraph: 0 }];
+      return d.shots.map((shot, k) => ({
+        key: `${scene}-${String(k + 1).padStart(2, "0")}`,
+        prompt: shot.prompt,
+        sceneIndex: i,
+        startParagraph: shot.startParagraph
+      }));
+    });
   if (cover) jobs.push({ key: "cover", prompt: cover.prompt });
   return jobs;
 }
@@ -97,6 +108,10 @@ function mimeFor(file: string): string {
 
 export interface ManifestEntry {
   file: string;
+  // Where the image goes in the video: the scene, and the paragraph (index into
+  // audiobook/timings.json paragraphStarts) at which it comes on screen. Absent for the cover.
+  sceneIndex?: number;
+  startParagraph?: number;
   prompt: string;       // the Art Director's prompt (the skip key)
   finalPrompt: string;  // the prompt that produced the kept image
   attempts: number;
@@ -151,6 +166,9 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   for (const [index, job] of jobs.entries()) {
     const prior = manifest[job.key];
     if (!opts.force && prior && prior.prompt === job.prompt && existing.has(prior.file)) {
+      // Same image, but keep its placement current in case the shot's anchor moved.
+      prior.sceneIndex = job.sceneIndex;
+      prior.startParagraph = job.startParagraph;
       emit({ type: "job_skipped", key: job.key, file: prior.file });
       rendered.push({ data: await readFile(join(outDir, prior.file)), mimeType: mimeFor(prior.file) });
       result.skipped++;
@@ -164,6 +182,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       await writeFile(join(outDir, file), entry.image.data);
       manifest[job.key] = {
         file,
+        sceneIndex: job.sceneIndex,
+        startParagraph: job.startParagraph,
         prompt: job.prompt,
         finalPrompt: entry.finalPrompt,
         attempts: entry.attempts,
@@ -180,6 +200,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       emit({ type: "job_failed", key: job.key, error: err instanceof Error ? err.message : String(err) });
     }
   }
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
   return result;
 }
 

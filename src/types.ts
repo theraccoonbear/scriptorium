@@ -111,9 +111,15 @@ export interface SceneCommittedData {
 
 // Image-gen prompts from the Art Director. Presentation metadata, not canon:
 // replay() ignores these events, so they never touch the bible.
+export interface ArtShotData {
+  startParagraph: number; // 0-based paragraph index (shared with audiobook timings.json)
+  prompt: string;
+}
+
 export interface SceneArtData {
   sceneIndex: number;
-  prompt: string;
+  prompt: string;          // first shot's prompt; the only prompt on events from before shots existed
+  shots?: ArtShotData[];
 }
 
 export interface CoverArtData {
@@ -205,6 +211,8 @@ export interface StoryConfig {
   // a bible character id) so the audiobook tool can switch voices per line.
   // Off by default: story.md stays plain prose, unchanged from every prior run.
   speakerTags?: boolean;
+  // Art Director: one shot per this many words of narration (~45s at 150 wpm). Default 110.
+  artWordsPerShot?: number;
   // Image rendering for the `art` command; omitted = DEFAULT_ARTIST_CONFIG in src/artist.ts.
   artist?: Partial<ArtistConfig>;
 }

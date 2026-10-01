@@ -185,6 +185,10 @@ test("continuist can flag unaddressed practical gaps", () => {
 test("art director prompt covers both modes, continuity, and video framing", () => {
   assert.ok(ARTDIRECTOR_SYSTEM.includes('{"prompt":string}'), "missing output shape");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("- SCENE:"), "missing scene mode");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes('{"shots":[{"start_paragraph":number,"prompt":string}]}'), "missing shots output shape");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("first shot starts at paragraph 1"), "missing first-shot anchor rule");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("Spread shots across the WHOLE scene"), "missing whole-scene coverage rule");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("Vary the framing"), "missing framing variety rule");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("- COVER:"), "missing cover mode");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("never invent events"), "missing grounded-in-prose rule");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("VISUAL CONTINUITY"), "missing cross-scene continuity rule");
@@ -196,12 +200,18 @@ test("art director prompt covers both modes, continuity, and video framing", () 
 test("art director prompt builder includes the scene, or the beat summary for the cover", async () => {
   const bible = emptyBible();
   bible.characters["a"] = { id: "a", name: "Osmagus", traits: "", goal: "", voice: "", status: "active" };
+  const paragraphs = ["The lamp gutters.", "Osmagus lifts the horn.", "The note rolls down the valley.", "Silence.", "A reply comes."];
   const scene = await artDirect(mockRole, {
-    bible, mode: "scene", beat: testBeat, prose: "The lamp gutters.", sceneIndex: 0,
+    bible, mode: "scene", beat: testBeat, paragraphs, shots: 3, sceneIndex: 0,
     previousPrompts: ["p1", "p2", "p3", "p4", "p5"]
   });
   assert.ok(scene.prompt.includes("MODE: SCENE"));
-  assert.ok(scene.prompt.includes("The lamp gutters."));
+  assert.ok(scene.prompt.includes("[1] The lamp gutters."));
+  assert.ok(scene.prompt.includes("[5] A reply comes."));
+  assert.ok(scene.prompt.includes("Make 3 shots."));
+  assert.equal(scene.result.shots?.length, 3);
+  assert.equal(scene.result.shots?.[0].startParagraph, 0);
+  assert.equal(scene.result.prompt, scene.result.shots?.[0].prompt);
   assert.ok(scene.prompt.includes("Osmagus"));
   assert.ok(scene.prompt.includes("- p5") && !scene.prompt.includes("- p1"), "continuity window should keep only recent prompts");
   assert.ok(scene.result.prompt.length > 0);
@@ -213,7 +223,8 @@ test("art director prompt builder includes the scene, or the beat summary for th
 });
 
 // --- issue #20: post-commit roles see the whole scene ---
-import { archive, reviewPatch } from "../src/roles.ts";
+import { archive, reviewPatch, normalizeShots, shotCountFor } from "../src/roles.ts";
+import { sceneParagraphs } from "../src/audiobook.ts";
 
 test("archivist, patch gate and art director see the scene's ending, not a truncated prefix", async () => {
   const ending = "The letter from Torvin was waiting downstairs on the bar.";
@@ -224,6 +235,34 @@ test("archivist, patch gate and art director see the scene's ending, not a trunc
   assert.ok(arch.prompt.includes(ending), "archivist prompt is missing the scene ending");
   const gate = await reviewPatch(mockRole, { ...params, patch: {} });
   assert.ok(gate.prompt.includes(ending), "patch gate prompt is missing the scene ending");
-  const art = await artDirect(mockRole, { ...params, mode: "scene" });
+  const art = await artDirect(mockRole, { bible: params.bible, beat: testBeat, mode: "scene", paragraphs: sceneParagraphs(prose, new Set()) });
   assert.ok(art.prompt.includes(ending), "art director prompt is missing the scene ending");
+});
+
+// --- issue #23: multiple shots per scene ---
+test("shot count is ~1 per 110 words, clamped to 4..20 and to the paragraph count", () => {
+  const para = (words: number) => Array(words).fill("word").join(" ");
+  assert.equal(shotCountFor(Array(20).fill(para(90))), 16);   // 1800 words
+  assert.equal(shotCountFor(Array(10).fill(para(20))), 4);    // 200 words -> floor of 4
+  assert.equal(shotCountFor(Array(60).fill(para(100))), 20);  // 6000 words -> cap of 20
+  assert.equal(shotCountFor([para(900), para(900)]), 2);      // can't have more shots than paragraphs
+  assert.equal(shotCountFor(Array(20).fill(para(90)), 225), 8);
+});
+
+test("normalizeShots converts to 0-based, sorts, drops bad entries, and pins the first shot to the start", () => {
+  const shots = normalizeShots({
+    shots: [
+      { start_paragraph: 5, prompt: "later" },
+      { start_paragraph: 2, prompt: "early" },
+      { start_paragraph: 5, prompt: "duplicate start" },
+      { start_paragraph: 99, prompt: "out of range" },
+      { start_paragraph: 3, prompt: "" },
+      { start_paragraph: "x", prompt: "not a number" }
+    ]
+  }, 10);
+  assert.deepEqual(shots, [
+    { startParagraph: 0, prompt: "early" },
+    { startParagraph: 4, prompt: "later" }
+  ]);
+  assert.deepEqual(normalizeShots({ prompt: "old shape" }, 10), []);
 });

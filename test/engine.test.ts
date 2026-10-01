@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventLog } from "../src/eventlog.ts";
 import { buildRoleProviders } from "../src/providers.ts";
-import { runStory, tensionAt } from "../src/engine.ts";
+import { redirectArt, runStory, tensionAt } from "../src/engine.ts";
 import { replay } from "../src/bible.ts";
 import type { CoverArtData, SceneArtData, SceneCommittedData } from "../src/types.ts";
 
@@ -84,6 +84,9 @@ test("art director emits one scene_art per scene and one cover_art, without touc
   const art = log.events.filter((e) => e.type === "scene_art").map((e) => e.data as SceneArtData);
   assert.deepEqual(art.map((a) => a.sceneIndex), [0, 1, 2]);
   assert.ok(art.every((a) => a.prompt.length > 0));
+  // Each scene's art is a sequence of shots anchored to its paragraphs, starting at the first.
+  assert.ok(art.every((a) => (a.shots?.length ?? 0) >= 1 && a.shots![0].startParagraph === 0));
+  assert.ok(art.every((a) => a.shots!.every((s, k, all) => k === 0 || s.startParagraph > all[k - 1].startParagraph)));
   // Each scene's art follows its own commit.
   const types = log.events.map((e) => e.type);
   assert.deepEqual(types.slice(0, 2), ["scene_committed", "scene_art"]);
@@ -121,4 +124,27 @@ test("resuming a finished run does not duplicate the cover; extending it adds a 
   const covers = extended.events.filter((e) => e.type === "cover_art").map((e) => e.data as CoverArtData);
   assert.deepEqual(covers.map((c) => c.sceneCount), [2, 3]);
   assert.equal(extended.events.filter((e) => e.type === "scene_art").length, 3);
+});
+
+test("redirectArt re-shoots an existing run without touching canon", async () => {
+  const config = await loadConfig({ scenes: 2 });
+  const { artdirector: _, ...noArtRoles } = config.roles;
+  const plain = { ...config, roles: noArtRoles };
+  const dir = await tmp();
+  await runStory({ config: plain, log: new EventLog(dir), roles: buildRoleProviders(plain) });
+  const log = new EventLog(dir);
+  await log.load();
+  const before = replay(log.events);
+  assert.equal(log.events.filter((e) => e.type === "scene_art").length, 0);
+
+  const shotScenes: number[] = [];
+  const scenes = await redirectArt({ config, log, roles: buildRoleProviders(config), onScene: (i) => shotScenes.push(i) });
+  assert.equal(scenes, 2);
+  assert.deepEqual(shotScenes, [0, 1]);
+  const art = log.events.filter((e) => e.type === "scene_art").map((e) => e.data as SceneArtData);
+  assert.deepEqual(art.map((a) => a.sceneIndex), [0, 1]);
+  assert.ok(art.every((a) => (a.shots?.length ?? 0) >= 1));
+  assert.equal(log.events.filter((e) => e.type === "cover_art").length, 1);
+  assert.deepEqual(replay(log.events), before);
+  await assert.rejects(redirectArt({ config: plain, log, roles: buildRoleProviders(plain) }), /no artdirector role/);
 });
