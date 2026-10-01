@@ -55,11 +55,25 @@ export interface BibleSummary {
   recent: string[];
 }
 
+// A key object — a signature item that recurs or drives the plot (an
+// instrument, a relic, a letter). Its description fixes its physical form so
+// the writer, the continuity guard and the art all depict the same thing.
+export interface StoryObject {
+  id: string;
+  name: string;
+  description: string;  // size and proportions, shape, materials, how it is held or used
+  owner?: string;       // character id
+}
+
 export interface Bible {
   premise: string;
   tone: string;
+  // How the world is portrayed in pictures — medium, rendering, palette,
+  // light, line. Decided with the tone; every image of the story uses it.
+  artStyle?: string;
   characters: Record<string, Character>;
   locations: Record<string, Location>;
+  objects: Record<string, StoryObject>;
   threads: Record<string, Thread>;
   ledger: Setup[];
   resolvedDecisions: string[];
@@ -80,6 +94,7 @@ export interface Beat {
 export interface Patch {
   upsertCharacters?: Partial<Character>[];
   upsertLocations?: Partial<Location>[];
+  upsertObjects?: Partial<StoryObject>[];
   upsertThreads?: Partial<Thread>[];
   openSetups?: { id: string; text?: string }[];
   paySetups?: string[];
@@ -116,6 +131,30 @@ export interface SceneCommittedData {
 // replay() ignores these events, so they never touch the bible.
 export interface ArtShotData {
   startParagraph: number; // 0-based paragraph index (shared with audiobook timings.json)
+  prompt: string;
+  // What the shot shows, by reference id; their reference images are passed to the image model.
+  characters?: string[];  // bible character ids
+  location?: string;      // bible location id
+  props?: string[];       // visual_ref prop ids
+}
+
+// Canonical visual references: one image per character, location and key prop,
+// made once when it enters the story and passed to every image that shows it.
+// `appearance` is reused verbatim in scene prompts.
+export type VisualRefKind = "character" | "location" | "prop";
+
+export interface VisualRefData {
+  kind: VisualRefKind;
+  id: string;          // bible id for characters and locations; a slug the Art Director picks for props
+  name?: string;       // props: what the story calls it
+  appearance: string;
+  prompt: string;
+}
+
+// Legacy (pre-locations/props) portrait event; read as a character VisualRefData.
+export interface CharacterArtData {
+  characterId: string;
+  appearance: string;
   prompt: string;
 }
 

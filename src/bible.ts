@@ -12,6 +12,7 @@ export function emptyBible(): Bible {
     tone: "",
     characters: {},
     locations: {},
+    objects: {},
     threads: {},
     ledger: [],
     resolvedDecisions: [],
@@ -43,6 +44,16 @@ export function applyPatch(bible: Bible, patch: Patch | undefined, index: number
   }
   for (const l of p.upsertLocations || []) {
     upsert(next.locations, l);
+  }
+  for (const o of p.upsertObjects || []) {
+    // A recorded physical description is canon: a later patch may add an owner
+    // or fill in a missing description, never rewrite one.
+    if (o?.id && next.objects[o.id]?.description && o.description) {
+      const { description: _, ...rest } = o;
+      upsert(next.objects, rest);
+    } else {
+      upsert(next.objects, o);
+    }
   }
   for (const t of p.upsertThreads || []) {
     upsert(next.threads, t);
@@ -80,6 +91,7 @@ export function replay(events: StoryEvent[]): Bible {
       // First scene may carry the initial bible state from createAndDirect.
       if (data.bible && bible.sceneCount === 0) {
         bible = { ...bible, ...data.bible };
+        bible.objects ??= {};  // bibles from before key objects existed
       }
       bible = applyPatch(bible, data.patch, data.index);
     }
@@ -95,6 +107,9 @@ export function renderBible(bible: Bible): string {
   const locs = Object.values(bible.locations)
     .map((l) => `- ${l.id}: ${l.name}. ${l.description}`)
     .join("\n");
+  const objects = Object.values(bible.objects ?? {})
+    .map((o) => `- ${o.id}: ${o.name}${o.owner ? ` (${o.owner}'s)` : ""}. ${o.description}`)
+    .join("\n");
   const threads = Object.values(bible.threads)
     .map((t) => `- ${t.id}: ${t.title} [${t.status}]`)
     .join("\n");
@@ -103,8 +118,10 @@ export function renderBible(bible: Bible): string {
   return [
     `PREMISE: ${bible.premise}`,
     `TONE: ${bible.tone}`,
+    ...(bible.artStyle ? [`ART STYLE: ${bible.artStyle}`] : []),
     `CHARACTERS:\n${chars || "(none)"}`,
     `LOCATIONS:\n${locs || "(none)"}`,
+    `KEY OBJECTS (physical descriptions are canon):\n${objects || "(none)"}`,
     `THREADS:\n${threads || "(none)"}`,
     `OPEN SETUPS (Chekhov ledger):\n${ledger || "(none)"}`,
     `RESOLVED DECISIONS (do not re-litigate without new pressure):\n${decisions || "(none)"}`,

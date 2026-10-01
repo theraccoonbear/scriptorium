@@ -78,6 +78,19 @@ export class MockProvider {
       case "worldgate":
         return JSON.stringify({ ok: true, issues: [] });
       case "artdirector": {
+        if (ctx.mode === "references") {
+          const ref = (id: string) => ({ id, appearance: `Mock look for ${id}.`, prompt: `Mock reference image of ${id}.` });
+          return JSON.stringify({
+            ...(ctx.artStyle ? {} : { art_style: "Mock woodcut style." }),
+            characters: (ctx.characterIds ?? []).map(ref),
+            locations: (ctx.locationIds ?? []).map(ref),
+            // Canon objects, plus one discovered key prop the first time.
+            props: [
+              ...(ctx.objectIds ?? []).map((id: string) => ({ ...ref(id), name: id })),
+              ...((ctx.propIds ?? []).length === 0 ? [{ ...ref("mock_prop"), name: "mock prop" }] : [])
+            ]
+          });
+        }
         if (ctx.mode === "cover") {
           return JSON.stringify({ prompt: `Mock cover montage of ${ctx.beats?.length ?? 0} scenes.` });
         }
@@ -86,7 +99,10 @@ export class MockProvider {
         const n = Math.max(1, Math.min(ctx.shots ?? 1, count));
         const shots = Array.from({ length: n }, (_, k) => ({
           start_paragraph: Math.floor((k * count) / n) + 1,
-          prompt: `Mock shot ${k + 1} of scene ${(ctx.sceneIndex ?? 0) + 1} at ${ctx.beat?.location ?? "an unknown place"}.`
+          prompt: `Mock shot ${k + 1} of scene ${(ctx.sceneIndex ?? 0) + 1} at ${ctx.beat?.location ?? "an unknown place"}.`,
+          characters: (ctx.knownIds ?? []).slice(0, 1),
+          location: (ctx.locationIdsKnown ?? [])[0] ?? "",
+          props: (ctx.propIds ?? []).slice(0, 1)
         }));
         return JSON.stringify({ shots });
       }
@@ -113,6 +129,7 @@ export class MockProvider {
     return {
       premise: "A lone lighthouse keeper receives a letter from someone who shouldn't know they exist.",
       tone: "Quiet, uncanny, with dry humor.",
+      art_style: "Muted ink and watercolor illustration, grey-green palette, soft diffuse light.",
       characters: [
         { id: "keeper", name: "Ada", traits: "methodical, sleep-deprived", goal: "Figure out who sent the letter", voice: "Clipped sentences. Nautical terms.", gender: "female" },
         { id: "voice", name: "The Voice", traits: "calm, precise", goal: "Be heard", voice: "Formal, slightly out of time.", gender: "" }
@@ -120,6 +137,9 @@ export class MockProvider {
       locations: [
         { id: "tower", name: "The lighthouse", description: "Lantern room, spiral stairs, salt on every surface." },
         { id: "shore", name: "The shore", description: "Rocks, seaweed, a path worn by no one." }
+      ],
+      objects: [
+        { id: "letter", name: "The letter", description: "A single folded sheet, palm-sized, cream paper gone soft with damp, sealed with grey wax.", owner: "keeper" }
       ],
       threads: [
         { id: "letter-origin", title: "Who sent the letter", status: "open" }

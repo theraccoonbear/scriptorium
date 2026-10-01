@@ -27,6 +27,8 @@ const USAGE = `scriptorium <command> [options]
                                                          (Ken Burns shots, timed crossfades, subtitles)
   artdirect --out <dir> [--config <file>]               redo the art direction (shots + cover) for an
                                                          existing run, then render the images
+            [--redo <kind>:<id>,...] [--note "..."]     also recreate these references (e.g. prop:horn),
+                                                         with your corrections in --note
   models --config <file> --provider <name>              list model ids a provider serves
 
 Options:
@@ -148,7 +150,9 @@ async function main() {
       "narrator-voice": { type: "string" },
       language: { type: "string" },
       "voice-gender": { type: "string" },
-      force: { type: "boolean" }
+      force: { type: "boolean" },
+      redo: { type: "string" },
+      note: { type: "string" }
     }
   });
 
@@ -264,6 +268,9 @@ async function main() {
       log,
       roles: buildRoleProviders(config),
       runDir: values.out,
+      redo: (values.redo ?? "").split(",").map((r) => r.trim()).filter(Boolean),
+      notes: values.note,
+      onReferences: (refs) => console.error(`[scriptorium] ${c.ok(refs.length > 0 ? `new references: ${refs.join(", ")}` : "references: none missing")}`),
       onScene: (i, shots) => console.error(`[scriptorium] ${c.ok(`scene ${i + 1}: ${shots} shot${shots === 1 ? "" : "s"}`)}`)
     });
     if (scenes === 0) {

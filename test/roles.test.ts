@@ -185,7 +185,7 @@ test("continuist can flag unaddressed practical gaps", () => {
 test("art director prompt covers both modes, continuity, and video framing", () => {
   assert.ok(ARTDIRECTOR_SYSTEM.includes('{"prompt":string}'), "missing output shape");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("- SCENE:"), "missing scene mode");
-  assert.ok(ARTDIRECTOR_SYSTEM.includes('{"shots":[{"start_paragraph":number,"prompt":string}]}'), "missing shots output shape");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes('{"shots":[{"start_paragraph":number,"prompt":string,"characters":[characterId],"location":locationId,"props":[propId]}]}'), "missing shots output shape");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("first shot starts at paragraph 1"), "missing first-shot anchor rule");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("Spread shots across the WHOLE scene"), "missing whole-scene coverage rule");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("Vary the framing"), "missing framing variety rule");
@@ -272,4 +272,96 @@ test("creator and archivist are asked for character gender", async () => {
   const { ARCHIVIST_SYSTEM } = await import("../src/roles.ts");
   assert.ok(ARCHIVIST_SYSTEM.includes('"gender"?:"female"|"male"|""'), "archivist patch shape missing gender");
   assert.ok(ARCHIVIST_SYSTEM.includes("Never change an existing character's recorded gender"));
+});
+
+// --- issue #29: canonical visual references ---
+import { normalizeReferences } from "../src/roles.ts";
+
+test("art director prompt covers references for characters, locations and props, and no real-person likeness", () => {
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("- REFERENCES:"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes('"props":[{"id":string,"name":string,"appearance":string,"prompt":string}]'));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("a wide establishing view of the place with NO people"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("the object alone, whole and centered"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("never resemble, evoke, or be described in terms of any real person"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("CANONICAL APPEARANCES: when given, describe each character, location, and prop"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes('"location":locationId,"props":[propId]'));
+});
+
+test("references mode lists what's missing; scene mode gets canonical appearances and validates shot refs", async () => {
+  const bible = emptyBible();
+  bible.characters["osmagus"] = { id: "osmagus", name: "Osmagus", traits: "", goal: "", voice: "", status: "active" };
+  bible.characters["merta"] = { id: "merta", name: "Merta", traits: "", goal: "", voice: "", status: "active" };
+  bible.locations["spires"] = { id: "spires", name: "Hornpeak Spires", description: "" };
+  const appearances = { characters: { osmagus: "stocky, red-bearded" }, locations: {}, props: { horn: { name: "the alpenhorn", appearance: "smooth pale wood" } } };
+  const refs = await artDirect(mockRole, { bible, mode: "references", characterIds: ["merta"], locationIds: ["spires"], storyText: ["He lifted the horn."], appearances });
+  assert.ok(refs.prompt.includes("characters: merta; locations: spires"));
+  assert.ok(refs.prompt.includes("KNOWN PROPS: horn"));
+  assert.ok(refs.prompt.includes("STORY TEXT (find key props here):\nHe lifted the horn."));
+  assert.ok(refs.prompt.includes("- prop horn (the alpenhorn): smooth pale wood"));
+  assert.deepEqual(refs.result.references?.map((r) => `${r.kind}:${r.id}`), ["character:merta", "location:spires"]);
+
+  const scene = await artDirect(mockRole, { bible, mode: "scene", paragraphs: ["A.", "B.", "C.", "D."], shots: 2, appearances });
+  assert.ok(scene.prompt.includes("CANONICAL APPEARANCES"));
+  const known = { characters: new Set(["osmagus"]), locations: new Set(["spires"]), props: new Set(["horn"]) };
+  assert.deepEqual(normalizeShots({ shots: [{ start_paragraph: 1, prompt: "p", characters: ["osmagus", "ghost"], location: "nowhere", props: ["horn", "sword"] }] }, 4, known),
+    [{ startParagraph: 0, prompt: "p", characters: ["osmagus"], props: ["horn"] }]);
+});
+
+test("normalizeReferences keeps requested characters/locations and up to 4 new, slugged props", () => {
+  const out = normalizeReferences({
+    characters: [{ id: "a", appearance: "tall", prompt: "pa" }, { id: "a", appearance: "dupe", prompt: "x" }, { id: "zzz", appearance: "x", prompt: "x" }],
+    locations: [{ id: "spires", appearance: "", prompt: "no look" }],
+    props: [
+      { id: "Old Horn!", name: "the old horn", appearance: "wood", prompt: "horn" },
+      { id: "reed", appearance: "cane", prompt: "reed" },
+      { id: "known", appearance: "x", prompt: "x" },
+      { id: "p3", appearance: "x", prompt: "x" }, { id: "p4", appearance: "x", prompt: "x" }, { id: "p5", appearance: "x", prompt: "x" }
+    ]
+  }, { characters: new Set(["a"]), locations: new Set(["spires"]), knownProps: new Set(["known"]) });
+  assert.deepEqual(out.map((r) => `${r.kind}:${r.id}`), ["character:a", "prop:old_horn", "prop:reed", "prop:p3", "prop:p4"]);
+  assert.equal(out.find((r) => r.id === "old_horn")!.name, "the old horn");
+  assert.equal(out.find((r) => r.id === "reed")!.name, "reed");
+});
+
+test("references mode can recreate a known prop under its id", async () => {
+  const bible = emptyBible();
+  // The existing reference got the object wrong; the author's note corrects it.
+  const appearances = { characters: {}, locations: {}, props: { horn: { name: "the alpenhorn", appearance: "a wrong earlier look" }, reed: { name: "reed", appearance: "cane" } } };
+  const note = "A long conical wooden tube whose bell rests on the ground when played.";
+  const out = await artDirect(mockRole, { bible, mode: "references", redoProps: ["horn"], notes: note, appearances });
+  assert.ok(out.prompt.includes(`AUTHOR NOTES (follow exactly):\n${note}`));
+  assert.ok(out.prompt.includes("KNOWN PROPS: reed"));
+  assert.ok(out.prompt.includes("RECREATE these props (keep the id): horn (the alpenhorn)"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("drawn at its true proportions"));
+});
+
+test("creator, archivist, writer and continuist all treat key objects as exact canon", async () => {
+  const { ARCHIVIST_SYSTEM, CONTINUIST_SYSTEM } = await import("../src/roles.ts");
+  assert.ok(ARCHIVIST_SYSTEM.includes('"upsertObjects":[{"id":string,"name"?:string,"description"?:string,"owner"?:characterId}]'));
+  assert.ok(ARCHIVIST_SYSTEM.includes("Never rewrite an existing object's description"));
+  assert.ok(WRITER_SYSTEM.includes("KEY OBJECTS in the bible have canon physical descriptions"));
+  assert.ok(CONTINUIST_SYSTEM.includes("finger-holes on an instrument described without them"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("the image model cannot infer proportions from length alone"));
+});
+
+test("art director makes prop references for canon objects under their bible ids", async () => {
+  const bible = emptyBible();
+  bible.objects.horn = { id: "horn", name: "the alpenhorn", description: "Five feet long, slender." };
+  const out = await artDirect(mockRole, { bible, mode: "references", objectIds: ["horn"], appearances: { characters: {}, locations: {}, props: {} } });
+  assert.ok(out.prompt.includes("OBJECTS NEEDING REFERENCES (canon — props with these ids): horn (the alpenhorn)"));
+  assert.ok(out.result.references?.some((r) => r.kind === "prop" && r.id === "horn"));
+});
+
+// --- art style: one per story, decided with the tone ---
+test("the art style is canon: the Creator decides it, every art prompt carries it, and a styleless story gets one", async () => {
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("every image of a story shares one art style"));
+  const bible = emptyBible();
+  bible.artStyle = "Gouache illustration, warm earth palette.";
+  const scene = await artDirect(mockRole, { bible, mode: "scene", paragraphs: ["A.", "B.", "C.", "D."], shots: 2 });
+  assert.ok(scene.prompt.includes("ART STYLE (canon — every prompt renders in exactly this and ends with it verbatim): Gouache illustration, warm earth palette."));
+  const refs = await artDirect(mockRole, { bible, mode: "references", appearances: { characters: {}, locations: {}, props: {} } });
+  assert.equal(refs.result.artStyle, undefined, "a story with a style never gets a new one");
+  const bare = await artDirect(mockRole, { bible: emptyBible(), mode: "references", appearances: { characters: {}, locations: {}, props: {} } });
+  assert.ok(bare.prompt.includes("ART STYLE (canon — every prompt renders in exactly this and ends with it verbatim): (none yet)"));
+  assert.equal(bare.result.artStyle, "Mock woodcut style.");
 });

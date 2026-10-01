@@ -1,4 +1,5 @@
 import { renderBible, emptyBible } from "./bible.ts";
+import type { RefAppearances } from "./visualrefs.ts";
 import type {
   Beat,
   Bible,
@@ -9,6 +10,7 @@ import type {
   RoleOutput,
   Setup,
   Verdict,
+  VisualRefKind,
   WordBudget,
   WorldOutput
 } from "./types.ts";
@@ -30,12 +32,16 @@ Output ONLY JSON with this shape:
 {
   "premise":string,
   "tone":string,
+  "art_style":string,
   "characters":[{"id":string,"name":string,"traits":string,"goal":string,"voice":string,"gender":"female"|"male"|""}],
   "locations":[{"id":string,"name":string,"description":string}],
+  "objects":[{"id":string,"name":string,"description":string,"owner":characterId}],
   "threads":[{"id":string,"title":string,"status":"open"}],
   "beat":{"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[]}
 }
+art_style: how this world is portrayed in pictures, decided with the tone — one or two sentences naming the medium and rendering (e.g. gouache illustration, ink and watercolor, oil painting, woodcut), palette, light, line quality, level of detail, and mood. Specific enough that two illustrators would produce images that look like the same book. Suited to this story's genre and tone; never name a living artist.
 Each character needs a distinct voice that will guide the Writer.
+objects: the story's KEY OBJECTS — signature items a character carries or uses, or things the plot turns on (an instrument, a relic, a letter). Usually 0-3. The description is canon for every later scene and image, so make it physically exact and true to what that kind of object really is: overall size AND width or thickness at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"), shape, materials, and how it is held or used. A real-world kind of object (an alpenhorn, a longbow) must have that object's real form and handling unless the premise deliberately changes it.
 Give each character's gender as "female" or "male" when the story has one in mind; use "" for unspecified, non-binary, or genderless characters. It picks their audiobook narration voice.
 The beat is the first scene. Payoffs must be empty (no prior setups exist).
 Create the premise, setting, and cast that make the best story — one character, five, whatever serves it.
@@ -52,6 +58,7 @@ The bible lists RESOLVED DECISIONS — choices characters have already made and 
 
 export const WRITER_SYSTEM = `You are the Writer. Render the beat spec as a single scene of prose.
 Stay strictly in the POV character's voice and knowledge. Obey every constraint.
+KEY OBJECTS in the bible have canon physical descriptions: depict and handle them exactly as described — never give an object a feature, size, or way of being held that its description rules out.
 Do not resolve anything the beat does not resolve. Output only the scene text.
 
 LENGTH:
@@ -123,6 +130,7 @@ ${ISSUE_SCHEMA}
 ${ISSUE_TYPES}
 
 You are a BLOCKING reviewer. Only flag issues that would break the story for a reader.
+KEY OBJECTS: prose that gives a bible object a feature, size, or handling its canon description rules out (finger-holes on an instrument described without them, a two-handed weapon swung one-handed) is CANON_CONTRADICTION (entity = the object id).
 Do NOT flag style preferences or prose quality (the Critic handles that).
 
 INTERPRETING CONSTRAINTS:
@@ -184,6 +192,7 @@ export const ARCHIVIST_SYSTEM = `You are the Archivist, the only role allowed to
 Read the committed scene and output ONLY a JSON patch:
 {"upsertCharacters":[{"id":string,"name"?:string,"traits"?:string,"goal"?:string,"voice"?:string,"status"?:string,"gender"?:"female"|"male"|""}],
 "upsertLocations":[{"id":string,"name"?:string,"description"?:string}],
+"upsertObjects":[{"id":string,"name"?:string,"description"?:string,"owner"?:characterId}],
 "upsertThreads":[{"id":string,"title"?:string,"status"?:string}],
 "openSetups":[{"id":string,"text":string}],
 "paySetups":[setupId],
@@ -191,6 +200,7 @@ Read the committed scene and output ONLY a JSON patch:
 "timeline":"one line summary of what happened"}
 Only record facts established in the scene.
 gender: set it ("female"/"male") for a NEW character when the scene establishes it (pronouns, terms like "mother" or "king"). Never change an existing character's recorded gender; omit the field when it is unclear.
+upsertObjects: add a KEY OBJECT (a signature item that recurs or drives the plot) when a scene introduces one, with a physically exact description: size AND width at its key points, shape, materials, how it is held or used — true to what that kind of object really is. Never rewrite an existing object's description.
 resolveDecisions: choices or commitments that CLOSED in this scene — decisions the characters will not re-make without new pressure. List only what the scene actually settles; an open or deferred choice does not belong here.`;
 
 export const BEAT_GATE_SYSTEM = `You are the Beat Gate. You review a beat spec BEFORE any prose is written.
@@ -261,14 +271,31 @@ ${ISSUE_RULES}
 export const ARTDIRECTOR_SYSTEM = `You are the Art Director. You write prompts for an image-generation model; you never write story prose.
 Each prompt becomes ONE still image shown (with a slow pan/zoom, crossfading into the next) while the narration plays.
 
+ART STYLE: every image of a story shares one art style, given as ART STYLE (canon). Render every prompt in exactly that style and end every prompt with it verbatim — never drift toward another medium, palette, or level of realism, for any kind of image. If ART STYLE is "(none yet)", REFERENCES mode must define one in "art_style" (one or two sentences: medium and rendering, palette, light, line, detail, mood; suited to the genre and tone; no living artist names) and use it.
+
 MODES:
+- REFERENCES: create the canonical look of the story's recurring visuals — the reference image every later image of them is generated from and checked against.
+  Output ONLY JSON:
+  {"art_style":string,
+   "characters":[{"id":string,"appearance":string,"prompt":string}],
+   "locations":[{"id":string,"appearance":string,"prompt":string}],
+   "props":[{"id":string,"name":string,"appearance":string,"prompt":string}]}
+  - characters / locations: one entry for EACH listed id, using exactly those ids.
+  - RECREATE: any ids listed under RECREATE get a fresh reference even though one exists — the old one was wrong. AUTHOR NOTES, when given, are corrections from the author: follow them exactly; they override your own idea of the object.
+  - KEY OBJECTS listed under OBJECTS NEEDING REFERENCES are canon (bible KEY OBJECTS): make a prop reference for each, using the bible object id as the prop id and its canon description as the source of truth.
+  - props: beyond those, the story's other KEY OBJECTS — things that recur or matter visually and would otherwise be drawn differently every time (a signature instrument, a sacred relic, a letter that drives the plot). Only objects the STORY TEXT shows; not clothing or scenery; skip any already in KNOWN PROPS. id is a short snake_case slug; name is what the story calls it. Usually 0-2 per call; never more than 4.
+  - Match the bible (including recorded gender) and everything the STORY MENTIONS and STORY TEXT show — pronouns, age, build, hair, beard, clothing, materials, landmarks. Never contradict the story; invent only what it leaves open.
+  - appearance: one or two sentences fixing what never changes, concrete and distinctive so two things can never be confused. Characters: height and build, age, skin, hair and facial hair (style and color), face, signature clothing or gear. Locations: terrain, architecture, landmarks, materials, vegetation, characteristic light. Props: true size AND proportions — overall length/height plus width or diameter at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"); the image model cannot infer proportions from length alone. Then the silhouette that makes it that kind of object — what an expert would recognize it by — then materials, colors, markings, condition — and how it is held, carried, or used whenever that changes how it looks in a scene (an instrument's playing position, a weapon's carry).
+  - prompt: characters — a full-body reference portrait of that one character in a neutral pose, plain softly lit background, no other figures. Locations — a wide establishing view of the place with NO people, showing what defines it. Props — the object alone, whole and centered, on a plain background, drawn at its true proportions (state the length-to-width relationship explicitly, e.g. "long and slender, like a five-foot pole") and showing the shape that identifies it (a long or large object is shown at full length; say so explicitly). All in the story's ART STYLE.
+  - Every character must look ORIGINAL: never resemble, evoke, or be described in terms of any real person, actor, or celebrity.
 - SCENE: break the committed scene into SHOTS — a sequence of stills that follows the narration. The scene is given as numbered paragraphs, and you are told how many shots to make. Each shot starts at a paragraph and stays on screen until the next shot's paragraph is read aloud.
   Output ONLY JSON:
-  {"shots":[{"start_paragraph":number,"prompt":string}]}
+  {"shots":[{"start_paragraph":number,"prompt":string,"characters":[characterId],"location":locationId,"props":[propId]}]}
   - The first shot starts at paragraph 1. start_paragraph values strictly increase.
   - Cut where the action, setting, or focus actually changes, not at even intervals. Spread shots across the WHOLE scene, through to its ending.
   - Each shot depicts a moment that actually happens in its own stretch of paragraphs — never invent events.
   - Vary the framing across shots: wide establishing views, medium shots of characters interacting, close-ups on hands, faces, and objects that matter.
+  - characters: the ids of every character visible in the shot (empty for none). location: the id of the place the shot is set ("" if none fits). props: the ids of KNOWN PROPS visible in the shot. Their reference images are given to the image model.
 - COVER: one montage/compilation image that sums up the whole story's action, for a video thumbnail and opening card. Combine the key characters, places, and conflicts into a single composition with a clear focal point.
   Output ONLY JSON:
   {"prompt":string}
@@ -276,7 +303,8 @@ MODES:
 PROMPT RULES:
 - One paragraph, 60-120 words, in present tense, describing what the camera sees: subject, action, setting, lighting, mood, composition, and art style.
 - Never use character or place names — the image model does not know who or where they are, and each image is generated on its own. In EVERY prompt, describe each character present by appearance (height and build, age, hair, clothing), never by name alone.
-- VISUAL CONTINUITY: describe each recurring character the same way in every shot, and if PREVIOUS ART PROMPTS are given, keep each character's appearance (age, build, hair, clothing) and the overall art style consistent with them. Only change a look if the scene's prose changes it. Repeat the same art-style phrase in every prompt — each image is generated separately.
+- CANONICAL APPEARANCES: when given, describe each character, location, and prop with its canonical appearance — same features, colors, materials, and landmarks, every time. Never contradict it.
+- VISUAL CONTINUITY: describe each recurring character the same way in every shot, and if PREVIOUS ART PROMPTS are given, keep each character's appearance (age, build, hair, clothing) and the overall art style consistent with them. Only change a look if the scene's prose changes it. Each image is generated separately, so every prompt must carry the ART STYLE verbatim.
 - Wide landscape framing (16:9) with the subject away from the very edges, since the image will be panned and cropped.
 - No text, captions, logos, or speech bubbles in the image.
 - Nothing graphic: imply violence through tension and aftermath, not gore.`;
@@ -324,8 +352,10 @@ async function callJson(role: Role, req: JsonCallRequest, retries = 1): Promise<
 interface CreatorFoundation {
   premise?: string;
   tone?: string;
+  art_style?: string;
   characters?: { id?: string; name?: string; traits?: string; goal?: string; voice?: string; gender?: string }[];
   locations?: { id?: string; name?: string; description?: string }[];
+  objects?: { id?: string; name?: string; description?: string; owner?: string }[];
   threads?: { id?: string; title?: string; status?: string }[];
   beat?: Beat;
 }
@@ -334,6 +364,7 @@ function applyBibleData(data: CreatorFoundation): Bible {
   const bible = emptyBible();
   bible.premise = data.premise || "";
   bible.tone = data.tone || "";
+  if (data.art_style?.trim()) bible.artStyle = data.art_style.trim();
   for (const c of data.characters || []) {
     if (c.id) {
       bible.characters[c.id] = { id: c.id, name: c.name || c.id, traits: c.traits || "", goal: c.goal || "", voice: c.voice || "", status: "active" };
@@ -342,6 +373,12 @@ function applyBibleData(data: CreatorFoundation): Bible {
   }
   for (const l of data.locations || []) {
     if (l.id) bible.locations[l.id] = { id: l.id, name: l.name || l.id, description: l.description || "" };
+  }
+  for (const o of data.objects || []) {
+    if (o.id) {
+      bible.objects[o.id] = { id: o.id, name: o.name || o.id, description: o.description || "" };
+      if (o.owner && bible.characters[o.owner]) bible.objects[o.id].owner = o.owner;
+    }
   }
   for (const t of data.threads || []) {
     if (t.id) bible.threads[t.id] = { id: t.id, title: t.title || t.id, status: t.status || "open" };
@@ -791,16 +828,35 @@ export async function reviewPatch(role: Role, params: {
   });
 }
 
-export type ArtMode = "scene" | "cover";
+export type ArtMode = "scene" | "cover" | "references";
 
 export interface ArtShot {
   startParagraph: number; // 0-based index into the scene's paragraphs
   prompt: string;
+  characters?: string[];  // bible character ids in the shot
+  location?: string;      // bible location id where it's set
+  props?: string[];       // known prop ids in the shot
+}
+
+export interface KnownRefIds {
+  characters: ReadonlySet<string>;
+  locations: ReadonlySet<string>;
+  props: ReadonlySet<string>;
+}
+
+export interface ArtReference {
+  kind: VisualRefKind;
+  id: string;
+  name?: string;
+  appearance: string;
+  prompt: string;
 }
 
 export interface ArtDirection {
-  prompt: string;     // cover prompt, or the first shot's prompt in scene mode
-  shots?: ArtShot[];  // scene mode only
+  prompt: string;              // cover prompt, the first shot's, or the first reference's
+  artStyle?: string;           // references mode, when the story had no style yet
+  shots?: ArtShot[];           // scene mode only
+  references?: ArtReference[]; // references mode only
 }
 
 // One shot per ~45s of narration: at ~150 wpm that is ~110 words.
@@ -816,19 +872,57 @@ export function shotCountFor(paragraphs: string[], wordsPerShot = DEFAULT_WORDS_
 
 // Validates the model's shots: in-range 1-based starts converted to 0-based,
 // sorted, one shot per start, and the first shot pinned to the scene's start.
-export function normalizeShots(raw: unknown, paragraphCount: number): ArtShot[] {
+// A shot's characters, location and props are kept only if they're known ids.
+export function normalizeShots(raw: unknown, paragraphCount: number, known?: KnownRefIds): ArtShot[] {
   const list = Array.isArray((raw as { shots?: unknown })?.shots) ? (raw as { shots: unknown[] }).shots : [];
-  const byStart = new Map<number, string>();
+  const byStart = new Map<number, ArtShot>();
   for (const item of list) {
-    const r = item as { start_paragraph?: unknown; prompt?: unknown };
+    const r = item as { start_paragraph?: unknown; prompt?: unknown; characters?: unknown; location?: unknown; props?: unknown };
     const start = Number(r.start_paragraph);
     if (!Number.isInteger(start) || start < 1 || start > paragraphCount) continue;
     if (typeof r.prompt !== "string" || !r.prompt.trim()) continue;
-    if (!byStart.has(start - 1)) byStart.set(start - 1, r.prompt.trim());
+    if (byStart.has(start - 1)) continue;
+    const shot: ArtShot = { startParagraph: start - 1, prompt: r.prompt.trim() };
+    if (known) {
+      const ids = (v: unknown, set: ReadonlySet<string>) => [...new Set((Array.isArray(v) ? v : []).map(String).filter((id) => set.has(id)))];
+      shot.characters = ids(r.characters, known.characters);
+      if (typeof r.location === "string" && known.locations.has(r.location)) shot.location = r.location;
+      const props = ids(r.props, known.props);
+      if (props.length > 0) shot.props = props;
+    }
+    byStart.set(start - 1, shot);
   }
-  const shots = [...byStart.entries()].sort(([a], [b]) => a - b).map(([startParagraph, prompt]) => ({ startParagraph, prompt }));
+  const shots = [...byStart.values()].sort((a, b) => a.startParagraph - b.startParagraph);
   if (shots.length > 0) shots[0].startParagraph = 0;
   return shots;
+}
+
+// Keeps one reference per requested character/location id, plus new props
+// (slug ids not already known, at most 4), each with a non-empty look and prompt.
+export function normalizeReferences(
+  raw: unknown,
+  wanted: { characters: ReadonlySet<string>; locations: ReadonlySet<string>; knownProps: ReadonlySet<string> }
+): ArtReference[] {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const out = new Map<string, ArtReference>();
+  const take = (kind: VisualRefKind, list: unknown, accept: (id: string) => boolean, limit = Infinity) => {
+    let n = 0;
+    for (const item of Array.isArray(list) ? list : []) {
+      const x = item as { id?: unknown; name?: unknown; appearance?: unknown; prompt?: unknown };
+      const id = kind === "prop" ? String(x.id ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") : String(x.id ?? "");
+      if (!id || !accept(id) || out.has(`${kind}:${id}`) || n >= limit) continue;
+      if (typeof x.appearance !== "string" || !x.appearance.trim()) continue;
+      if (typeof x.prompt !== "string" || !x.prompt.trim()) continue;
+      const ref: ArtReference = { kind, id, appearance: x.appearance.trim(), prompt: x.prompt.trim() };
+      if (kind === "prop") ref.name = typeof x.name === "string" && x.name.trim() ? x.name.trim() : id.replace(/_/g, " ");
+      out.set(`${kind}:${id}`, ref);
+      n++;
+    }
+  };
+  take("character", r.characters, (id) => wanted.characters.has(id));
+  take("location", r.locations, (id) => wanted.locations.has(id));
+  take("prop", r.props, (id) => !wanted.knownProps.has(id), 4);
+  return [...out.values()];
 }
 
 export async function artDirect(role: Role, params: {
@@ -841,18 +935,59 @@ export async function artDirect(role: Role, params: {
   sceneIndex?: number;
   // cover mode: every committed beat, in order
   beats?: Beat[];
-  // earlier scene_art prompts, oldest first, for visual continuity
+  // references mode: the character and location ids that need a canonical
+  // look, passages where the story mentions each (pronouns, physical details),
+  // and the story text to find key props in
+  characterIds?: string[];
+  locationIds?: string[];
+  objectIds?: string[];  // bible key objects that need a prop reference
+  redoProps?: string[];  // existing prop ids to recreate
+  notes?: string;        // author corrections for the recreated references
+  mentions?: Record<string, string[]>;
+  storyText?: string[];
+  // canonical looks already established
+  appearances?: RefAppearances;
+  // the story's art style (bible canon); absent = the Art Director defines one
+  artStyle?: string;
+  // earlier art prompts, oldest first, for visual continuity
   previousPrompts?: string[];
 }): Promise<RoleOutput<ArtDirection>> {
   const { bible, mode, beat, sceneIndex, beats, previousPrompts = [] } = params;
+  const appearances: RefAppearances = params.appearances ?? { characters: {}, locations: {}, props: {} };
   const paragraphs = params.paragraphs ?? [];
   const shots = params.shots ?? shotCountFor(paragraphs);
+  const characterIds = params.characterIds ?? [];
+  const locationIds = params.locationIds ?? [];
+  const objectIds = params.objectIds ?? [];
   const parts = [renderBible(bible)];
+  const artStyle = params.artStyle ?? bible.artStyle;
+  parts.push(`ART STYLE (canon — every prompt renders in exactly this and ends with it verbatim): ${artStyle ?? "(none yet)"}`);
+  const looks = [
+    ...Object.entries(appearances.characters).filter(([id]) => bible.characters[id]).map(([id, a]) => `- character ${id} (${bible.characters[id].name}): ${a}`),
+    ...Object.entries(appearances.locations).filter(([id]) => bible.locations[id]).map(([id, a]) => `- location ${id} (${bible.locations[id].name}): ${a}`),
+    ...Object.entries(appearances.props).map(([id, p]) => `- prop ${id} (${p.name}): ${p.appearance}`)
+  ];
+  if (looks.length > 0) parts.push(`CANONICAL APPEARANCES (use these):\n${looks.join("\n")}`);
+  const knownProps = Object.keys(appearances.props);
   if (mode === "scene") {
     parts.push(`MODE: SCENE (scene ${(sceneIndex ?? 0) + 1})`);
     if (beat) parts.push(`BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`);
     parts.push(`COMMITTED SCENE (${paragraphs.length} numbered paragraphs):\n${paragraphs.map((p, n) => `[${n + 1}] ${p}`).join("\n\n")}`);
     parts.push(`Make ${shots} shots.`);
+  } else if (mode === "references") {
+    parts.push("MODE: REFERENCES");
+    const mentions = params.mentions ?? {};
+    const quoted = [...characterIds, ...locationIds, ...objectIds]
+      .filter((id) => (mentions[id] ?? []).length > 0)
+      .map((id) => `${id}:\n${mentions[id].map((m) => `  > ${m}`).join("\n")}`);
+    if (quoted.length > 0) parts.push(`STORY MENTIONS (how the story so far describes them):\n${quoted.join("\n\n")}`);
+    if ((params.storyText ?? []).length > 0) parts.push(`STORY TEXT (find key props here):\n${params.storyText!.join("\n\n")}`);
+    const redo = params.redoProps ?? [];
+    parts.push(`KNOWN PROPS: ${knownProps.filter((id) => !redo.includes(id)).join(", ") || "(none yet)"}`);
+    if (redo.length > 0) parts.push(`RECREATE these props (keep the id): ${redo.map((id) => `${id} (${appearances.props[id]?.name ?? id})`).join(", ")}`);
+    if (params.notes?.trim()) parts.push(`AUTHOR NOTES (follow exactly):\n${params.notes.trim()}`);
+    if (objectIds.length > 0) parts.push(`OBJECTS NEEDING REFERENCES (canon — props with these ids): ${objectIds.map((id) => `${id} (${bible.objects[id]?.name ?? id})`).join(", ")}`);
+    parts.push(`Create references for — characters: ${characterIds.join(", ") || "(none)"}; locations: ${locationIds.join(", ") || "(none)"}; props: ${objectIds.join(", ") || "(none)"}; plus any other new key props.`);
   } else {
     parts.push("MODE: COVER");
     const summary = (beats ?? []).map((b, n) => `${n + 1}. [${b.location}] ${b.goal} — ${b.conflict}`).join("\n");
@@ -868,12 +1003,25 @@ export async function artDirect(role: Role, params: {
     role: "artdirector",
     system: ARTDIRECTOR_SYSTEM,
     prompt,
-    ctx: { mode, beat, sceneIndex, beats, shots, paragraphCount: paragraphs.length }
+    ctx: {
+      mode, beat, sceneIndex, beats, shots, paragraphCount: paragraphs.length, characterIds, locationIds, objectIds, artStyle,
+      knownIds: Object.keys(bible.characters), locationIdsKnown: Object.keys(bible.locations), propIds: knownProps
+    }
   });
   if (mode === "scene") {
-    const normalized = normalizeShots(result, paragraphs.length);
+    const normalized = normalizeShots(result, paragraphs.length, {
+      characters: new Set(Object.keys(bible.characters)),
+      locations: new Set(Object.keys(bible.locations)),
+      props: new Set(knownProps)
+    });
     if (normalized.length === 0) throw new Error("art director returned no usable shots");
     return { result: { prompt: normalized[0].prompt, shots: normalized }, prompt, system, raw };
+  }
+  if (mode === "references") {
+    const redo = new Set([...(params.redoProps ?? []), ...objectIds]);
+    const references = normalizeReferences(result, { characters: new Set(characterIds), locations: new Set(locationIds), knownProps: new Set(knownProps.filter((id) => !redo.has(id))) });
+    const defined = !artStyle && typeof (result as { art_style?: unknown }).art_style === "string" ? (result as { art_style: string }).art_style.trim() : "";
+    return { result: { prompt: references[0]?.prompt ?? "", references, ...(defined ? { artStyle: defined } : {}) }, prompt, system, raw };
   }
   const out = result as Partial<ArtDirection>;
   if (typeof out.prompt !== "string" || !out.prompt.trim()) {

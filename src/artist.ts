@@ -2,7 +2,8 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { postJson, requireKey } from "./providers.ts";
 import { parseJson } from "./roles.ts";
-import type { ArtistBackendSpec, ArtistConfig, CoverArtData, GeminiSpec, SceneArtData, StoryEvent } from "./types.ts";
+import type { ArtistBackendSpec, ArtistConfig, CoverArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
+import { readVisualRefs, refKey, storyArtStyle } from "./visualrefs.ts";
 
 // The Artist renders the Art Director's scene_art / cover_art prompts into images.
 // It runs as a separate step over a finished run (like the audiobook), so image
@@ -12,13 +13,26 @@ import type { ArtistBackendSpec, ArtistConfig, CoverArtData, GeminiSpec, SceneAr
 export interface Image {
   data: Buffer;
   mimeType: string;
+  // What a reference image is for, told to the model alongside it.
+  label?: string;
 }
 
 export interface ImageRequest {
   prompt: string;
-  // Earlier renders, oldest first, passed as visual references for continuity.
+  // Character portraits and earlier renders, passed as visual references for continuity.
   references: Image[];
+  aspectRatio?: string;  // overrides the backend's default (portraits are 3:4)
+  style?: string;        // the story's art style, sent with every image
 }
+
+export const PORTRAIT_LABEL = "Canonical look of a character who appears in this image — match their face, build, hair, colors and clothing exactly:";
+export const LOCATION_LABEL = "The place where this image is set — keep its landmarks, architecture, terrain and materials, but choose your own camera angle and framing:";
+export const PROP_LABEL = "A key object that appears in this image — match its shape, materials, colors and markings exactly:";
+export const SCENE_LABEL = "Earlier image from the same story — match its art style:";
+export const STYLE_LABEL = "Reference image of something ELSE from the same story — match only its art style, not its subject:";
+
+const REF_LABEL: Record<VisualRefKind, string> = { character: PORTRAIT_LABEL, location: LOCATION_LABEL, prop: PROP_LABEL };
+const REF_ASPECT: Record<VisualRefKind, string> = { character: "3:4", location: "16:9", prop: "1:1" };
 
 export interface ImageBackend {
   generate(req: ImageRequest): Promise<Image>;
@@ -34,6 +48,7 @@ export interface InspectRequest {
   prompt: string;
   image: Image;
   references: Image[];
+  style?: string;
 }
 
 export interface Inspector {
@@ -47,7 +62,10 @@ Output ONLY JSON:
 
 CHECK FOR:
 - PROMPT MISMATCH: the main subject, action, or setting described in the prompt is missing or wrong.
-- CONTINUITY: if REFERENCE IMAGES are given, recurring characters must keep the same appearance (species, colors, build, clothing) and the overall art style must match.
+- REFERENCE MATCH: each character must match their CHARACTER PORTRAIT (face, build, hair and facial hair color, clothing); the setting must keep the LOCATION reference's landmarks, architecture and materials (any camera angle is fine); each key object must match its PROP reference (shape, materials, colors, markings). A different-looking person, place or object in their stead is an issue.
+- CONTINUITY: the overall art style must match the other reference images.
+- REAL PERSON: any figure that looks like a recognizable real person, actor, or celebrity.
+- STYLE: if an ART STYLE is given, the image must be rendered in it (medium, palette, line, level of realism). A different medium or a jump in realism is an issue.
 - ARTIFACTS: malformed anatomy, extra or missing limbs, melted faces, garbled objects.
 - TEXT: any visible text, captions, logos, watermarks, or speech bubbles.
 
@@ -57,13 +75,20 @@ RULES:
 - revised_prompt: when ok is false, rewrite the ORIGINAL prompt to fix the issues (make the missed detail explicit, restate character appearance, add "no text"). Keep the same scene and moment. When ok is true, return "".`;
 
 export interface ArtJob {
-  key: string;            // "scene-01-03" (scene 1, shot 3), "scene-01" (pre-shots events) or "cover"
+  key: string;            // "character-<id>", "scene-01-03" (scene 1, shot 3), "scene-01" (pre-shots events) or "cover"
   prompt: string;
   sceneIndex?: number;
   startParagraph?: number;
+  ref?: { kind: VisualRefKind; id: string };  // set for canonical reference images
+  // What the image shows, whose references to pass (shots and cover).
+  characters?: string[];
+  location?: string;
+  props?: string[];
 }
 
-// Latest scene_art per scene (in scene order), one job per shot, then the latest cover_art.
+// Canonical references first (characters, locations, props — every later
+// image may use them), then the latest scene_art per scene (in scene order,
+// one job per shot), then the latest cover_art.
 export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
   const scenes = new Map<number, SceneArtData>();
   let cover: CoverArtData | undefined;
@@ -75,6 +100,11 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
       cover = e.data as CoverArtData;
     }
   }
+  const order: Record<VisualRefKind, number> = { character: 0, location: 1, prop: 2 };
+  const refJobs: ArtJob[] = readVisualRefs(events)
+    .sort((a, b) => order[a.kind] - order[b.kind] || a.id.localeCompare(b.id))
+    .map((r) => ({ key: refKey(r.kind, r.id), prompt: r.prompt, ref: { kind: r.kind, id: r.id } }));
+  const refIds = (kind: VisualRefKind) => new Set(refJobs.filter((j) => j.ref!.kind === kind).map((j) => j.ref!.id));
   const jobs: ArtJob[] = [...scenes.entries()]
     .sort(([a], [b]) => a - b)
     .flatMap(([i, d]) => {
@@ -84,11 +114,31 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
         key: `${scene}-${String(k + 1).padStart(2, "0")}`,
         prompt: shot.prompt,
         sceneIndex: i,
-        startParagraph: shot.startParagraph
+        startParagraph: shot.startParagraph,
+        ...(shot.characters ? { characters: shot.characters } : {}),
+        ...(shot.location ? { location: shot.location } : {}),
+        ...(shot.props ? { props: shot.props } : {})
       }));
     });
-  if (cover) jobs.push({ key: "cover", prompt: cover.prompt });
-  return jobs;
+  if (cover) {
+    // The cover features the story's most-shown characters, place and props.
+    const top = (ids: string[], have: Set<string>, n: number) => {
+      const counts = new Map<string, number>();
+      for (const id of ids) if (have.has(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
+      return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n).map(([id]) => id);
+    };
+    const characters = top(jobs.flatMap((j) => j.characters ?? []), refIds("character"), 4);
+    const location = top(jobs.flatMap((j) => (j.location ? [j.location] : [])), refIds("location"), 1)[0];
+    const props = top(jobs.flatMap((j) => j.props ?? []), refIds("prop"), 2);
+    jobs.push({
+      key: "cover",
+      prompt: cover.prompt,
+      ...(characters.length > 0 ? { characters } : {}),
+      ...(location ? { location } : {}),
+      ...(props.length > 0 ? { props } : {})
+    });
+  }
+  return [...refJobs, ...jobs];
 }
 
 export function extensionFor(mimeType: string): string {
@@ -112,8 +162,11 @@ export interface ManifestEntry {
   // audiobook/timings.json paragraphStarts) at which it comes on screen. Absent for the cover.
   sceneIndex?: number;
   startParagraph?: number;
+  refKind?: VisualRefKind; // set for canonical reference images
+  refId?: string;
   prompt: string;       // the Art Director's prompt (the skip key)
   finalPrompt: string;  // the prompt that produced the kept image
+  style?: string;       // the art style it was rendered in (also a skip key)
   attempts: number;
   accepted: boolean;    // false = attempts ran out; the last image was kept anyway
   issues: string[];
@@ -134,6 +187,7 @@ export interface ArtOptions {
   inspector?: Inspector;   // omitted = one shot per image, no review
   maxAttempts?: number;    // per image, default 3
   maxReferences?: number;  // earlier renders passed for continuity, default 3
+  maxPortraits?: number;   // character portraits passed per image, default 3 (plus 1 location and 2 props)
   force?: boolean;         // re-render even when the prompt is unchanged
   onProgress?: (event: ArtProgress) => void;
 }
@@ -159,40 +213,70 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const maxReferences = opts.maxReferences ?? 3;
   const emit = opts.onProgress ?? (() => {});
 
+  const maxPortraits = opts.maxPortraits ?? 3;
+  // One art style for the whole story, sent with every image request — not left
+  // to each prompt to restate.
+  const style = storyArtStyle(events);
   const jobs = buildArtJobs(events);
-  const rendered: Image[] = [];
+  const rendered: Image[] = [];                // scene shots and cover, in order
+  const refs = new Map<string, Image>();       // refKey(kind, id) -> reference image
+  const keep = (job: ArtJob, image: Image) => {
+    if (job.ref) refs.set(refKey(job.ref.kind, job.ref.id), image);
+    else rendered.push(image);
+  };
+  const refImages = (kind: VisualRefKind, ids: string[], limit: number): Image[] =>
+    ids.flatMap((id) => {
+      const img = refs.get(refKey(kind, id));
+      return img ? [{ ...img, label: REF_LABEL[kind] }] : [];
+    }).slice(0, limit);
+  // A shot gets the references for what it shows — up to 3 characters, its
+  // location, 2 props — then a recent render or two for style. Image models
+  // lose track past a handful of references, hence the caps. A reference job
+  // gets two earlier references, for style only.
+  const referencesFor = (job: ArtJob): Image[] => {
+    if (job.ref) return [...refs.values()].slice(-2).map((img) => ({ ...img, label: STYLE_LABEL }));
+    const canon = [
+      ...refImages("character", job.characters ?? [], maxPortraits),
+      ...refImages("location", job.location ? [job.location] : [], 1),
+      ...refImages("prop", job.props ?? [], 2)
+    ];
+    const style = rendered.slice(canon.length > 0 ? -1 : -maxReferences).map((img) => ({ ...img, label: SCENE_LABEL }));
+    return [...canon, ...style];
+  };
   const result: ArtResult = { outDir, rendered: 0, skipped: 0, failed: 0, manifest };
 
   for (const [index, job] of jobs.entries()) {
     const prior = manifest[job.key];
-    if (!opts.force && prior && prior.prompt === job.prompt && existing.has(prior.file)) {
+    if (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && existing.has(prior.file)) {
       // Same image, but keep its placement current in case the shot's anchor moved.
       prior.sceneIndex = job.sceneIndex;
       prior.startParagraph = job.startParagraph;
       emit({ type: "job_skipped", key: job.key, file: prior.file });
-      rendered.push({ data: await readFile(join(outDir, prior.file)), mimeType: mimeFor(prior.file) });
+      keep(job, { data: await readFile(join(outDir, prior.file)), mimeType: mimeFor(prior.file) });
       result.skipped++;
       continue;
     }
     emit({ type: "job_start", key: job.key, index, total: jobs.length });
-    const references = rendered.slice(-maxReferences);
+    const references = referencesFor(job);
     try {
-      const entry = await renderOne(job, references, opts.backend, opts.inspector, maxAttempts, emit);
+      const entry = await renderOne(job, references, opts.backend, opts.inspector, maxAttempts, emit, style);
       const file = `${job.key}.${extensionFor(entry.image.mimeType)}`;
       await writeFile(join(outDir, file), entry.image.data);
       manifest[job.key] = {
         file,
         sceneIndex: job.sceneIndex,
         startParagraph: job.startParagraph,
+        ...(job.ref ? { refKind: job.ref.kind, refId: job.ref.id } : {}),
         prompt: job.prompt,
         finalPrompt: entry.finalPrompt,
+        ...(style ? { style } : {}),
         attempts: entry.attempts,
         accepted: entry.accepted,
         issues: entry.issues
       };
       // Persist after every image so an interrupted render resumes where it stopped.
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
-      rendered.push(entry.image);
+      keep(job, entry.image);
       result.rendered++;
       emit({ type: "job_done", key: job.key, file, attempts: entry.attempts, accepted: entry.accepted });
     } catch (err) {
@@ -213,7 +297,8 @@ async function renderOne(
   backend: ImageBackend,
   inspector: Inspector | undefined,
   maxAttempts: number,
-  emit: (event: ArtProgress) => void
+  emit: (event: ArtProgress) => void,
+  style?: string
 ): Promise<{ image: Image; finalPrompt: string; attempts: number; accepted: boolean; issues: string[] }> {
   let prompt = job.prompt;
   let image: Image | undefined;
@@ -221,7 +306,7 @@ async function renderOne(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // A failed generation (timeout, blocked or empty reply) uses up an attempt rather than the whole image.
     try {
-      image = await backend.generate({ prompt, references });
+      image = await backend.generate({ prompt, references, ...(style ? { style } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : {}) });
     } catch (err) {
       issues = [`generation failed: ${err instanceof Error ? err.message : String(err)}`];
       emit({ type: "attempt_rejected", key: job.key, attempt, issues });
@@ -229,7 +314,7 @@ async function renderOne(
       continue;
     }
     if (!inspector) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [] };
-    const verdict = await inspector.inspect({ prompt, image, references });
+    const verdict = await inspector.inspect({ prompt, image, references, ...(style ? { style } : {}) });
     if (verdict.ok) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [] };
     issues = verdict.issues;
     emit({ type: "attempt_rejected", key: job.key, attempt, issues });
@@ -261,18 +346,19 @@ export class GeminiImageBackend implements ImageBackend {
   spec: GeminiSpec;
   constructor(spec: GeminiSpec) { this.spec = spec; }
 
-  async generate({ prompt, references }: ImageRequest): Promise<Image> {
+  async generate({ prompt, references, aspectRatio, style }: ImageRequest): Promise<Image> {
     const parts: GeminiPart[] = [];
-    if (references.length > 0) {
-      parts.push({ text: "Reference images from earlier scenes of the same story. Keep recurring characters and the art style consistent with them:" });
-      for (const ref of references) parts.push(imagePart(ref));
+    if (style) parts.push({ text: `ART STYLE — every image of this story uses exactly this style; render in it regardless of the references' subjects: ${style}` });
+    for (const ref of references) {
+      parts.push({ text: ref.label ?? SCENE_LABEL });
+      parts.push(imagePart(ref));
     }
-    parts.push({ text: prompt });
+    parts.push({ text: references.length > 0 || style ? `Now generate this image:\n${prompt}` : prompt });
     const data = await geminiGenerate(this.spec, "artist", {
       contents: [{ role: "user", parts }],
       generationConfig: {
         responseModalities: ["IMAGE"],
-        imageConfig: { aspectRatio: this.spec.aspectRatio || "16:9" }
+        imageConfig: { aspectRatio: aspectRatio ?? this.spec.aspectRatio ?? "16:9" }
       }
     });
     const candidate = data.candidates?.[0];
@@ -291,11 +377,14 @@ export class GeminiInspector implements Inspector {
   spec: GeminiSpec;
   constructor(spec: GeminiSpec) { this.spec = spec; }
 
-  async inspect({ prompt, image, references }: InspectRequest): Promise<Inspection> {
-    const parts: GeminiPart[] = [{ text: `PROMPT:\n${prompt}` }, { text: "CANDIDATE IMAGE:" }, imagePart(image)];
-    if (references.length > 0) {
-      parts.push({ text: "REFERENCE IMAGES (earlier scenes, oldest first):" });
-      for (const ref of references) parts.push(imagePart(ref));
+  async inspect({ prompt, image, references, style }: InspectRequest): Promise<Inspection> {
+    const parts: GeminiPart[] = [{ text: `PROMPT:\n${prompt}` }];
+    if (style) parts.push({ text: `ART STYLE:\n${style}` });
+    parts.push({ text: "CANDIDATE IMAGE:" }, imagePart(image));
+    for (const ref of references) {
+      const kind = ref.label === PORTRAIT_LABEL ? "CHARACTER PORTRAIT" : ref.label === LOCATION_LABEL ? "LOCATION" : ref.label === PROP_LABEL ? "PROP" : "art style only";
+      parts.push({ text: `REFERENCE IMAGE — ${kind}:` });
+      parts.push(imagePart(ref));
     }
     const data = await geminiGenerate(this.spec, "inspector", {
       systemInstruction: { parts: [{ text: INSPECTOR_SYSTEM }] },
