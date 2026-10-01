@@ -285,6 +285,8 @@ export interface ArtistConfig {
   inspector?: ArtistBackendSpec | null;  // null disables review
   maxAttempts?: number;
   maxReferences?: number;
+  referenceSize?: number;  // longest side (px) of reference images sent; default 768, 0 = full size
+  inspectSize?: number;    // longest side (px) of the image sent for inspection; default 1024
 }
 
 // A structured role call: the model output plus the exact inputs that produced it.

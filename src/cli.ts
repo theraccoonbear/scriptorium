@@ -116,6 +116,8 @@ async function renderRunArt(runDir: string, config: StoryConfig, events: StoryEv
     inspector: artist.inspector ? makeInspector(artist.inspector) : undefined,
     maxAttempts: artist.maxAttempts,
     maxReferences: artist.maxReferences,
+    referenceSize: artist.referenceSize,
+    inspectSize: artist.inspectSize,
     force,
     onProgress: (event) => {
       if (event.type === "job_start") console.error(`[scriptorium] ${c.blue(c.bold(`${event.key} (${event.index + 1}/${event.total})`))}`);
