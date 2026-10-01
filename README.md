@@ -99,7 +99,7 @@ npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, 
 | **critic** | Blocks craft problems: pacing, telling-not-showing, sensory detail, voice drift, recurring style tics. | optional |
 | **archivist** | The only role that changes the bible, via JSON patches. | yes |
 | **worldgate / beatgate / patchgate** | Review the worldbuilder's output, each beat spec, and each bible patch before they're used. | optional (fall back to the continuist / critic) |
-| **artdirector** | After each scene: canonical visual references, then a sequence of shots; at the end, the cover. | optional |
+| **artdirector** | After each scene: a sequence of shots, plus canonical visual references for what they show; at the end, the cover. | optional |
 
 Every role is mapped to a provider in the config, so each can run on a different model.
 
@@ -173,7 +173,7 @@ This describes everyone, recording the descriptions in the run so the story reus
 The **art director** works in three layers:
 
 1. **Art style.** The creator decides how the world is portrayed (medium, palette, light, line, detail, mood) along with the tone. Every image in the story uses it, and each story gets its own.
-2. **Visual references.** One canonical image per **character** (full-body portrait), **location** (an establishing view with no people) and **key prop** (the object alone, at true proportions). Each is made once, when it enters the story. Characters' looks follow the bible and how the prose describes them. Props come from the bible's key objects, plus any others the art director finds in the prose.
+2. **Visual references.** One canonical image per **character** (full-body portrait), **location** (an establishing view with no people) and **key prop** (the object alone, at true proportions). Each is made once. Characters and locations get theirs the first time a shot shows them, so someone the story only mentions, such as a remembered grandmother or a figure in a mural, never costs a portrait. When a scene's shots introduce someone new, the shots are directed again once that person's reference exists, so the prompts use their canonical look. Characters' looks follow the bible and how the prose describes them. Props come from the bible's key objects, plus any others the art director finds in the prose.
 3. **Shots.** About one per 110 words of narration (roughly 45 seconds read aloud; `artWordsPerShot`), 4–20 per scene. Each shot is anchored to the paragraph where it comes on screen and lists the characters, location and props it shows.
 
 The **artist** renders them with Gemini (`GEMINI_API_KEY`). References render first. Each shot then gets the references for what it shows as labelled reference images: up to 3 characters, its location and 2 props, plus a recent image for style. An **inspector** checks each image against its prompt, its references and the art style, and flags anything that resembles a real person. It requests a revised regeneration up to `maxAttempts` times.

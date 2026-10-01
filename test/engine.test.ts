@@ -160,14 +160,17 @@ test("creator-assigned gender lands in the bible", async () => {
 });
 
 // --- issue #29: canonical visual references (characters, locations, props) ---
-test("references are made once per character and location, props once, and shots name what they show", async () => {
+test("references are made once, only for the characters and places shots show; props once; shots name what they show", async () => {
   const config = await loadConfig({ scenes: 3 });
   const log = new EventLog(await tmp());
   const bible = await runStory({ config, log, roles: buildRoleProviders(config) });
   const refs = log.events.filter((e) => e.type === "visual_ref").map((e) => e.data as VisualRefData);
   const ids = (kind: string) => refs.filter((r) => r.kind === kind).map((r) => r.id).sort();
-  assert.deepEqual(ids("character"), Object.keys(bible.characters).sort());
-  assert.deepEqual(ids("location"), Object.keys(bible.locations).sort());
+  const shown = log.events.filter((e) => e.type === "scene_art").flatMap((e) => (e.data as SceneArtData).shots ?? []);
+  assert.deepEqual(ids("character"), [...new Set(shown.flatMap((s) => s.characters ?? []))].sort());
+  assert.deepEqual(ids("location"), [...new Set(shown.flatMap((s) => (s.location ? [s.location] : [])))].sort());
+  assert.ok(Object.keys(bible.characters).length > ids("character").length, "characters no shot shows get no portrait");
+  assert.equal(new Set(ids("character")).size, ids("character").length, "each reference made once");
   // The Creator's canon key object gets a prop reference under its bible id, plus one discovered prop.
   assert.deepEqual(ids("prop"), ["letter", "mock_prop"]);
   assert.ok(bible.objects.letter.description.includes("palm-sized"));
@@ -204,8 +207,12 @@ test("redirectArt adds missing references to an existing run, keeping legacy por
   await log.append("character_art", { characterId: "keeper", appearance: "kept look", prompt: "kept" });
   const made: string[][] = [];
   await redirectArt({ config, log, roles: buildRoleProviders(config), onReferences: (r) => made.push(r) });
-  assert.deepEqual(made[0].sort(), ["character:voice", ...Object.keys(bible.locations).map((id) => `location:${id}`), "prop:letter", "prop:mock_prop"].sort());
-  assert.ok(!made[0].includes("character:keeper"));
+  const shots = log.events.filter((e) => e.type === "scene_art").flatMap((e) => (e.data as SceneArtData).shots ?? []);
+  const shownLocations = [...new Set(shots.flatMap((s) => (s.location ? [s.location] : [])))];
+  assert.ok(shownLocations.length > 0 && shownLocations.length < Object.keys(bible.locations).length + 1);
+  const shownCharacters = [...new Set(shots.flatMap((s) => s.characters ?? []))].filter((id) => id !== "keeper");
+  assert.deepEqual(made[0].sort(), [...shownCharacters.map((id) => `character:${id}`), ...shownLocations.map((id) => `location:${id}`), "prop:letter", "prop:mock_prop"].sort());
+  assert.ok(!made[0].includes("character:keeper"), "the legacy portrait still counts");
 });
 
 test("storyMentions finds paragraphs naming a character or place by any part of its name", async () => {
@@ -386,25 +393,32 @@ test("references for a big cast are made in batches of 3, and earlier batches su
   let failOn = -1;
   roles.artdirector!.provider = {
     complete: async (req) => {
-      const ctx = req.ctx as { mode: string; characterIds: string[]; locationIds: string[] };
+      const ctx = req.ctx as { mode: string; characterIds: string[]; locationIds: string[]; knownIds: string[] };
       if (ctx.mode === "references") {
         batches.push({ characterIds: ctx.characterIds, locationIds: ctx.locationIds });
-        if (batches.length === failOn) throw new Error("boom");
+        if (batches.filter((b) => b.characterIds.length > 0).length === failOn) throw new Error("boom");
       }
-      return real(req);
+      const out = await real(req);
+      if (ctx.mode !== "scene") return out;
+      // Every character is on screen in the first shot.
+      const parsed = JSON.parse(out);
+      parsed.shots[0].characters = ctx.knownIds;
+      return JSON.stringify(parsed);
     }
   };
-  failOn = 3;  // third batch (the 7th character) fails
-  await assert.rejects(redirectArt({ config, log, roles }), /boom/);
-  assert.deepEqual(batches.map((b) => b.characterIds.length), [3, 3, 1]);
-  const kept = log.events.filter((e) => e.type === "visual_ref").length;
-  assert.equal(kept, 6, "the first two batches were recorded before the failure");
+  failOn = 3;  // scene 1 shows its 2 characters; scene 2's 5 newcomers go 3 + 2, and that last batch fails — the shots survive it
+  await redirectArt({ config, log, roles });
+  assert.deepEqual(batches.filter((b) => b.characterIds.length > 0).map((b) => b.characterIds.length), [2, 3, 2]);
+  const characterRefs = () => log.events.filter((e) => e.type === "visual_ref" && (e.data as VisualRefData).kind === "character").length;
+  assert.equal(characterRefs(), 5, "the earlier batches were recorded before the failure");
+  assert.ok(log.events.some((e) => e.type === "scene_art"), "the scene's shots were kept");
 
   // Retrying makes only what's still missing.
   batches.length = 0;
   failOn = -1;
   await redirectArt({ config, log, roles });
-  assert.deepEqual(batches[0].characterIds.length, 1);
+  assert.deepEqual(batches.filter((b) => b.characterIds.length > 0).map((b) => b.characterIds.length), [2]);
+  assert.equal(characterRefs(), 7);
   assert.ok(batches.every((b) => b.characterIds.length + b.locationIds.length <= 3));
 });
 

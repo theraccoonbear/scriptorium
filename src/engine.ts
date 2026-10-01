@@ -478,22 +478,24 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       previousScenes.push(prose);
       if (runDir) await writeStoryIncremental(runDir, log.events);
 
-      // Art Director: canonical visual references for whatever just entered the
-      // story — the Creator's cast and places with scene 1, the Archivist's
-      // additions later, and key props the scene shows — then a sequence of
+      // Art Director: canonical props first (canon key objects, and key props
+      // the scene shows — shots can only name known props), then a sequence of
       // shots for this scene, each anchored to the paragraph where it comes on
-      // screen. The scene is already canon, so failures only warn.
+      // screen, with character and location references made for whoever and
+      // wherever those shots show. The scene is already canon, so failures only warn.
       if (roles.artdirector) {
         const artRole = roles.artdirector;
+        const recordRefs = async (out: RoleOutput<ArtDirection>) => {
+          if (runDir && (out.result.references ?? []).length > 0) await writeRoleOutput(runDir, ++seq, "artdirector-references", out);
+        };
         await nonFatal(`scene ${i + 1} visual references`, async () => {
           const known = new Set(Object.keys(bible.characters));
-          await directReferences(artRole, bible, log, sceneParagraphs(prose, known), async (out) => {
-            if (runDir && (out.result.references ?? []).length > 0) await writeRoleOutput(runDir, ++seq, "artdirector-references", out);
-          });
+          await directReferences(artRole, bible, log, sceneParagraphs(prose, known), recordRefs, new Set(), undefined, { characterIds: [], locationIds: [] });
         });
         await nonFatal(`scene ${i + 1} art prompts`, async () => {
-          const out = await directSceneArt(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
-          if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector", out);
+          const { drafts } = await directSceneShots(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events), log, recordRefs);
+          for (const d of drafts) if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector", d);
+          const out = drafts.at(-1)!;
           const art: SceneArtData = { sceneIndex: i, prompt: out.result.prompt, shots: out.result.shots };
           await log.append("scene_art", art);
         });
@@ -562,11 +564,16 @@ async function directReferences(
   storyText: string[],
   record: (out: RoleOutput<ArtDirection>, batch: number) => Promise<void>,
   redo: ReadonlySet<string> = new Set(),
-  notes?: string
+  notes?: string,
+  // Which characters and locations to consider (default: every one in the
+  // bible), and whether to run the props batch (default: yes).
+  scope: { characterIds?: string[]; locationIds?: string[]; props?: boolean } = {}
 ): Promise<VisualRefData[]> {
   const start = refAppearances(log.events);
-  const characterIds = Object.keys(bible.characters).filter((id) => !start.characters[id] || redo.has(`character:${id}`)).sort();
-  const locationIds = Object.keys(bible.locations).filter((id) => !start.locations[id] || redo.has(`location:${id}`)).sort();
+  const characterIds = (scope.characterIds ?? Object.keys(bible.characters))
+    .filter((id) => bible.characters[id] && (!start.characters[id] || redo.has(`character:${id}`))).sort();
+  const locationIds = (scope.locationIds ?? Object.keys(bible.locations))
+    .filter((id) => bible.locations[id] && (!start.locations[id] || redo.has(`location:${id}`))).sort();
   const redoProps = Object.keys(start.props).filter((id) => redo.has(`prop:${id}`));
   // Canon key objects are props whose look comes from the bible.
   const objectIds = Object.keys(bible.objects ?? {}).filter((id) => (!start.props[id] || redo.has(`prop:${id}`)) && !redoProps.includes(id)).sort();
@@ -574,7 +581,7 @@ async function directReferences(
   const batches: Array<{ characterIds?: string[]; locationIds?: string[]; props?: true }> = [
     ...chunk(characterIds).map((ids) => ({ characterIds: ids })),
     ...chunk(locationIds).map((ids) => ({ locationIds: ids })),
-    { props: true }  // canon objects, recreated props, and discovery of new ones
+    ...(scope.props === false ? [] : [{ props: true as const }])  // canon objects, recreated props, and discovery of new ones
   ];
   const made: VisualRefData[] = [];
   for (const [n, b] of batches.entries()) {
@@ -630,6 +637,37 @@ async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, bea
   return out;
 }
 
+// A scene's shots, with character and location references made just in time:
+// only for what a shot actually shows, so someone the story merely mentions
+// (a remembered grandmother, a figure in a mural) never gets a portrait. When
+// new references are made, the shots are directed again so their prompts use
+// the new canonical appearances. Returns every draft, the last one final.
+async function directSceneShots(
+  role: Role, config: StoryConfig, bible: Bible, beat: Beat, prose: string, sceneIndex: number,
+  previousPrompts: string[], log: EventLog,
+  recordRefs: (out: RoleOutput<ArtDirection>, batch: number) => Promise<void>
+): Promise<{ drafts: RoleOutput<ArtDirection>[]; made: VisualRefData[] }> {
+  const first = await directSceneArt(role, config, bible, beat, prose, sceneIndex, previousPrompts, refAppearances(log.events), storyArtStyle(log.events));
+  const have = refAppearances(log.events);
+  const shots = first.result.shots ?? [];
+  const characterIds = [...new Set(shots.flatMap((s) => s.characters ?? []))].filter((id) => !have.characters[id]);
+  const locationIds = [...new Set(shots.flatMap((s) => (s.location ? [s.location] : [])))].filter((id) => !have.locations[id]);
+  if (characterIds.length + locationIds.length === 0) return { drafts: [first], made: [] };
+  const known = new Set(Object.keys(bible.characters));
+  let made: VisualRefData[];
+  try {
+    made = await directReferences(role, bible, log, sceneParagraphs(prose, known), recordRefs, new Set(), undefined, { characterIds, locationIds, props: false });
+  } catch (err) {
+    // The shots are still good without these references; keep them.
+    if (isBudgetError(err)) throw err;
+    console.error(`[scriptorium]   ${c.retry(`scene ${sceneIndex + 1} references failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
+    return { drafts: [first], made: [] };
+  }
+  if (made.length === 0) return { drafts: [first], made };
+  const final = await directSceneArt(role, config, bible, beat, prose, sceneIndex, previousPrompts, refAppearances(log.events), storyArtStyle(log.events));
+  return { drafts: [first, final], made };
+}
+
 async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[], appearances: RefAppearances, artStyle?: string) {
   const t0 = Date.now();
   const out = await artDirect(role, { bible, mode: "cover", beats: committed.map((d) => d.beat), appearances, artStyle, previousPrompts });
@@ -675,12 +713,14 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
     if (!exists) throw new Error(`--redo ${r}: no such reference (use character:<id>, location:<id> or prop:<id>)`);
   }
   if (notes && redo.length === 0) throw new Error("--note only applies with --redo");
-  const made = await directReferences(artRole, finalBible, log, storyText, async (out) => {
+  const recordRefs = async (out: RoleOutput<ArtDirection>) => {
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-references-redo", out);
-  }, new Set(redo), notes);
-  onReferences?.(made.map((r) => `${r.kind}:${r.id}`));
-  const appearances = refAppearances(log.events);
-  const artStyle = storyArtStyle(log.events);
+  };
+  // Recreate what was asked for, and any missing props; characters and places
+  // get references as the re-shot scenes show them.
+  const redoIds = (kind: string) => redo.filter((r) => r.startsWith(`${kind}:`)).map((r) => r.slice(kind.length + 1));
+  const made = await directReferences(artRole, finalBible, log, storyText, recordRefs, new Set(redo), notes,
+    { characterIds: redoIds("character"), locationIds: redoIds("location") });
   const events = [...log.events];
   const committed: SceneCommittedData[] = [];
   const prompts: string[] = [];
@@ -690,15 +730,18 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
     committed.push(d);
     // The bible as it stood right after this scene committed — what the live run saw.
     const bible = replay(events.slice(0, n + 1));
-    const out = await directSceneArt(artRole, config, bible, d.beat, d.prose, d.index, prompts, appearances, artStyle);
-    if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-redo", out);
+    const shot = await directSceneShots(artRole, config, bible, d.beat, d.prose, d.index, prompts, log, recordRefs);
+    made.push(...shot.made);
+    for (const draft of shot.drafts) if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-redo", draft);
+    const out = shot.drafts.at(-1)!;
     const art: SceneArtData = { sceneIndex: d.index, prompt: out.result.prompt, shots: out.result.shots };
     await log.append("scene_art", art);
     prompts.push(...(out.result.shots ?? []).map((s) => s.prompt));
     onScene?.(d.index, out.result.shots?.length ?? 1);
   }
+  onReferences?.(made.map((r) => `${r.kind}:${r.id}`));
   if (committed.length > 0) {
-    const out = await directCoverArt(artRole, replay(events), committed, prompts, appearances, artStyle);
+    const out = await directCoverArt(artRole, replay(events), committed, prompts, refAppearances(log.events), storyArtStyle(log.events));
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover-redo", out);
     const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
     await log.append("cover_art", cover);
