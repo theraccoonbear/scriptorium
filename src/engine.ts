@@ -6,7 +6,7 @@ import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./aud
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
 import { EventLog } from "./eventlog.ts";
-import { refAppearances } from "./visualrefs.ts";
+import { refAppearances, storyArtStyle } from "./visualrefs.ts";
 import type { RefAppearances } from "./visualrefs.ts";
 import type {
   Beat,
@@ -419,10 +419,11 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           const known = new Set(Object.keys(bible.characters));
           const out = await directReferences(artRole, bible, log.events, sceneParagraphs(prose, known));
           if (runDir && (out.result.references ?? []).length > 0) await writeRoleOutput(runDir, ++seq, "artdirector-references", out);
+          if (out.result.artStyle) await log.append("art_style", { style: out.result.artStyle });
           for (const r of out.result.references ?? []) await log.append("visual_ref", r satisfies VisualRefData);
         });
         await nonFatal(`scene ${i + 1} art prompts`, async () => {
-          const out = await directSceneArt(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events), refAppearances(log.events));
+          const out = await directSceneArt(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
           if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector", out);
           const art: SceneArtData = { sceneIndex: i, prompt: out.result.prompt, shots: out.result.shots };
           await log.append("scene_art", art);
@@ -445,7 +446,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   if (roles.artdirector && committed.length > 0 && lastCover?.sceneCount !== committed.length) {
     const artRole = roles.artdirector;
     await nonFatal("cover art prompt", async () => {
-      const out = await directCoverArt(artRole, bible, committed, sceneArtPrompts(log.events), refAppearances(log.events));
+      const out = await directCoverArt(artRole, bible, committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
       if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
       const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
       await log.append("cover_art", cover);
@@ -487,12 +488,12 @@ async function directReferences(role: Role, bible: Bible, events: StoryEvent[], 
   const objectIds = Object.keys(bible.objects ?? {}).filter((id) => (!have.props[id] || redo.has(`prop:${id}`)) && !redoProps.includes(id)).sort();
   const t0 = Date.now();
   const mentions = storyMentions(bible, events, [...characterIds, ...locationIds, ...objectIds]);
-  const out = await artDirect(role, { bible, mode: "references", characterIds, locationIds, objectIds, redoProps, notes, mentions, storyText, appearances: have });
+  const out = await artDirect(role, { bible, mode: "references", characterIds, locationIds, objectIds, redoProps, notes, mentions, storyText, appearances: have, artStyle: storyArtStyle(events) });
   recordTiming("artdirector", Date.now() - t0);
   return out;
 }
 
-async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, beat: Beat, prose: string, sceneIndex: number, previousPrompts: string[], appearances: RefAppearances) {
+async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, beat: Beat, prose: string, sceneIndex: number, previousPrompts: string[], appearances: RefAppearances, artStyle?: string) {
   const t0 = Date.now();
   // Same paragraph numbering as the audiobook's timings.json.
   const paragraphs = sceneParagraphs(prose, new Set(Object.keys(bible.characters)));
@@ -504,6 +505,7 @@ async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, bea
     shots: shotCountFor(paragraphs, config.artWordsPerShot),
     sceneIndex,
     appearances,
+    artStyle,
     previousPrompts
   });
   // A shot with no location of its own is set where the scene's beat is.
@@ -514,9 +516,9 @@ async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, bea
   return out;
 }
 
-async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[], appearances: RefAppearances) {
+async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[], appearances: RefAppearances, artStyle?: string) {
   const t0 = Date.now();
-  const out = await artDirect(role, { bible, mode: "cover", beats: committed.map((d) => d.beat), appearances, previousPrompts });
+  const out = await artDirect(role, { bible, mode: "cover", beats: committed.map((d) => d.beat), appearances, artStyle, previousPrompts });
   recordTiming("artdirector", Date.now() - t0);
   return out;
 }
@@ -560,9 +562,11 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
   if (notes && redo.length === 0) throw new Error("--note only applies with --redo");
   const refs = await directReferences(artRole, finalBible, log.events, storyText, new Set(redo), notes);
   if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-references-redo", refs);
+  if (refs.result.artStyle) await log.append("art_style", { style: refs.result.artStyle });
   for (const r of refs.result.references ?? []) await log.append("visual_ref", r satisfies VisualRefData);
   onReferences?.((refs.result.references ?? []).map((r) => `${r.kind}:${r.id}`));
   const appearances = refAppearances(log.events);
+  const artStyle = storyArtStyle(log.events);
   const events = [...log.events];
   const committed: SceneCommittedData[] = [];
   const prompts: string[] = [];
@@ -572,7 +576,7 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
     committed.push(d);
     // The bible as it stood right after this scene committed — what the live run saw.
     const bible = replay(events.slice(0, n + 1));
-    const out = await directSceneArt(artRole, config, bible, d.beat, d.prose, d.index, prompts, appearances);
+    const out = await directSceneArt(artRole, config, bible, d.beat, d.prose, d.index, prompts, appearances, artStyle);
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-redo", out);
     const art: SceneArtData = { sceneIndex: d.index, prompt: out.result.prompt, shots: out.result.shots };
     await log.append("scene_art", art);
@@ -580,7 +584,7 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
     onScene?.(d.index, out.result.shots?.length ?? 1);
   }
   if (committed.length > 0) {
-    const out = await directCoverArt(artRole, replay(events), committed, prompts, appearances);
+    const out = await directCoverArt(artRole, replay(events), committed, prompts, appearances, artStyle);
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover-redo", out);
     const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
     await log.append("cover_art", cover);

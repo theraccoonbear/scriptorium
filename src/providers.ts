@@ -81,6 +81,7 @@ export class MockProvider {
         if (ctx.mode === "references") {
           const ref = (id: string) => ({ id, appearance: `Mock look for ${id}.`, prompt: `Mock reference image of ${id}.` });
           return JSON.stringify({
+            ...(ctx.artStyle ? {} : { art_style: "Mock woodcut style." }),
             characters: (ctx.characterIds ?? []).map(ref),
             locations: (ctx.locationIds ?? []).map(ref),
             // Canon objects, plus one discovered key prop the first time.
@@ -128,6 +129,7 @@ export class MockProvider {
     return {
       premise: "A lone lighthouse keeper receives a letter from someone who shouldn't know they exist.",
       tone: "Quiet, uncanny, with dry humor.",
+      art_style: "Muted ink and watercolor illustration, grey-green palette, soft diffuse light.",
       characters: [
         { id: "keeper", name: "Ada", traits: "methodical, sleep-deprived", goal: "Figure out who sent the letter", voice: "Clipped sentences. Nautical terms.", gender: "female" },
         { id: "voice", name: "The Voice", traits: "calm, precise", goal: "Be heard", voice: "Formal, slightly out of time.", gender: "" }
