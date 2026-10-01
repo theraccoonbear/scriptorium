@@ -1,6 +1,7 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import { mulberry32, pick } from "./rng.ts";
+import type { ArtDirection } from "./roles.ts";
 import { shotCountFor, direct, createAndDirect, buildWorld, write, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
 import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
@@ -427,10 +428,9 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         const artRole = roles.artdirector;
         await nonFatal(`scene ${i + 1} visual references`, async () => {
           const known = new Set(Object.keys(bible.characters));
-          const out = await directReferences(artRole, bible, log.events, sceneParagraphs(prose, known));
-          if (runDir && (out.result.references ?? []).length > 0) await writeRoleOutput(runDir, ++seq, "artdirector-references", out);
-          if (out.result.artStyle) await log.append("art_style", { style: out.result.artStyle });
-          for (const r of out.result.references ?? []) await log.append("visual_ref", r satisfies VisualRefData);
+          await directReferences(artRole, bible, log, sceneParagraphs(prose, known), async (out) => {
+            if (runDir && (out.result.references ?? []).length > 0) await writeRoleOutput(runDir, ++seq, "artdirector-references", out);
+          });
         });
         await nonFatal(`scene ${i + 1} art prompts`, async () => {
           const out = await directSceneArt(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
@@ -489,18 +489,62 @@ export function storyMentions(bible: Bible, events: StoryEvent[], ids: string[],
 // References for characters and locations in the bible that have none yet,
 // plus any new key props found in `storyText`. `redo` ("kind:id") forces a
 // fresh reference for ones that exist but came out wrong.
-async function directReferences(role: Role, bible: Bible, events: StoryEvent[], storyText: string[], redo: ReadonlySet<string> = new Set(), notes?: string) {
-  const have = refAppearances(events);
-  const characterIds = Object.keys(bible.characters).filter((id) => !have.characters[id] || redo.has(`character:${id}`)).sort();
-  const locationIds = Object.keys(bible.locations).filter((id) => !have.locations[id] || redo.has(`location:${id}`)).sort();
-  const redoProps = Object.keys(have.props).filter((id) => redo.has(`prop:${id}`));
+//
+// Batched so no single reply grows with the cast (one call for a whole cast
+// overran the model's output limit): up to 3 characters per call, then up to
+// 3 locations, then one call for props. Each batch is recorded as soon as it
+// returns, so later batches see the looks already set and a failure keeps them.
+const REF_BATCH = 3;
+
+async function directReferences(
+  role: Role,
+  bible: Bible,
+  log: EventLog,
+  storyText: string[],
+  record: (out: RoleOutput<ArtDirection>, batch: number) => Promise<void>,
+  redo: ReadonlySet<string> = new Set(),
+  notes?: string
+): Promise<VisualRefData[]> {
+  const start = refAppearances(log.events);
+  const characterIds = Object.keys(bible.characters).filter((id) => !start.characters[id] || redo.has(`character:${id}`)).sort();
+  const locationIds = Object.keys(bible.locations).filter((id) => !start.locations[id] || redo.has(`location:${id}`)).sort();
+  const redoProps = Object.keys(start.props).filter((id) => redo.has(`prop:${id}`));
   // Canon key objects are props whose look comes from the bible.
-  const objectIds = Object.keys(bible.objects ?? {}).filter((id) => (!have.props[id] || redo.has(`prop:${id}`)) && !redoProps.includes(id)).sort();
-  const t0 = Date.now();
-  const mentions = storyMentions(bible, events, [...characterIds, ...locationIds, ...objectIds]);
-  const out = await artDirect(role, { bible, mode: "references", characterIds, locationIds, objectIds, redoProps, notes, mentions, storyText, appearances: have, artStyle: storyArtStyle(events) });
-  recordTiming("artdirector", Date.now() - t0);
-  return out;
+  const objectIds = Object.keys(bible.objects ?? {}).filter((id) => (!start.props[id] || redo.has(`prop:${id}`)) && !redoProps.includes(id)).sort();
+  const chunk = (ids: string[]) => Array.from({ length: Math.ceil(ids.length / REF_BATCH) }, (_, k) => ids.slice(k * REF_BATCH, (k + 1) * REF_BATCH));
+  const batches: Array<{ characterIds?: string[]; locationIds?: string[]; props?: true }> = [
+    ...chunk(characterIds).map((ids) => ({ characterIds: ids })),
+    ...chunk(locationIds).map((ids) => ({ locationIds: ids })),
+    { props: true }  // canon objects, recreated props, and discovery of new ones
+  ];
+  const made: VisualRefData[] = [];
+  for (const [n, b] of batches.entries()) {
+    const t0 = Date.now();
+    const ids = [...(b.characterIds ?? []), ...(b.locationIds ?? []), ...(b.props ? objectIds : [])];
+    const out = await artDirect(role, {
+      bible,
+      mode: "references",
+      characterIds: b.characterIds ?? [],
+      locationIds: b.locationIds ?? [],
+      objectIds: b.props ? objectIds : [],
+      redoProps: b.props ? redoProps : [],
+      discoverProps: Boolean(b.props),
+      notes,
+      mentions: storyMentions(bible, log.events, ids),
+      // The full text is only needed to find props; the other batches get mentions.
+      storyText: b.props ? storyText : [],
+      appearances: refAppearances(log.events),
+      artStyle: storyArtStyle(log.events)
+    });
+    recordTiming("artdirector", Date.now() - t0);
+    if (out.result.artStyle && !storyArtStyle(log.events)) await log.append("art_style", { style: out.result.artStyle });
+    for (const r of out.result.references ?? []) {
+      await log.append("visual_ref", r satisfies VisualRefData);
+      made.push(r);
+    }
+    await record(out, n);
+  }
+  return made;
 }
 
 async function directSceneArt(role: Role, config: StoryConfig, bible: Bible, beat: Beat, prose: string, sceneIndex: number, previousPrompts: string[], appearances: RefAppearances, artStyle?: string) {
@@ -570,11 +614,10 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
     if (!exists) throw new Error(`--redo ${r}: no such reference (use character:<id>, location:<id> or prop:<id>)`);
   }
   if (notes && redo.length === 0) throw new Error("--note only applies with --redo");
-  const refs = await directReferences(artRole, finalBible, log.events, storyText, new Set(redo), notes);
-  if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-references-redo", refs);
-  if (refs.result.artStyle) await log.append("art_style", { style: refs.result.artStyle });
-  for (const r of refs.result.references ?? []) await log.append("visual_ref", r satisfies VisualRefData);
-  onReferences?.((refs.result.references ?? []).map((r) => `${r.kind}:${r.id}`));
+  const made = await directReferences(artRole, finalBible, log, storyText, async (out) => {
+    if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-references-redo", out);
+  }, new Set(redo), notes);
+  onReferences?.(made.map((r) => `${r.kind}:${r.id}`));
   const appearances = refAppearances(log.events);
   const artStyle = storyArtStyle(log.events);
   const events = [...log.events];

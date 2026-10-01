@@ -1,4 +1,6 @@
 import { renderBible, emptyBible } from "./bible.ts";
+import { OutputLimitError } from "./providers.ts";
+import { c } from "./colors.ts";
 import type { RefAppearances } from "./visualrefs.ts";
 import type {
   Beat,
@@ -583,14 +585,23 @@ export async function write(role: Role, params: {
     draft,
     fix
   ].filter(Boolean).join("\n\n");
-  const raw = await role.provider.complete({
-    role: "writer",
-    system: WRITER_SYSTEM,
-    prompt,
-    temperature: role.temperature,
-    timeoutMs: role.timeoutMs,
-    ctx: { bible, beat, sceneIndex, attempt, speakerTags }
-  });
+  let raw: string;
+  try {
+    raw = await role.provider.complete({
+      role: "writer",
+      system: WRITER_SYSTEM,
+      prompt,
+      temperature: role.temperature,
+      timeoutMs: role.timeoutMs,
+      ctx: { bible, beat, sceneIndex, attempt, speakerTags }
+    });
+  } catch (err) {
+    // The writer hit its output limit mid-scene. The partial draft is still a
+    // draft: keep it and let the reviewers flag the abrupt ending.
+    if (!(err instanceof OutputLimitError) || !err.partial) throw err;
+    console.error(`[scriptorium]   ${c.retry(`writer: ${err.message} — keeping the partial draft for review`)}`);
+    raw = err.partial;
+  }
   return { result: raw, prompt, system: WRITER_SYSTEM, raw };
 }
 
@@ -898,11 +909,12 @@ export function normalizeShots(raw: unknown, paragraphCount: number, known?: Kno
   return shots;
 }
 
-// Keeps one reference per requested character/location id, plus new props
-// (slug ids not already known, at most 4), each with a non-empty look and prompt.
+// Keeps one reference per requested character/location id, every requested
+// prop (canon objects and recreations), plus — when discovering — up to 4 new
+// props (slug ids not already known); each needs a non-empty look and prompt.
 export function normalizeReferences(
   raw: unknown,
-  wanted: { characters: ReadonlySet<string>; locations: ReadonlySet<string>; knownProps: ReadonlySet<string> }
+  wanted: { characters: ReadonlySet<string>; locations: ReadonlySet<string>; knownProps: ReadonlySet<string>; props?: ReadonlySet<string>; discoverProps?: boolean }
 ): ArtReference[] {
   const r = (raw ?? {}) as Record<string, unknown>;
   const out = new Map<string, ArtReference>();
@@ -922,7 +934,9 @@ export function normalizeReferences(
   };
   take("character", r.characters, (id) => wanted.characters.has(id));
   take("location", r.locations, (id) => wanted.locations.has(id));
-  take("prop", r.props, (id) => !wanted.knownProps.has(id), 4);
+  const requested = wanted.props ?? new Set<string>();
+  take("prop", r.props, (id) => requested.has(id));
+  if (wanted.discoverProps ?? true) take("prop", r.props, (id) => !requested.has(id) && !wanted.knownProps.has(id), 4);
   return [...out.values()];
 }
 
@@ -942,6 +956,7 @@ export async function artDirect(role: Role, params: {
   characterIds?: string[];
   locationIds?: string[];
   objectIds?: string[];  // bible key objects that need a prop reference
+  discoverProps?: boolean;  // also look for new key props in the story text (default true)
   redoProps?: string[];  // existing prop ids to recreate
   notes?: string;        // author corrections for the recreated references
   mentions?: Record<string, string[]>;
@@ -988,7 +1003,8 @@ export async function artDirect(role: Role, params: {
     if (redo.length > 0) parts.push(`RECREATE these props (keep the id): ${redo.map((id) => `${id} (${appearances.props[id]?.name ?? id})`).join(", ")}`);
     if (params.notes?.trim()) parts.push(`AUTHOR NOTES (follow exactly):\n${params.notes.trim()}`);
     if (objectIds.length > 0) parts.push(`OBJECTS NEEDING REFERENCES (canon — props with these ids): ${objectIds.map((id) => `${id} (${bible.objects[id]?.name ?? id})`).join(", ")}`);
-    parts.push(`Create references for — characters: ${characterIds.join(", ") || "(none)"}; locations: ${locationIds.join(", ") || "(none)"}; props: ${objectIds.join(", ") || "(none)"}; plus any other new key props.`);
+    const discover = params.discoverProps ?? true;
+    parts.push(`Create references for — characters: ${characterIds.join(", ") || "(none)"}; locations: ${locationIds.join(", ") || "(none)"}; props: ${[...objectIds, ...(params.redoProps ?? [])].join(", ") || "(none)"}${discover ? "; plus any other new key props." : ". No other props this time."}`);
   } else {
     parts.push("MODE: COVER");
     const summary = (beats ?? []).map((b, n) => `${n + 1}. [${b.location}] ${b.goal} — ${b.conflict}`).join("\n");
@@ -1019,8 +1035,14 @@ export async function artDirect(role: Role, params: {
     return { result: { prompt: normalized[0].prompt, shots: normalized }, prompt, system, raw };
   }
   if (mode === "references") {
-    const redo = new Set([...(params.redoProps ?? []), ...objectIds]);
-    const references = normalizeReferences(result, { characters: new Set(characterIds), locations: new Set(locationIds), knownProps: new Set(knownProps.filter((id) => !redo.has(id))) });
+    const requestedProps = new Set([...(params.redoProps ?? []), ...objectIds]);
+    const references = normalizeReferences(result, {
+      characters: new Set(characterIds),
+      locations: new Set(locationIds),
+      knownProps: new Set(knownProps.filter((id) => !requestedProps.has(id))),
+      props: requestedProps,
+      discoverProps: params.discoverProps ?? true
+    });
     const defined = !artStyle && typeof (result as { art_style?: unknown }).art_style === "string" ? (result as { art_style: string }).art_style.trim() : "";
     return { result: { prompt: references[0]?.prompt ?? "", references, ...(defined ? { artStyle: defined } : {}) }, prompt, system, raw };
   }

@@ -315,3 +315,44 @@ test("the Creator's art style lands in the bible; a run made without one gets it
   await redirectArt({ config, log: old, roles: buildRoleProviders(config) });
   assert.equal(old.events.filter((e) => e.type === "art_style").length, 1, "defined once, then reused");
 });
+
+// --- issue #35: references are batched so no reply grows with the cast ---
+test("references for a big cast are made in batches of 3, and earlier batches survive a later failure", async () => {
+  const config = await loadConfig({ scenes: 1 });
+  const { artdirector: _, ...noArtRoles } = config.roles;
+  const plain = { ...config, roles: noArtRoles };
+  const dir = await tmp();
+  await runStory({ config: plain, log: new EventLog(dir), roles: buildRoleProviders(plain) });
+  const log = new EventLog(dir);
+  await log.load();
+  // Grow the cast to 7 characters by patching the bible through the log.
+  const extra = Array.from({ length: 5 }, (_, k) => ({ id: `extra${k}`, name: `Extra ${k}` }));
+  await log.append("scene_committed", { index: 1, patch: { upsertCharacters: extra }, prose: "The extras gather.\n\nThey wait.", beat: (log.events[0].data as SceneCommittedData).beat });
+
+  const roles = buildRoleProviders(config);
+  const batches: Array<{ characterIds: string[]; locationIds: string[] }> = [];
+  const real = roles.artdirector!.provider.complete.bind(roles.artdirector!.provider);
+  let failOn = -1;
+  roles.artdirector!.provider = {
+    complete: async (req) => {
+      const ctx = req.ctx as { mode: string; characterIds: string[]; locationIds: string[] };
+      if (ctx.mode === "references") {
+        batches.push({ characterIds: ctx.characterIds, locationIds: ctx.locationIds });
+        if (batches.length === failOn) throw new Error("boom");
+      }
+      return real(req);
+    }
+  };
+  failOn = 3;  // third batch (the 7th character) fails
+  await assert.rejects(redirectArt({ config, log, roles }), /boom/);
+  assert.deepEqual(batches.map((b) => b.characterIds.length), [3, 3, 1]);
+  const kept = log.events.filter((e) => e.type === "visual_ref").length;
+  assert.equal(kept, 6, "the first two batches were recorded before the failure");
+
+  // Retrying makes only what's still missing.
+  batches.length = 0;
+  failOn = -1;
+  await redirectArt({ config, log, roles });
+  assert.deepEqual(batches[0].characterIds.length, 1);
+  assert.ok(batches.every((b) => b.characterIds.length + b.locationIds.length <= 3));
+});

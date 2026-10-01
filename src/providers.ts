@@ -308,6 +308,23 @@ export function requireKey(envName: string): string {
   return key;
 }
 
+// The model hit the provider's output limit (maxTokens) and stopped mid-reply,
+// as the API reports via stop_reason / finish_reason / status. Nothing on our
+// side shortened anything. Carries the partial text: a JSON caller can't use it
+// (and re-asking hits the same limit), but a prose draft may still be usable.
+export class OutputLimitError extends Error {
+  partial: string;
+  constructor(spec: ProviderSpec, partial: string) {
+    super(`${spec.model} stopped at its output limit (maxTokens ${spec.maxTokens ?? "default"}) after ${(partial.length / 1024).toFixed(1)}KB, mid-reply — raise maxTokens for this provider`);
+    this.name = "OutputLimitError";
+    this.partial = partial;
+  }
+}
+
+function checkOutputLimit(hitLimit: boolean, text: unknown, spec: ProviderSpec): void {
+  if (hitLimit) throw new OutputLimitError(spec, stripThinking(text));
+}
+
 function nonEmpty(text: unknown, spec: ProviderSpec, detail: string): string {
   const out = stripThinking(text);
   if (!out) {
@@ -360,6 +377,7 @@ export class OpenAICompatProvider implements Provider {
     if (Array.isArray(content)) {
       content = content.map((p) => p.text || "").join("");
     }
+    checkOutputLimit(choice?.finish_reason === "length", content, this.spec);
     return nonEmpty(content, this.spec, `finish_reason ${choice ? choice.finish_reason : "none"}`);
   }
 }
@@ -399,6 +417,7 @@ export class AnthropicProvider implements Provider {
     }
     const data = await postJson(this.spec.baseUrl || "https://api.anthropic.com/v1/messages", headers, body, { ...this.spec, role, timeoutMs: timeoutMs ?? this.spec.timeoutMs });
     const text = (data.content || []).filter((b: { type?: string; text?: string }) => b.type === "text").map((b: { text?: string }) => b.text || "").join("");
+    checkOutputLimit(data.stop_reason === "max_tokens", text, this.spec);
     return nonEmpty(text, this.spec, `stop_reason ${data.stop_reason}`);
   }
 }
@@ -440,6 +459,7 @@ export class ResponsesProvider implements Provider {
         .map((c: { text?: string }) => c.text || "")
         .join("");
     }
+    checkOutputLimit(data.status === "incomplete" && data.incomplete_details?.reason === "max_output_tokens", text, this.spec);
     return nonEmpty(text, this.spec, `status ${data.status}`);
   }
 }
