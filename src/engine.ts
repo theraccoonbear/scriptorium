@@ -6,6 +6,7 @@ import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./aud
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
 import { EventLog } from "./eventlog.ts";
+import { continuistLane, dedupIssues, sameIssue, stuckIssues } from "./review.ts";
 import { refAppearances } from "./visualrefs.ts";
 import type { RefAppearances } from "./visualrefs.ts";
 import type {
@@ -74,26 +75,6 @@ async function writeStoryIncremental(runDir: string, events: StoryEvent[]): Prom
     })
     .join("\n\n");
   await writeFile(`${runDir}/story.md`, md + "\n", "utf8");
-}
-
-// Stable key for an issue: type + constraint (falls back to entity). The constraint
-// is the rule being violated and survives rewording across drafts, unlike entity
-// quotes which change every rewrite.
-function issueKey(issue: Issue | string): string {
-  const i = normalizeIssue(issue);
-  const stable = (i.constraint || i.entity).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 50);
-  return `${i.type}:${stable}`;
-}
-
-// Deduplicate structured issues by issueKey.
-function dedupIssues<T extends Issue | string>(issues: T[]): T[] {
-  const seen = new Set<string>();
-  return issues.filter((issue) => {
-    const key = issueKey(issue);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 export interface RunStoryOptions {
@@ -173,14 +154,14 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         let issues: Array<Issue | string> = [...feedback];
         let fresh = startFresh;
         let feedbackTries = 0;
-        const historyKeys = new Set(issues.map(issueKey));
+        const history: Array<Issue | string> = [...issues];
         for (let generation = 0; ; generation++) {
           const out = await gen(issues, fresh, generation);
           const gateOut = await gate(out);
           if (gateOut.ok) return out;
           // Repeat-only rejection: gate flagged nothing the creative hasn't already
           // been given. No new fix is possible — treat as approval (same rule as prose).
-          const newIssues = gateOut.issueList.filter((i) => !historyKeys.has(issueKey(i)));
+          const newIssues = gateOut.issueList.filter((i) => !history.some((h) => sameIssue(h, i)));
           if (newIssues.length === 0) {
             console.error(`[scriptorium]   ${c.dim(`${label} gate: only repeat issues — accepted`)}`);
             return out;
@@ -188,7 +169,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           if (bounded && generation + 1 >= 4) {
             throw new Error(`${label} gate rejected after ${generation + 1} attempts: ${gateOut.issueList.map((i) => renderIssue(i)).join("; ")}`);
           }
-          for (const i of gateOut.issueList) historyKeys.add(issueKey(i));
+          history.push(...gateOut.issueList);
           issues = dedupIssues([...issues, ...gateOut.issueList]);
           if (feedbackTries >= 2) {
             fresh = true;
@@ -264,6 +245,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       let surgicalTries = 0;  // consecutive stage-1 failures
       const contHistory: Issue[] = [];   // issues flagged by continuist in previous attempts
       const criticHistory: Issue[] = []; // issues flagged by critic in previous attempts
+      const rounds: Issue[][] = [];      // every round's issues (both reviewers), for stuck-passage detection
       for (;;) {
         if (bounded && attempt >= maxAttempts) {
           console.error(`[scriptorium]   ${c.fail(`draft budget exhausted (${attempt}/${maxAttempts}) — committing as-is`)}`);
@@ -295,21 +277,30 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           previousIssues: dedupIssues([...contHistory, ...criticHistory]),
           context: config.context
         };
-        const [contOut, criticOut] = await Promise.all([
+        const [contRaw, criticOut] = await Promise.all([
           checkContinuity(roles.continuist, gateCtx),
           roles.critic
             ? review(roles.critic, gateCtx)
             : Promise.resolve(null)
         ]);
         recordTiming("continuist", Date.now() - t0);
+        // Craft flags are the critic's lane; drop them from the continuist's verdict.
+        let contOut = contRaw;
+        if (contRaw) {
+          const lane = continuistLane(contRaw.result);
+          if (lane.dropped.length > 0) {
+            console.error(`[scriptorium]   ${c.dim(`continuist: ignored ${lane.dropped.length} craft issue${lane.dropped.length === 1 ? "" : "s"} (critic's lane)`)}`);
+          }
+          contOut = { ...contRaw, result: lane.verdict };
+        }
 
         if (runDir) {
           if (contOut) await writeRoleOutput(runDir, ++seq, `continuist-a${attempt - 1}`, contOut);
           if (criticOut) await writeRoleOutput(runDir, ++seq, `critic-a${attempt - 1}`, criticOut);
         }
 
-        // Snapshot history keys before recording this round's issues.
-        const historyKeys = new Set([...contHistory, ...criticHistory].map(issueKey));
+        // Snapshot history before recording this round's issues.
+        const history = [...contHistory, ...criticHistory];
 
         // Track gate issues for next round's context.
         if (contOut) contHistory.push(...contOut.result.issues);
@@ -318,7 +309,9 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         // Combined verdict: both must approve to proceed to archivist.
         // A gate that rejects with only already-flagged issues has nothing new to
         // fix — the writer has seen them all. Treat as approval so the loop converges.
-        const isNew = (issue: Issue): boolean => !historyKeys.has(issueKey(issue));
+        // "Already flagged" means the same complaint however it's reworded (sameIssue),
+        // not just an identical key.
+        const isNew = (issue: Issue): boolean => !history.some((h) => sameIssue(h, issue));
         const contNew = contOut ? contOut.result.issues.filter(isNew) : [];
         const criticNew = criticOut ? criticOut.result.issues.filter(isNew) : [];
         const contOk = contOut ? (contOut.result.ok || contNew.length === 0) : true;
@@ -349,8 +342,24 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
 
         // Escalation ladder: 3 surgical revisions → fresh stab → regenerate the
         // beat itself (the spec may be the problem) → back to surgical. Cycles
-        // until both gates go green in inf mode.
+        // until both gates go green in inf mode. A passage flagged in 3 drafts
+        // (reworded repeats, or reviewers demanding opposite fixes) skips
+        // straight to the beat: another draft won't settle it.
         const budgetLeft = !bounded || attempt < maxAttempts;
+        rounds.push(combined.map(normalizeIssue));
+        const stuck = stuckIssues(rounds);
+        if (stuck.length > 0 && budgetLeft) {
+          console.error(`[scriptorium]   ${c.retry(`stuck: ${stuck.length} passage${stuck.length === 1 ? "" : "s"} flagged in 3+ drafts — regenerating beat spec`)}`);
+          beat = await produceBeat(dedupIssues(stuck));
+          prose = "";
+          verdict = { ok: false, issues: [] };
+          contHistory.length = 0;
+          criticHistory.length = 0;
+          rounds.length = 0;
+          surgicalTries = 0;
+          stage = 1;
+          continue;
+        }
         if (stage === 1) {
           surgicalTries++;
           if (surgicalTries >= 3 && budgetLeft) {
@@ -366,6 +375,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           verdict = { ok: false, issues: [] };
           contHistory.length = 0;
           criticHistory.length = 0;
+          rounds.length = 0;
           surgicalTries = 0;
           stage = 1;
         }

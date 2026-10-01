@@ -56,7 +56,7 @@ The bible lists RESOLVED DECISIONS — choices characters have already made and 
 
 export const WRITER_SYSTEM = `You are the Writer. Render the beat spec as a single scene of prose.
 Stay strictly in the POV character's voice and knowledge. Obey every constraint.
-KEY OBJECTS in the bible have canon physical descriptions: depict and handle them exactly as described — never give an object a feature, size, or way of being held that its description rules out.
+KEY OBJECTS in the bible have canon physical descriptions: depict and handle them exactly as described — never give an object a feature, size, or way of being held that its description rules out. A description binds that object only, not others of its kind.
 Do not resolve anything the beat does not resolve. Output only the scene text.
 
 LENGTH:
@@ -128,7 +128,8 @@ ${ISSUE_SCHEMA}
 ${ISSUE_TYPES}
 
 You are a BLOCKING reviewer. Only flag issues that would break the story for a reader.
-KEY OBJECTS: prose that gives a bible object a feature, size, or handling its canon description rules out (finger-holes on an instrument described without them, a two-handed weapon swung one-handed) is CANON_CONTRADICTION (entity = the object id).
+KEY OBJECTS: prose that gives a bible object a feature, size, or handling its canon description rules out (finger-holes on an instrument described without them, a two-handed weapon swung one-handed) is CANON_CONTRADICTION (entity = the object id). A canon description binds THAT object only — not other objects of the same kind (another character's instrument), nor things near it (its case, its stand).
+YOUR LANE: continuity and canon only. Never raise TELLING_NOT_SHOWING, SENSORY_SPECIFICITY, PACE, or STYLE_PATTERN — craft is the Critic's job, and such issues are discarded.
 Do NOT flag style preferences or prose quality (the Critic handles that).
 
 INTERPRETING CONSTRAINTS:
@@ -158,7 +159,7 @@ ${ISSUE_SCHEMA}
 
 BLOCKING ISSUE TYPES (only these can go in "issues"):
 - TELLING_NOT_SHOWING: emotional beats explained instead of dramatized
-- SENSORY_SPECIFICITY: prose lacks concrete sensory detail where it matters
+- SENSORY_SPECIFICITY: prose lacks concrete sensory detail where it matters. Ask only for what the POV character could actually perceive and name — never for technical precision outside their experience (exact pitches, frequency ratios, measurements). If the prose already gives a vivid, concrete impression, that is enough.
 - PACE: scene moves too fast/slow, transitions feel abrupt
 - EPISTEMIC_VIOLATION: character asserts certainty they cannot have
 - UNRESOLVED_SETUP: a required revelation or payoff is only implied, not established
