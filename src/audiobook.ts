@@ -6,10 +6,19 @@
 //   voice. Detection is per scene, not per run — a run can mix both.
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { replay } from "./bible.ts";
 import type { SceneCommittedData, StoryEvent } from "./types.ts";
 
 const DEFAULT_MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
+
+// Where downloaded TTS models live. transformers.js defaults to a folder inside
+// its own node_modules package, so every checkout (and every fresh install)
+// re-downloads the model; one shared folder outside the repo avoids that.
+export function modelCacheDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.SCRIPTORIUM_MODEL_CACHE || join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "scriptorium", "models");
+}
 const SAMPLE_RATE = 24000;
 
 export interface SpeakerSegment {
@@ -428,7 +437,9 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
 
   onProgress({ type: "model_loading" });
   const { KokoroTTS, TextSplitterStream } = await import("kokoro-js");
-  const { RawAudio } = await import("@huggingface/transformers");
+  const { RawAudio, env: transformersEnv } = await import("@huggingface/transformers");
+  // kokoro-js shares this transformers.js instance, so this applies to its model download too.
+  transformersEnv.cacheDir = modelCacheDir();
   // kokoro-js types `voice` as a literal union of its bundled voice ids, but we
   // discover the set at runtime (Object.keys widens to string[]) so we can stay
   // decoupled from that list — see assignVoices, which is plain-string in/out.
