@@ -239,6 +239,13 @@ export interface WordBudget {
   max: number;
 }
 
+// blocking: critic and continuist must both approve a draft.
+// advisory: the critic never blocks; its notes ride along as optional
+//   suggestions when the continuist sends a draft back anyway.
+// off: the critic isn't called at all.
+export const CRITIC_MODES = ["blocking", "advisory", "off"] as const;
+export type CriticMode = (typeof CRITIC_MODES)[number];
+
 export interface StoryConfig {
   rngSeed?: number;
   scenes?: number;
@@ -260,6 +267,8 @@ export interface StoryConfig {
   direction?: Record<string, string>;
   // A prescriptive art style that overrides the Creator's choice.
   artStyle?: string;
+  // How much say the critic has over a scene (see CRITIC_MODES). Default "blocking".
+  critic?: CriticMode;
   // Art Director: one shot per this many words of narration (~45s at 150 wpm). Default 110.
   artWordsPerShot?: number;
   // Spend accounting: USD per million tokens per model (overrides the defaults

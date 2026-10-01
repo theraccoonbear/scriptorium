@@ -461,3 +461,56 @@ test("a spent budget stops the run even from non-fatal art direction; a stuck sc
   await assert.rejects(runStory({ config: stuck, log, roles: stuckRoles, maxAttempts: Infinity }), /scene 1 is stuck: 4 drafts/);
   assert.equal(log.events.filter((e) => e.type === "scene_committed").length, 0, "never committed as-is");
 });
+
+// --- issue #52: critic mode ---
+// The critic objects to every draft; the writer's prompts are captured.
+async function criticModeRun(critic: "blocking" | "advisory" | "off") {
+  const config = await loadConfig({ scenes: 2, critic });
+  config.providers = { mock: { type: "mock", rejectFirstOn: [1] } };  // continuist rejects scene 2's first draft
+  const roles = buildRoleProviders(config);
+  const writerPrompts: string[] = [];
+  let critiques = 0;
+  const real = roles.critic!.provider.complete.bind(roles.critic!.provider);
+  roles.critic!.provider = {
+    complete: async (req) => {
+      critiques++;
+      if (req.role !== "critic") return real(req);
+      return JSON.stringify({ ok: false, issues: [{ type: "SENSORY_SPECIFICITY", entity: "the road", constraint: "", detail: `the mountain air is generic (${critiques})` }] });
+    }
+  };
+  const realWriter = roles.writer.provider.complete.bind(roles.writer.provider);
+  roles.writer = { ...roles.writer, provider: { complete: async (req) => { writerPrompts.push(req.prompt); return realWriter(req); } } };
+  const log = new EventLog(await tmp());
+  await runStory({ config, log, roles, maxAttempts: 6 });
+  const scenes = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);
+  return { scenes, writerPrompts, critiques };
+}
+
+test("an advisory critic never blocks; its notes reach the writer only on a continuity redraft, as optional", async () => {
+  const { scenes, writerPrompts, critiques } = await criticModeRun("advisory");
+  assert.deepEqual(scenes.map((s) => s.attempts), [1, 2], "scene 1 commits despite the critic; scene 2 redrafts only for continuity");
+  assert.ok(critiques >= 3);
+  assert.equal(writerPrompts.length, 3);
+  const redraft = writerPrompts[2];
+  assert.match(redraft, /OPTIONAL SUGGESTIONS from the critic/);
+  assert.match(redraft, /mountain air is generic/);
+  const required = redraft.split("OPTIONAL SUGGESTIONS")[0];
+  assert.doesNotMatch(required, /mountain air is generic/, "critic notes are not listed as issues to fix");
+  assert.doesNotMatch(writerPrompts[0] + writerPrompts[1], /OPTIONAL SUGGESTIONS/);
+});
+
+test("critic off: the critic is never called, and only continuity sends a draft back", async () => {
+  const { scenes, critiques } = await criticModeRun("off");
+  assert.equal(critiques, 0);
+  assert.deepEqual(scenes.map((s) => s.attempts), [1, 2]);
+});
+
+test("a blocking critic (the default) still holds a scene back", async () => {
+  const { scenes } = await criticModeRun("blocking");
+  assert.ok(scenes[0].attempts > 1);
+});
+
+test("an unknown critic mode is refused", async () => {
+  const config = await loadConfig({ scenes: 1, critic: "polite" });
+  await assert.rejects(runStory({ config, log: new EventLog(await tmp()), roles: buildRoleProviders(config) }), /critic must be one of blocking, advisory, off/);
+});
