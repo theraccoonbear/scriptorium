@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { postJson, requireKey } from "./providers.ts";
@@ -189,8 +190,34 @@ export interface ArtOptions {
   maxReferences?: number;  // earlier renders passed for continuity, default 3
   maxPortraits?: number;   // character portraits passed per image, default 3 (plus 1 location and 2 props)
   force?: boolean;         // re-render even when the prompt is unchanged
+  // Longest side, in px, of images sent as references (default 768) and of the
+  // candidate sent for inspection (default 1024); 0 sends them full size. Files
+  // on disk stay full size. References are most of each request's size.
+  referenceSize?: number;
+  inspectSize?: number;
+  shrink?: Shrink;         // resizer; defaults to ffmpeg, falling back to the original
   onProgress?: (event: ArtProgress) => void;
 }
+
+export type Shrink = (image: Image, maxSide: number) => Promise<Image>;
+
+// Downscale with ffmpeg (already required by `video`) to a JPEG no larger than
+// maxSide on its longest side. Any failure — no ffmpeg, odd input — returns the
+// original: smaller requests are an optimization, never a reason to fail a render.
+export const ffmpegShrink: Shrink = (image, maxSide) => new Promise((resolve) => {
+  if (maxSide <= 0) return resolve(image);
+  const scale = `scale='min(${maxSide},iw)':'min(${maxSide},ih)':force_original_aspect_ratio=decrease`;
+  const child = spawn("ffmpeg", ["-v", "error", "-i", "pipe:0", "-vf", scale, "-frames:v", "1", "-q:v", "3", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"], { stdio: ["pipe", "pipe", "ignore"] });
+  const out: Buffer[] = [];
+  child.stdout.on("data", (d: Buffer) => out.push(d));
+  child.on("error", () => resolve(image));
+  child.on("close", (code) => {
+    const data = Buffer.concat(out);
+    resolve(code === 0 && data.length > 0 && data.length < image.data.length ? { ...image, data, mimeType: "image/jpeg" } : image);
+  });
+  child.stdin.on("error", () => { /* reported via close */ });
+  child.stdin.end(image.data);
+});
 
 export interface ArtResult {
   outDir: string;
@@ -220,9 +247,14 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const jobs = buildArtJobs(events);
   const rendered: Image[] = [];                // scene shots and cover, in order
   const refs = new Map<string, Image>();       // refKey(kind, id) -> reference image
-  const keep = (job: ArtJob, image: Image) => {
-    if (job.ref) refs.set(refKey(job.ref.kind, job.ref.id), image);
-    else rendered.push(image);
+  const shrink = opts.shrink ?? ffmpegShrink;
+  const referenceSize = opts.referenceSize ?? 768;
+  const inspectSize = opts.inspectSize ?? 1024;
+  // Kept images are only ever used as references, so keep the shrunk copy.
+  const keep = async (job: ArtJob, image: Image) => {
+    const small = await shrink(image, referenceSize);
+    if (job.ref) refs.set(refKey(job.ref.kind, job.ref.id), small);
+    else rendered.push(small);
   };
   const refImages = (kind: VisualRefKind, ids: string[], limit: number): Image[] =>
     ids.flatMap((id) => {
@@ -252,14 +284,15 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       prior.sceneIndex = job.sceneIndex;
       prior.startParagraph = job.startParagraph;
       emit({ type: "job_skipped", key: job.key, file: prior.file });
-      keep(job, { data: await readFile(join(outDir, prior.file)), mimeType: mimeFor(prior.file) });
+      await keep(job, { data: await readFile(join(outDir, prior.file)), mimeType: mimeFor(prior.file) });
       result.skipped++;
       continue;
     }
     emit({ type: "job_start", key: job.key, index, total: jobs.length });
     const references = referencesFor(job);
     try {
-      const entry = await renderOne(job, references, opts.backend, opts.inspector, maxAttempts, emit, style);
+      const forInspection = (img: Image) => shrink(img, inspectSize);
+      const entry = await renderOne(job, references, opts.backend, opts.inspector, maxAttempts, emit, style, forInspection);
       const file = `${job.key}.${extensionFor(entry.image.mimeType)}`;
       await writeFile(join(outDir, file), entry.image.data);
       manifest[job.key] = {
@@ -276,7 +309,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       };
       // Persist after every image so an interrupted render resumes where it stopped.
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
-      keep(job, entry.image);
+      await keep(job, entry.image);
       result.rendered++;
       emit({ type: "job_done", key: job.key, file, attempts: entry.attempts, accepted: entry.accepted });
     } catch (err) {
@@ -298,7 +331,8 @@ async function renderOne(
   inspector: Inspector | undefined,
   maxAttempts: number,
   emit: (event: ArtProgress) => void,
-  style?: string
+  style?: string,
+  forInspection: (img: Image) => Promise<Image> = async (img) => img
 ): Promise<{ image: Image; finalPrompt: string; attempts: number; accepted: boolean; issues: string[] }> {
   let prompt = job.prompt;
   let image: Image | undefined;
@@ -314,7 +348,7 @@ async function renderOne(
       continue;
     }
     if (!inspector) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [] };
-    const verdict = await inspector.inspect({ prompt, image, references, ...(style ? { style } : {}) });
+    const verdict = await inspector.inspect({ prompt, image: await forInspection(image), references, ...(style ? { style } : {}) });
     if (verdict.ok) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [] };
     issues = verdict.issues;
     emit({ type: "attempt_rejected", key: job.key, attempt, issues });
