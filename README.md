@@ -1,58 +1,182 @@
 # scriptorium
 
-Agentic narrative scaffolding. Four roles over swappable models:
+![Scriptorium Stories](assets/readme-banner.jpg)
 
-- **Director** plans each scene as a JSON beat spec (never prose).
-- **Writer** renders the beat in the POV character's voice sheet.
-- **Critic** checks the draft against the bible; rejections trigger rewrites.
-- **Archivist** is the only role that changes the story bible (via JSON patches).
+A gated, multi-agent story engine that turns a premise into a narrated, illustrated video. Language-model roles plan, write, review and record each scene; nothing enters the story until a reviewer approves it. A finished run can then become a multi-voice audiobook, a set of consistent illustrations, and a YouTube-ready video with Ken Burns pans and subtitles.
 
-State lives in an append-only JSONL event log. The bible is always rebuilt by replay, so you can resume, rewind and fork.
+```
+worldbuilder → worldgate → creator/director → beatgate → writer → continuist ∥ critic
+  → archivist → patchgate → commit → art director (references, shots, cover)
+                                         ↓ after the run
+                              artist (images) · audiobook (Kokoro) · video (ffmpeg)
+```
 
-## Use
+All state lives in an append-only event log (`<run>/events.jsonl`). The story bible is always rebuilt by replaying it, so you can resume, rewind and fork a story at any scene.
 
-    npm test
-    node src/cli.js run  --config story.config.json --out runs/demo
-    node src/cli.js fork --from runs/demo --at 3 --out runs/demo-b
-    node src/cli.js run  --config story.config.json --out runs/demo-b --scenes 10
-    node src/cli.js show --out runs/demo-b
-    node src/cli.js bible --out runs/demo-b
-    npm run art -- --out runs/demo-b      # re-render or retry a run's images
-    npm run artdirect -- --out runs/demo-b  # redo shots + cover for an existing run, then render
-    npm run video -- --out runs/demo-b      # art + audiobook -> video/story.mp4
+## Quick start
+
+```bash
+npm install
+npm run story:mock -- --scenes 3          # offline: mock models, placeholder art
+```
+
+For real runs, put your keys in `.env`:
+
+```
+OPENCODE_API_KEY=...     # if your config uses opencode-go providers
+ANTHROPIC_API_KEY=...    # if your config uses anthropic providers
+GEMINI_API_KEY=...       # image generation and inspection
+```
+
+The full pipeline for one story:
+
+```bash
+npm run story -- --premise "a lighthouse keeper" --setting "1980s Maine" \
+  --scenes 3 --speaker-tags --context contexts/my-world.md --out runs/keeper
+node --env-file=.env src/cli.ts audiobook --out runs/keeper-<timestamp>
+npm run video -- --out runs/keeper-<timestamp>
+```
+
+`run` writes the story and renders its art when it finishes. `audiobook` and `video` are separate steps because each takes a while.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `run --config <file> [--out <prefix>] [--scenes N] [--premise ".."] [--setting ".."] [--context <file.md>] [--max-attempts N\|unlimited] [--speaker-tags]` | Generate a story, then render its art. `--out` is a prefix (`runs/keeper` → `runs/keeper-<timestamp>`); pointing it at an existing run directory resumes that run. |
+| `fork --from <dir> --at <sceneCount> --out <dir>` | Branch a run after a given scene. |
+| `show --out <dir>` / `bible --out <dir>` | Print the story as markdown / the current bible as JSON. |
+| `audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>] [--voice-gender id=male,…]` | Narrate each scene to `audiobook/scene-NN.wav` with local Kokoro TTS. |
+| `art --out <dir> [--config <file>] [--force]` | Render (or resume/retry) a run's images. Unchanged images are skipped. |
+| `artdirect --out <dir> [--config <file>] [--redo kind:id,…] [--note ".."]` | Redo the art direction for an existing run (references, shots, cover), then render. |
+| `video --out <dir> [--force]` | Assemble art + audiobook into `video/story.mp4`. |
+| `models --config <file> --provider <name>` | List the model ids a provider serves. |
+
+npm shortcuts: `story` (real config), `story:mock`, `art`, `artdirect`, `video`, `test`, `typecheck`. Run `node src/cli.ts` with no command for the full usage text.
+
+## The roles
+
+| Role | Job | Required |
+|---|---|---|
+| **worldbuilder** | Names characters and places that belong in the setting. | optional |
+| **creator** | Builds the foundation: premise, tone, **art style**, cast (with gender), locations, **key objects**, threads, and scene 1's beat. Runs on the `director`'s provider. | — |
+| **director** | Plans each later scene as a JSON beat spec — never prose. | yes |
+| **writer** | Writes the scene in the POV character's voice, inside a word band. | yes |
+| **continuist** | Blocks continuity and canon errors: POV, timeline, constraints, setups, key-object contradictions. | yes |
+| **critic** | Blocks craft problems: pacing, telling-not-showing, sensory detail, voice drift, recurring style tics. | optional |
+| **archivist** | The only role that changes the bible, via JSON patches. | yes |
+| **worldgate / beatgate / patchgate** | Review the worldbuilder's output, each beat spec, and each bible patch before they're used. | optional (fall back to the continuist / critic) |
+| **artdirector** | After each scene: canonical visual references, then a sequence of shots; at the end, the cover. | optional |
+
+Every role is mapped to a provider in the config, so each can run on a different model.
+
+### The bible
+
+The bible holds the premise, tone, **art style**, characters (traits, goal, voice sheet, gender), locations, **key objects**, threads, the Chekhov ledger of open setups, resolved decisions, and rolling scene summaries. Some of it is canon that can't be rewritten later: a character's recorded gender, and a key object's physical description. A key object is a signature item such as an instrument, a relic or a letter. Its spec gives size and width, shape, materials and how it's held. The writer must depict it as specced, and the continuist flags any contradiction.
+
+### The review loop
+
+The continuist and the critic review every draft in parallel, and both must approve. A rejected draft climbs a ladder:
+
+1. Three surgical revisions.
+2. A fresh draft from scratch.
+3. A regenerated beat spec, on the theory that the spec is the problem.
+
+A reviewer that only repeats complaints it already made counts as approving. Repeats are matched by meaning, not wording. A passage flagged in three drafts, by either reviewer, skips straight to a new beat: that's reviewers disagreeing, or a demand that can't be met. The continuist stays in its lane, and craft complaints from it are dropped. `--max-attempts` caps the drafts per scene (default 3). `unlimited` keeps going until both reviewers approve.
+
+### Context files
+
+`--context <file.md>` hands your own notes to the worldbuilder and the creator: characters, places, history, and how things really work. Use it for facts the models get wrong, such as how an unusual object is held or played. See `contexts/` for examples.
+
+## Audiobook
+
+`audiobook` narrates each scene with [Kokoro](https://github.com/hexgrad/kokoro), running locally, so it needs no API key and can run offline. The first run downloads the model.
+
+- **Multiple voices:** with `--speaker-tags` on `run`, the writer tags every paragraph with its speaker. Each character then gets their own voice, quoted dialogue is voiced by its speaker, and narration is read by the narrator.
+- **Gender-matched voices:** a character whose gender is known gets a voice of that gender. Use `--voice-gender` to set genders for older runs.
+- **Timings:** `audiobook/timings.json` records each scene's duration and the start time of every paragraph. Video assembly uses it.
 
 ## Art
 
-With an `artdirector` role configured, each committed scene is broken into shots — about one per 110 words of narration (~45s read aloud; `artWordsPerShot` in the config), 4–20 per scene — each anchored to the paragraph where it comes on screen. The finished run also gets a `cover_art` prompt, and `run` renders them to images automatically when the story finishes (a rendering failure only warns; the story is already written). The images land in `<run>/art/` as `scene-NN-SS.jpg` (scene NN, shot SS) and `cover.jpg` (the extension follows whatever image type the model returns), rendered using the `artist` block of the config: an `image` backend (Gemini, `GEMINI_API_KEY`) and an optional `inspector` that checks each image against its prompt and the earlier images, and asks for a regeneration with a revised prompt, up to `maxAttempts` per image. Earlier images are passed as references so characters and style stay consistent. `art/art.json` records each image's prompt, attempts, unresolved issues, and its `sceneIndex` / `startParagraph`. The audiobook writes `audiobook/timings.json` with each scene's duration and every paragraph's start time (`paragraphStarts`, same paragraph numbering), so video assembly can bring each shot on screen when the narration reaches it. Re-running `art` skips images whose prompt is unchanged (`--force` re-renders everything). Set `"inspector": null` to skip review, or `"type": "mock"` for offline placeholders.
+The **art director** works in three layers:
 
-## Configure
+1. **Art style.** The creator decides how the world is portrayed (medium, palette, light, line, detail, mood) along with the tone. Every image in the story uses it, and each story gets its own.
+2. **Visual references.** One canonical image per **character** (full-body portrait), **location** (an establishing view with no people) and **key prop** (the object alone, at true proportions). Each is made once, when it enters the story. Characters' looks follow the bible and how the prose describes them. Props come from the bible's key objects, plus any others the art director finds in the prose.
+3. **Shots.** About one per 110 words of narration (roughly 45 seconds read aloud; `artWordsPerShot`), 4–20 per scene. Each shot is anchored to the paragraph where it comes on screen and lists the characters, location and props it shows.
 
-`story.config.json` maps each role to a provider. Types: `mock` (offline, deterministic), `anthropic`, `openai` (any OpenAI-compatible server, including Ollama and llama.cpp). Point `writer` at a local TinyLM server and `director` at a strong model to mix tiers.
+The **artist** renders them with Gemini (`GEMINI_API_KEY`). References render first. Each shot then gets the references for what it shows as labelled reference images: up to 3 characters, its location and 2 props, plus a recent image for style. An **inspector** checks each image against its prompt, its references and the art style, and flags anything that resembles a real person. It requests a revised regeneration up to `maxAttempts` times.
 
-## OpenCode Go
+- **Request size:** reference images are sent downscaled (768 px), which keeps requests small.
+- **Resuming:** everything is recorded in `art/art.json`, so a re-run skips finished images. Use `art` to resume after an interruption.
 
-    export OPENCODE_API_KEY=...
-    node src/cli.js models --config story.opencode-go.config.json --provider go-director
-    node src/cli.js run --config story.opencode-go.config.json --out runs/go
+Output goes to `<run>/art/`: `character-<id>`, `location-<id>`, `prop-<id>`, `scene-NN-SS` (scene NN, shot SS) and `cover`.
 
-Provider type `opencode-go` takes `model` and `api`, the wire format that model uses: `chat` (default, OpenAI chat completions), `messages` (Anthropic format) or `responses` (OpenAI Responses). Base URL is `https://opencode.ai/zen/go/v1`. Check each model's format in the OpenCode Go docs table, and confirm ids with the `models` command; the ids in the example config are unverified.
-
-All providers strip `<think>` blocks, retry on 429/5xx with backoff, and fail loudly on empty completions (raise `maxTokens` for reasoning models).
-
-## Procedural pressure
-
-- Tension curve rises to about 75% of the story, then falls.
-- A seeded complication table injects a required complication per scene.
-- Chekhov ledger: setups unpaid after `overdueAfter` scenes are forced into the director's payoffs; all are paid in the final scene.
-
-## Next steps
-
-- LLM-based hierarchical summarization (current compaction is deterministic concatenation).
-- Streaming and per-role token budgets.
-- Multiple writer voices per scene and a "twist" role that can propose retcons for archivist approval.
+**Fixing a bad reference:** run `artdirect --redo prop:<id> --note "what's wrong and what it should be"`. The note is passed to the art director as a correction from you.
 
 ## Video
 
-`video --out <run>` turns a run's art and audiobook into `video/story.mp4` (1080p30 H.264 + AAC, ready for YouTube), `video/thumbnail.jpg` (1280×720, from the cover) and `video/story.srt` (one subtitle cue per sentence). It needs `ffmpeg` on the PATH and runs after `art` and `audiobook`.
+`video` turns a run's art and audiobook into:
 
-Each shot comes on screen when the narration reaches its paragraph (`art.json` `startParagraph` × `timings.json` `paragraphStarts`) and holds until the next shot, with a slow Ken Burns move (zoom in, zoom out, pan left or right — chosen per shot, never the same twice in a row) and a 1.5s crossfade. Shots that would be on screen for under 6s are dropped and the previous one holds. The cover opens the video for 6s and a 1.5s black pause separates scenes. Everything is frame-exact at 30fps and each scene's audio is padded/trimmed to its frame length, so the pictures can't drift from the narration. The plan is written to `video/timeline.json` (with warnings, e.g. images the inspector never accepted) before rendering. Each scene renders in one ffmpeg pass at about real time on a CPU; scenes are cached in `video/cache.json` and only re-rendered when their images or timing change (`--force` re-renders all).
+- `video/story.mp4`: 1080p30 H.264 + AAC, ready for YouTube
+- `video/thumbnail.jpg`: 1280×720, from the cover
+- `video/story.srt`: subtitles, one cue per sentence
+
+It needs `ffmpeg` on the `PATH`.
+
+**Timing:** each shot comes on screen when the narration reaches its paragraph, and holds until the next one. A shot held longer than 25 seconds gets several moves on its image. Shots that would show for under 6 seconds are dropped.
+
+**Movement:** each shot gets an eased Ken Burns move: a zoom in or out, a pan, or a push toward one side. Consecutive shots never repeat a move, and shots crossfade over 1.5 seconds. The cover opens the video for 6 seconds, and a 1.5-second black pause separates scenes.
+
+**Sync:** everything is frame-exact at 30 fps, so the pictures can't drift from the voice.
+
+**Rendering:** the plan is written to `video/timeline.json` first, along with warnings, such as images the inspector never accepted. Each scene renders in one ffmpeg pass at about real time on a CPU. Intermediate files go in `video/parts/` and are cached.
+
+## Configure
+
+A config file names the providers and maps each role to one. `story.config.json` is all-mock; `story.opencode-go.config.json` is the real setup.
+
+Provider types:
+
+- `mock`: offline and deterministic
+- `anthropic`
+- `openai`: any OpenAI-compatible server, including Ollama, llama.cpp and Gemini's OpenAI endpoint
+- `responses`: OpenAI Responses
+- `opencode-go`: takes `model` and `api` (`chat`, `messages` or `responses`); uses `OPENCODE_API_KEY`
+
+All providers strip `<think>` blocks, retry on 429/5xx, and fail loudly on empty completions. For reasoning models, raise `maxTokens`.
+
+Other config keys:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `scenes` | — | Scenes per story (or `--scenes`). |
+| `maxRevisions` | 2 | Drafts per scene = this + 1 (or `--max-attempts`). |
+| `sceneWords` | `{min:1200,max:1800}` | The writer's word band. The critic blocks more than 2× overshoot. |
+| `overdueAfter` | 3 | Scenes before an open setup must be paid off. |
+| `speakerTags` | false | Tag paragraphs by speaker for multi-voice audio (or `--speaker-tags`). |
+| `artWordsPerShot` | 110 | Narration words per art shot. |
+| `rngSeed` | 1 | Seeds the complication table. |
+| `artist` | Gemini | `image` and `inspector` backends (`gemini` or `mock`; `"inspector": null` skips review), `maxAttempts`, `maxReferences`, `referenceSize`, `inspectSize`. |
+
+## Procedural pressure
+
+- **Tension curve:** rises to about 75% of the story, then falls.
+- **Complications:** a seeded complication table adds a required complication to each scene.
+- **Chekhov ledger:** setups left unpaid after `overdueAfter` scenes become required payoffs for the director. All of them are paid in the final scene.
+
+## Development
+
+```bash
+npm test          # node --test
+npm run typecheck # tsc, strict
+npm run story:mock
+```
+
+TypeScript runs directly on Node with no build step. Contributor rules, including the invariants and the testing and PR conventions, are in [AGENTS.md](AGENTS.md).
+
+## Not yet
+
+- **Summaries:** earlier scenes are summarized by simple concatenation, not by a model.
+- **Streaming and token budgets:** model responses aren't streamed, and there are no per-role token budgets.
+- **Audio on the GPU:** Kokoro runs on the CPU only.
+- **Publishing:** videos aren't uploaded automatically.
