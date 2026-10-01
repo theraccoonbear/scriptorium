@@ -309,3 +309,9 @@ test("a spent budget during image generation stops the art step instead of count
   const backend = { generate: async () => { throw new BudgetExceededError(5, 5); } };
   await assert.rejects(renderArt([ev(0, "scene_art", { sceneIndex: 0, prompt: "x", shots: [{ startParagraph: 0, prompt: "x" }] })], { runDir, backend }), BudgetExceededError);
 });
+
+test("portraits fix a character's look, not their pose; the inspector flags stiff staging", () => {
+  assert.match(PORTRAIT_LABEL, /NOT the reference's pose/);
+  assert.ok(INSPECTOR_SYSTEM.includes("STAGING"));
+  assert.ok(INSPECTOR_SYSTEM.includes("make the action and camera angle explicit"));
+});
