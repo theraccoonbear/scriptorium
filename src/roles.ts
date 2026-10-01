@@ -677,7 +677,6 @@ export async function archive(role: Role, params: {
   isFinal: boolean;
 } & CreativeFeedback): Promise<RoleOutput<Patch>> {
   const { bible, beat, prose, sceneIndex, isFinal, issues, fresh } = params;
-  const trimmedProse = prose.length > 3000 ? prose.slice(0, 3000) + "\n\n[...truncated for archivist]" : prose;
   const fix = feedbackBlock(
     issues,
     fresh,
@@ -687,7 +686,7 @@ export async function archive(role: Role, params: {
   const prompt = [
     renderBible(bible),
     `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`,
-    `COMMITTED SCENE:\n${trimmedProse}`,
+    `COMMITTED SCENE:\n${prose}`,
     fix
   ].filter(Boolean).join("\n\n");
   const { result, system, raw } = await callJson(role, {
@@ -766,12 +765,11 @@ export async function reviewPatch(role: Role, params: {
   previousIssues?: ReadonlyArray<Issue | string>;
 }): Promise<RoleOutput<Verdict>> {
   const { bible, beat, prose, sceneIndex, patch, previousIssues } = params;
-  const trimmedProse = prose.length > 3000 ? prose.slice(0, 3000) + "\n\n[...truncated for review]" : prose;
   const priorIssues = previousIssuesBlock(previousIssues, "PATCH ISSUES FLAGGED PREVIOUSLY (do not re-flag)");
   const prompt = [
     renderBible(bible),
     `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`,
-    `COMMITTED SCENE:\n${trimmedProse}`,
+    `COMMITTED SCENE:\n${prose}`,
     `PROPOSED PATCH:\n${JSON.stringify(patch, null, 2)}`,
     priorIssues
   ].join("\n\n");
@@ -804,10 +802,9 @@ export async function artDirect(role: Role, params: {
   const { bible, mode, beat, prose, sceneIndex, beats, previousPrompts = [] } = params;
   const parts = [renderBible(bible)];
   if (mode === "scene") {
-    const trimmedProse = prose && prose.length > 3000 ? prose.slice(0, 3000) + "\n\n[...truncated for art director]" : prose;
     parts.push(`MODE: SCENE (scene ${(sceneIndex ?? 0) + 1})`);
     if (beat) parts.push(`BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`);
-    parts.push(`COMMITTED SCENE:\n${trimmedProse ?? ""}`);
+    parts.push(`COMMITTED SCENE:\n${prose ?? ""}`);
   } else {
     parts.push("MODE: COVER");
     const summary = (beats ?? []).map((b, n) => `${n + 1}. [${b.location}] ${b.goal} — ${b.conflict}`).join("\n");
