@@ -83,8 +83,11 @@ export class MockProvider {
           return JSON.stringify({
             characters: (ctx.characterIds ?? []).map(ref),
             locations: (ctx.locationIds ?? []).map(ref),
-            // One key prop for the whole story, found the first time.
-            props: (ctx.propIds ?? []).length === 0 ? [{ ...ref("mock_prop"), name: "mock prop" }] : []
+            // Canon objects, plus one discovered key prop the first time.
+            props: [
+              ...(ctx.objectIds ?? []).map((id: string) => ({ ...ref(id), name: id })),
+              ...((ctx.propIds ?? []).length === 0 ? [{ ...ref("mock_prop"), name: "mock prop" }] : [])
+            ]
           });
         }
         if (ctx.mode === "cover") {
@@ -132,6 +135,9 @@ export class MockProvider {
       locations: [
         { id: "tower", name: "The lighthouse", description: "Lantern room, spiral stairs, salt on every surface." },
         { id: "shore", name: "The shore", description: "Rocks, seaweed, a path worn by no one." }
+      ],
+      objects: [
+        { id: "letter", name: "The letter", description: "A single folded sheet, palm-sized, cream paper gone soft with damp, sealed with grey wax.", owner: "keeper" }
       ],
       threads: [
         { id: "letter-origin", title: "Who sent the letter", status: "open" }

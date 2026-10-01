@@ -325,9 +325,29 @@ test("normalizeReferences keeps requested characters/locations and up to 4 new, 
 
 test("references mode can recreate a known prop under its id", async () => {
   const bible = emptyBible();
-  const appearances = { characters: {}, locations: {}, props: { horn: { name: "the alpenhorn", appearance: "short trumpet" }, reed: { name: "reed", appearance: "cane" } } };
-  const out = await artDirect(mockRole, { bible, mode: "references", redoProps: ["horn"], appearances });
+  // The existing reference got the object wrong; the author's note corrects it.
+  const appearances = { characters: {}, locations: {}, props: { horn: { name: "the alpenhorn", appearance: "a wrong earlier look" }, reed: { name: "reed", appearance: "cane" } } };
+  const note = "A long conical wooden tube whose bell rests on the ground when played.";
+  const out = await artDirect(mockRole, { bible, mode: "references", redoProps: ["horn"], notes: note, appearances });
+  assert.ok(out.prompt.includes(`AUTHOR NOTES (follow exactly):\n${note}`));
   assert.ok(out.prompt.includes("KNOWN PROPS: reed"));
   assert.ok(out.prompt.includes("RECREATE these props (keep the id): horn (the alpenhorn)"));
   assert.ok(ARTDIRECTOR_SYSTEM.includes("drawn at its true proportions"));
+});
+
+test("creator, archivist, writer and continuist all treat key objects as exact canon", async () => {
+  const { ARCHIVIST_SYSTEM, CONTINUIST_SYSTEM } = await import("../src/roles.ts");
+  assert.ok(ARCHIVIST_SYSTEM.includes('"upsertObjects":[{"id":string,"name"?:string,"description"?:string,"owner"?:characterId}]'));
+  assert.ok(ARCHIVIST_SYSTEM.includes("Never rewrite an existing object's description"));
+  assert.ok(WRITER_SYSTEM.includes("KEY OBJECTS in the bible have canon physical descriptions"));
+  assert.ok(CONTINUIST_SYSTEM.includes("finger-holes on an instrument described without them"));
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("the image model cannot infer proportions from length alone"));
+});
+
+test("art director makes prop references for canon objects under their bible ids", async () => {
+  const bible = emptyBible();
+  bible.objects.horn = { id: "horn", name: "the alpenhorn", description: "Five feet long, slender." };
+  const out = await artDirect(mockRole, { bible, mode: "references", objectIds: ["horn"], appearances: { characters: {}, locations: {}, props: {} } });
+  assert.ok(out.prompt.includes("OBJECTS NEEDING REFERENCES (canon — props with these ids): horn (the alpenhorn)"));
+  assert.ok(out.result.references?.some((r) => r.kind === "prop" && r.id === "horn"));
 });

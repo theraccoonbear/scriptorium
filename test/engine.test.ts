@@ -168,12 +168,15 @@ test("references are made once per character and location, props once, and shots
   const ids = (kind: string) => refs.filter((r) => r.kind === kind).map((r) => r.id).sort();
   assert.deepEqual(ids("character"), Object.keys(bible.characters).sort());
   assert.deepEqual(ids("location"), Object.keys(bible.locations).sort());
-  assert.deepEqual(ids("prop"), ["mock_prop"]);
+  // The Creator's canon key object gets a prop reference under its bible id, plus one discovered prop.
+  assert.deepEqual(ids("prop"), ["letter", "mock_prop"]);
+  assert.ok(bible.objects.letter.description.includes("palm-sized"));
   assert.ok(refs.every((r) => r.appearance && r.prompt));
   const shots = log.events.filter((e) => e.type === "scene_art").flatMap((e) => (e.data as SceneArtData).shots ?? []);
   assert.ok(shots.every((s) => (s.characters ?? []).every((id) => bible.characters[id])));
   assert.ok(shots.every((s) => s.location && bible.locations[s.location]));
-  assert.ok(shots.some((s) => s.props?.includes("mock_prop")));
+  assert.ok(shots.some((s) => (s.props ?? []).length > 0));
+  assert.ok(shots.every((s) => (s.props ?? []).every((id) => ids("prop").includes(id))));
 });
 
 test("a reference failure doesn't stop scene art or the run", async () => {
@@ -201,7 +204,7 @@ test("redirectArt adds missing references to an existing run, keeping legacy por
   await log.append("character_art", { characterId: "keeper", appearance: "kept look", prompt: "kept" });
   const made: string[][] = [];
   await redirectArt({ config, log, roles: buildRoleProviders(config), onReferences: (r) => made.push(r) });
-  assert.deepEqual(made[0].sort(), ["character:voice", ...Object.keys(bible.locations).map((id) => `location:${id}`), "prop:mock_prop"].sort());
+  assert.deepEqual(made[0].sort(), ["character:voice", ...Object.keys(bible.locations).map((id) => `location:${id}`), "prop:letter", "prop:mock_prop"].sort());
   assert.ok(!made[0].includes("character:keeper"));
 });
 
@@ -230,4 +233,5 @@ test("redirectArt --redo recreates a named reference and rejects unknown ones", 
   await redirectArt({ config, log, roles: buildRoleProviders(config), redo: ["character:keeper"], onReferences: (r) => made.push(r) });
   assert.deepEqual(made[0], ["character:keeper"]);
   await assert.rejects(redirectArt({ config, log, roles: buildRoleProviders(config), redo: ["prop:nope"] }), /no such reference/);
+  await assert.rejects(redirectArt({ config, log, roles: buildRoleProviders(config), notes: "x" }), /only applies with --redo/);
 });

@@ -49,3 +49,15 @@ test("a recorded gender shows in the bible and can't be changed or erased by a l
   b = applyPatch(b, { upsertCharacters: [{ id: "krell", gender: "male" }] }, 4);
   assert.equal(b.characters.krell.gender, "male");
 });
+
+test("key objects are canon: shown in the bible, and a recorded description can't be rewritten", () => {
+  let b = emptyBible();
+  b = applyPatch(b, { upsertObjects: [{ id: "horn", name: "the alpenhorn", description: "Five feet long, an inch across at the mouthpiece." }] }, 0);
+  assert.ok(renderBible(b).includes("KEY OBJECTS (physical descriptions are canon):\n- horn: the alpenhorn. Five feet long"));
+  b = applyPatch(b, { upsertObjects: [{ id: "horn", description: "A short brass trumpet.", owner: "osmagus" }] }, 1);
+  assert.equal(b.objects.horn.description, "Five feet long, an inch across at the mouthpiece.");
+  assert.equal(b.objects.horn.owner, "osmagus");
+  // Bibles from before objects existed replay with an empty set.
+  const legacy = replay([{ seq: 0, type: "scene_committed", ts: "t", data: { index: 0, bible: { premise: "p", characters: {}, locations: {} }, patch: {} } }]);
+  assert.deepEqual(legacy.objects, {});
+});

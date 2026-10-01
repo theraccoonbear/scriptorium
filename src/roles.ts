@@ -34,10 +34,12 @@ Output ONLY JSON with this shape:
   "tone":string,
   "characters":[{"id":string,"name":string,"traits":string,"goal":string,"voice":string,"gender":"female"|"male"|""}],
   "locations":[{"id":string,"name":string,"description":string}],
+  "objects":[{"id":string,"name":string,"description":string,"owner":characterId}],
   "threads":[{"id":string,"title":string,"status":"open"}],
   "beat":{"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[]}
 }
 Each character needs a distinct voice that will guide the Writer.
+objects: the story's KEY OBJECTS — signature items a character carries or uses, or things the plot turns on (an instrument, a relic, a letter). Usually 0-3. The description is canon for every later scene and image, so make it physically exact and true to what that kind of object really is: overall size AND width or thickness at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"), shape, materials, and how it is held or used. A real-world kind of object (an alpenhorn, a longbow) must have that object's real form and handling unless the premise deliberately changes it.
 Give each character's gender as "female" or "male" when the story has one in mind; use "" for unspecified, non-binary, or genderless characters. It picks their audiobook narration voice.
 The beat is the first scene. Payoffs must be empty (no prior setups exist).
 Create the premise, setting, and cast that make the best story — one character, five, whatever serves it.
@@ -54,6 +56,7 @@ The bible lists RESOLVED DECISIONS — choices characters have already made and 
 
 export const WRITER_SYSTEM = `You are the Writer. Render the beat spec as a single scene of prose.
 Stay strictly in the POV character's voice and knowledge. Obey every constraint.
+KEY OBJECTS in the bible have canon physical descriptions: depict and handle them exactly as described — never give an object a feature, size, or way of being held that its description rules out.
 Do not resolve anything the beat does not resolve. Output only the scene text.
 
 LENGTH:
@@ -125,6 +128,7 @@ ${ISSUE_SCHEMA}
 ${ISSUE_TYPES}
 
 You are a BLOCKING reviewer. Only flag issues that would break the story for a reader.
+KEY OBJECTS: prose that gives a bible object a feature, size, or handling its canon description rules out (finger-holes on an instrument described without them, a two-handed weapon swung one-handed) is CANON_CONTRADICTION (entity = the object id).
 Do NOT flag style preferences or prose quality (the Critic handles that).
 
 INTERPRETING CONSTRAINTS:
@@ -186,6 +190,7 @@ export const ARCHIVIST_SYSTEM = `You are the Archivist, the only role allowed to
 Read the committed scene and output ONLY a JSON patch:
 {"upsertCharacters":[{"id":string,"name"?:string,"traits"?:string,"goal"?:string,"voice"?:string,"status"?:string,"gender"?:"female"|"male"|""}],
 "upsertLocations":[{"id":string,"name"?:string,"description"?:string}],
+"upsertObjects":[{"id":string,"name"?:string,"description"?:string,"owner"?:characterId}],
 "upsertThreads":[{"id":string,"title"?:string,"status"?:string}],
 "openSetups":[{"id":string,"text":string}],
 "paySetups":[setupId],
@@ -193,6 +198,7 @@ Read the committed scene and output ONLY a JSON patch:
 "timeline":"one line summary of what happened"}
 Only record facts established in the scene.
 gender: set it ("female"/"male") for a NEW character when the scene establishes it (pronouns, terms like "mother" or "king"). Never change an existing character's recorded gender; omit the field when it is unclear.
+upsertObjects: add a KEY OBJECT (a signature item that recurs or drives the plot) when a scene introduces one, with a physically exact description: size AND width at its key points, shape, materials, how it is held or used — true to what that kind of object really is. Never rewrite an existing object's description.
 resolveDecisions: choices or commitments that CLOSED in this scene — decisions the characters will not re-make without new pressure. List only what the scene actually settles; an open or deferred choice does not belong here.`;
 
 export const BEAT_GATE_SYSTEM = `You are the Beat Gate. You review a beat spec BEFORE any prose is written.
@@ -270,11 +276,12 @@ MODES:
    "locations":[{"id":string,"appearance":string,"prompt":string}],
    "props":[{"id":string,"name":string,"appearance":string,"prompt":string}]}
   - characters / locations: one entry for EACH listed id, using exactly those ids.
-  - RECREATE: any ids listed under RECREATE get a fresh reference even though one exists — the old one was wrong.
-  - props: the story's KEY OBJECTS — things that recur or matter visually and would otherwise be drawn differently every time (a signature instrument, a sacred relic, a letter that drives the plot). Only objects the STORY TEXT shows; not clothing or scenery; skip any already in KNOWN PROPS. id is a short snake_case slug; name is what the story calls it. Usually 0-2 per call; never more than 4.
+  - RECREATE: any ids listed under RECREATE get a fresh reference even though one exists — the old one was wrong. AUTHOR NOTES, when given, are corrections from the author: follow them exactly; they override your own idea of the object.
+  - KEY OBJECTS listed under OBJECTS NEEDING REFERENCES are canon (bible KEY OBJECTS): make a prop reference for each, using the bible object id as the prop id and its canon description as the source of truth.
+  - props: beyond those, the story's other KEY OBJECTS — things that recur or matter visually and would otherwise be drawn differently every time (a signature instrument, a sacred relic, a letter that drives the plot). Only objects the STORY TEXT shows; not clothing or scenery; skip any already in KNOWN PROPS. id is a short snake_case slug; name is what the story calls it. Usually 0-2 per call; never more than 4.
   - Match the bible (including recorded gender) and everything the STORY MENTIONS and STORY TEXT show — pronouns, age, build, hair, beard, clothing, materials, landmarks. Never contradict the story; invent only what it leaves open.
-  - appearance: one or two sentences fixing what never changes, concrete and distinctive so two things can never be confused. Characters: height and build, age, skin, hair and facial hair (style and color), face, signature clothing or gear. Locations: terrain, architecture, landmarks, materials, vegetation, characteristic light. Props: true size and proportions (e.g. "about five feet long"), the silhouette that makes it that kind of object — what an expert would recognize it by — then materials, colors, markings, condition.
-  - prompt: characters — a full-body reference portrait of that one character in a neutral pose, plain softly lit background, no other figures. Locations — a wide establishing view of the place with NO people, showing what defines it. Props — the object alone, whole and centered, on a plain background, drawn at its true proportions and showing the shape that identifies it (a long or large object is shown at full length; say so explicitly). All in the art style that suits the story's genre and tone; use the same art-style phrase in every reference — later scene prompts will repeat it.
+  - appearance: one or two sentences fixing what never changes, concrete and distinctive so two things can never be confused. Characters: height and build, age, skin, hair and facial hair (style and color), face, signature clothing or gear. Locations: terrain, architecture, landmarks, materials, vegetation, characteristic light. Props: true size AND proportions — overall length/height plus width or diameter at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"); the image model cannot infer proportions from length alone. Then the silhouette that makes it that kind of object — what an expert would recognize it by — then materials, colors, markings, condition — and how it is held, carried, or used whenever that changes how it looks in a scene (an instrument's playing position, a weapon's carry).
+  - prompt: characters — a full-body reference portrait of that one character in a neutral pose, plain softly lit background, no other figures. Locations — a wide establishing view of the place with NO people, showing what defines it. Props — the object alone, whole and centered, on a plain background, drawn at its true proportions (state the length-to-width relationship explicitly, e.g. "long and slender, like a five-foot pole") and showing the shape that identifies it (a long or large object is shown at full length; say so explicitly). All in the art style that suits the story's genre and tone; use the same art-style phrase in every reference — later scene prompts will repeat it.
   - Every character must look ORIGINAL: never resemble, evoke, or be described in terms of any real person, actor, or celebrity.
 - SCENE: break the committed scene into SHOTS — a sequence of stills that follows the narration. The scene is given as numbered paragraphs, and you are told how many shots to make. Each shot starts at a paragraph and stays on screen until the next shot's paragraph is read aloud.
   Output ONLY JSON:
@@ -342,6 +349,7 @@ interface CreatorFoundation {
   tone?: string;
   characters?: { id?: string; name?: string; traits?: string; goal?: string; voice?: string; gender?: string }[];
   locations?: { id?: string; name?: string; description?: string }[];
+  objects?: { id?: string; name?: string; description?: string; owner?: string }[];
   threads?: { id?: string; title?: string; status?: string }[];
   beat?: Beat;
 }
@@ -358,6 +366,12 @@ function applyBibleData(data: CreatorFoundation): Bible {
   }
   for (const l of data.locations || []) {
     if (l.id) bible.locations[l.id] = { id: l.id, name: l.name || l.id, description: l.description || "" };
+  }
+  for (const o of data.objects || []) {
+    if (o.id) {
+      bible.objects[o.id] = { id: o.id, name: o.name || o.id, description: o.description || "" };
+      if (o.owner && bible.characters[o.owner]) bible.objects[o.id].owner = o.owner;
+    }
   }
   for (const t of data.threads || []) {
     if (t.id) bible.threads[t.id] = { id: t.id, title: t.title || t.id, status: t.status || "open" };
@@ -918,7 +932,9 @@ export async function artDirect(role: Role, params: {
   // and the story text to find key props in
   characterIds?: string[];
   locationIds?: string[];
+  objectIds?: string[];  // bible key objects that need a prop reference
   redoProps?: string[];  // existing prop ids to recreate
+  notes?: string;        // author corrections for the recreated references
   mentions?: Record<string, string[]>;
   storyText?: string[];
   // canonical looks already established
@@ -932,6 +948,7 @@ export async function artDirect(role: Role, params: {
   const shots = params.shots ?? shotCountFor(paragraphs);
   const characterIds = params.characterIds ?? [];
   const locationIds = params.locationIds ?? [];
+  const objectIds = params.objectIds ?? [];
   const parts = [renderBible(bible)];
   const looks = [
     ...Object.entries(appearances.characters).filter(([id]) => bible.characters[id]).map(([id, a]) => `- character ${id} (${bible.characters[id].name}): ${a}`),
@@ -948,7 +965,7 @@ export async function artDirect(role: Role, params: {
   } else if (mode === "references") {
     parts.push("MODE: REFERENCES");
     const mentions = params.mentions ?? {};
-    const quoted = [...characterIds, ...locationIds]
+    const quoted = [...characterIds, ...locationIds, ...objectIds]
       .filter((id) => (mentions[id] ?? []).length > 0)
       .map((id) => `${id}:\n${mentions[id].map((m) => `  > ${m}`).join("\n")}`);
     if (quoted.length > 0) parts.push(`STORY MENTIONS (how the story so far describes them):\n${quoted.join("\n\n")}`);
@@ -956,7 +973,9 @@ export async function artDirect(role: Role, params: {
     const redo = params.redoProps ?? [];
     parts.push(`KNOWN PROPS: ${knownProps.filter((id) => !redo.includes(id)).join(", ") || "(none yet)"}`);
     if (redo.length > 0) parts.push(`RECREATE these props (keep the id): ${redo.map((id) => `${id} (${appearances.props[id]?.name ?? id})`).join(", ")}`);
-    parts.push(`Create references for — characters: ${characterIds.join(", ") || "(none)"}; locations: ${locationIds.join(", ") || "(none)"}; plus any new key props.`);
+    if (params.notes?.trim()) parts.push(`AUTHOR NOTES (follow exactly):\n${params.notes.trim()}`);
+    if (objectIds.length > 0) parts.push(`OBJECTS NEEDING REFERENCES (canon — props with these ids): ${objectIds.map((id) => `${id} (${bible.objects[id]?.name ?? id})`).join(", ")}`);
+    parts.push(`Create references for — characters: ${characterIds.join(", ") || "(none)"}; locations: ${locationIds.join(", ") || "(none)"}; props: ${objectIds.join(", ") || "(none)"}; plus any other new key props.`);
   } else {
     parts.push("MODE: COVER");
     const summary = (beats ?? []).map((b, n) => `${n + 1}. [${b.location}] ${b.goal} — ${b.conflict}`).join("\n");
@@ -973,7 +992,7 @@ export async function artDirect(role: Role, params: {
     system: ARTDIRECTOR_SYSTEM,
     prompt,
     ctx: {
-      mode, beat, sceneIndex, beats, shots, paragraphCount: paragraphs.length, characterIds, locationIds,
+      mode, beat, sceneIndex, beats, shots, paragraphCount: paragraphs.length, characterIds, locationIds, objectIds,
       knownIds: Object.keys(bible.characters), locationIdsKnown: Object.keys(bible.locations), propIds: knownProps
     }
   });
@@ -987,7 +1006,7 @@ export async function artDirect(role: Role, params: {
     return { result: { prompt: normalized[0].prompt, shots: normalized }, prompt, system, raw };
   }
   if (mode === "references") {
-    const redo = new Set(params.redoProps ?? []);
+    const redo = new Set([...(params.redoProps ?? []), ...objectIds]);
     const references = normalizeReferences(result, { characters: new Set(characterIds), locations: new Set(locationIds), knownProps: new Set(knownProps.filter((id) => !redo.has(id))) });
     return { result: { prompt: references[0]?.prompt ?? "", references }, prompt, system, raw };
   }

@@ -55,11 +55,22 @@ export interface BibleSummary {
   recent: string[];
 }
 
+// A key object — a signature item that recurs or drives the plot (an
+// instrument, a relic, a letter). Its description fixes its physical form so
+// the writer, the continuity guard and the art all depict the same thing.
+export interface StoryObject {
+  id: string;
+  name: string;
+  description: string;  // size and proportions, shape, materials, how it is held or used
+  owner?: string;       // character id
+}
+
 export interface Bible {
   premise: string;
   tone: string;
   characters: Record<string, Character>;
   locations: Record<string, Location>;
+  objects: Record<string, StoryObject>;
   threads: Record<string, Thread>;
   ledger: Setup[];
   resolvedDecisions: string[];
@@ -80,6 +91,7 @@ export interface Beat {
 export interface Patch {
   upsertCharacters?: Partial<Character>[];
   upsertLocations?: Partial<Location>[];
+  upsertObjects?: Partial<StoryObject>[];
   upsertThreads?: Partial<Thread>[];
   openSetups?: { id: string; text?: string }[];
   paySetups?: string[];

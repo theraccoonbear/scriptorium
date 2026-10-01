@@ -465,7 +465,7 @@ export function storyMentions(bible: Bible, events: StoryEvent[], ids: string[],
     .flatMap((e) => sceneParagraphs((e.data as SceneCommittedData).prose, known));
   const out: Record<string, string[]> = {};
   for (const id of ids) {
-    const name = bible.characters[id]?.name ?? bible.locations[id]?.name ?? id;
+    const name = bible.characters[id]?.name ?? bible.locations[id]?.name ?? bible.objects?.[id]?.name ?? id;
     const names = name.split(/\s+/).map((w) => w.replace(/[^\p{L}'-]/gu, "")).filter((w) => w.length >= 3 && !/^(the|of|and)$/i.test(w));
     if (names.length === 0) continue;
     const pattern = new RegExp(`\\b(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`);
@@ -478,14 +478,16 @@ export function storyMentions(bible: Bible, events: StoryEvent[], ids: string[],
 // References for characters and locations in the bible that have none yet,
 // plus any new key props found in `storyText`. `redo` ("kind:id") forces a
 // fresh reference for ones that exist but came out wrong.
-async function directReferences(role: Role, bible: Bible, events: StoryEvent[], storyText: string[], redo: ReadonlySet<string> = new Set()) {
+async function directReferences(role: Role, bible: Bible, events: StoryEvent[], storyText: string[], redo: ReadonlySet<string> = new Set(), notes?: string) {
   const have = refAppearances(events);
   const characterIds = Object.keys(bible.characters).filter((id) => !have.characters[id] || redo.has(`character:${id}`)).sort();
   const locationIds = Object.keys(bible.locations).filter((id) => !have.locations[id] || redo.has(`location:${id}`)).sort();
   const redoProps = Object.keys(have.props).filter((id) => redo.has(`prop:${id}`));
+  // Canon key objects are props whose look comes from the bible.
+  const objectIds = Object.keys(bible.objects ?? {}).filter((id) => (!have.props[id] || redo.has(`prop:${id}`)) && !redoProps.includes(id)).sort();
   const t0 = Date.now();
-  const mentions = storyMentions(bible, events, [...characterIds, ...locationIds]);
-  const out = await artDirect(role, { bible, mode: "references", characterIds, locationIds, redoProps, mentions, storyText, appearances: have });
+  const mentions = storyMentions(bible, events, [...characterIds, ...locationIds, ...objectIds]);
+  const out = await artDirect(role, { bible, mode: "references", characterIds, locationIds, objectIds, redoProps, notes, mentions, storyText, appearances: have });
   recordTiming("artdirector", Date.now() - t0);
   return out;
 }
@@ -525,7 +527,7 @@ async function directCoverArt(role: Role, bible: Bible, committed: SceneCommitte
 // scene_art / cover_art events (the newest per scene wins).
 // For runs made before shots existed, or to re-shoot after a prompt change.
 // Story canon is untouched. Fails fast: unlike a live run there is no scene to protect.
-export async function redirectArt({ config, log, roles, runDir, onScene, onReferences, redo = [] }: {
+export async function redirectArt({ config, log, roles, runDir, onScene, onReferences, redo = [], notes }: {
   config: StoryConfig;
   log: EventLog;
   roles: Roles;
@@ -533,6 +535,7 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
   onScene?: (sceneIndex: number, shots: number) => void;
   onReferences?: (refs: string[]) => void;  // "kind:id" of each new reference
   redo?: string[];                          // "kind:id" references to recreate
+  notes?: string;                           // author corrections for the recreated references
 }): Promise<number> {
   const artRole = roles.artdirector;
   if (!artRole) throw new Error("config has no artdirector role");
@@ -554,7 +557,8 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
     const exists = kind === "character" ? have.characters[id] : kind === "location" ? have.locations[id] : kind === "prop" ? have.props[id] : undefined;
     if (!exists) throw new Error(`--redo ${r}: no such reference (use character:<id>, location:<id> or prop:<id>)`);
   }
-  const refs = await directReferences(artRole, finalBible, log.events, storyText, new Set(redo));
+  if (notes && redo.length === 0) throw new Error("--note only applies with --redo");
+  const refs = await directReferences(artRole, finalBible, log.events, storyText, new Set(redo), notes);
   if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-references-redo", refs);
   for (const r of refs.result.references ?? []) await log.append("visual_ref", r satisfies VisualRefData);
   onReferences?.((refs.result.references ?? []).map((r) => `${r.kind}:${r.id}`));
