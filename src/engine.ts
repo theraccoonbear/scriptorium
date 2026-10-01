@@ -7,6 +7,7 @@ import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./aud
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
 import { EventLog } from "./eventlog.ts";
+import { isBudgetError } from "./usage.ts";
 import { storedContext } from "./context.ts";
 import { continuistLane, dedupIssues, sameIssue, stuckIssues } from "./review.ts";
 import { refAppearances, storyArtStyle } from "./visualrefs.ts";
@@ -285,6 +286,12 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         if (bounded && attempt >= maxAttempts) {
           console.error(`[scriptorium]   ${c.fail(`draft budget exhausted (${attempt}/${maxAttempts}) — committing as-is`)}`);
           break;
+        }
+        // Hard stop for a scene that won't settle, whatever maxAttempts says.
+        // Unbounded mode never commits a rejected scene, so this ends the run.
+        const draftCap = config.maxDraftsPerScene ?? 20;
+        if (attempt >= draftCap) {
+          throw new Error(`scene ${i + 1} is stuck: ${attempt} drafts without both reviewers approving (maxDraftsPerScene ${draftCap}) — check the run's reviewer output, then raise maxDraftsPerScene or adjust direction and re-run`);
         }
         const fresh = stage === 2;
         t0 = Date.now();
@@ -694,6 +701,7 @@ async function nonFatal(what: string, fn: () => Promise<void>): Promise<void> {
   try {
     await fn();
   } catch (err) {
+    if (isBudgetError(err)) throw err;  // a spent budget stops the run, never a warning
     console.error(`[scriptorium]   ${c.retry(`${what} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
   }
 }

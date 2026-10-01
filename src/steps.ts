@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders } from "./providers.ts";
@@ -9,11 +9,31 @@ import { renderVideo } from "./video.ts";
 import type { EncoderChoice } from "./video.ts";
 import { makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
 import { c } from "./colors.ts";
+import { Accountant, currentAccountant, LEDGER_FILE, setAccountant, usd } from "./usage.ts";
 import type { Bible, StoryConfig, StoryEvent } from "./types.ts";
 
 // The pipeline's steps — story, art, audiobook, video — as plain functions with
 // their console progress. Shared by the individual CLI commands and `make`.
 // Each step resumes or skips finished work, so re-running one is always safe.
+
+// Runs a paid step with spend accounting: every API call is logged to the run's
+// usage.jsonl, the budget is enforced, and the step's spend is printed. Reuses
+// the active accountant when one is already open for this run (make).
+export async function accounted<T>(runDir: string, config: StoryConfig | undefined, step: string, fn: () => Promise<T>): Promise<T> {
+  const active = currentAccountant();
+  const acc = active && active.file === join(runDir, LEDGER_FILE)
+    ? active
+    : new Accountant(runDir, { pricing: config?.pricing, budgetUsd: config?.budget?.usd });
+  const previous = setAccountant(acc);
+  acc.setStep(step);
+  try {
+    return await fn();
+  } finally {
+    const budget = acc.budgetUsd !== undefined ? ` of ${usd(acc.budgetUsd)} budget` : "";
+    if (acc.stepSpent > 0) console.error(`[scriptorium] ${c.dim(`spend: ${step} ${usd(acc.stepSpent)} · run total ${usd(acc.spent)}${budget}`)}`);
+    setAccountant(previous);
+  }
+}
 
 export interface StoryStepOptions {
   config: StoryConfig;
@@ -32,6 +52,10 @@ export async function readContexts(paths: string[]): Promise<{ context?: string;
 }
 
 export async function storyStep(opts: StoryStepOptions): Promise<{ log: EventLog; bible: Bible }> {
+  return accounted(opts.runDir, opts.config, "story", () => storyStepInner(opts));
+}
+
+async function storyStepInner(opts: StoryStepOptions): Promise<{ log: EventLog; bible: Bible }> {
   const { config, runDir } = opts;
   const log = new EventLog(runDir);
   const { context, contextFiles } = await readContexts(opts.contextPaths ?? []);
@@ -58,6 +82,10 @@ export async function storyStep(opts: StoryStepOptions): Promise<{ log: EventLog
 
 // Renders a run's art prompts (references, shots, cover) into <runDir>/art/.
 export async function artStep(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined) {
+  return accounted(runDir, config, "art", () => artStepInner(runDir, config, events, force));
+}
+
+async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined) {
   const artist = resolveArtistConfig(config.artist);
   const result = await renderArt(events, {
     runDir,
@@ -88,9 +116,14 @@ export interface AudiobookStepOptions {
   language?: string;
   characterGenders?: Record<string, string>;
   force?: boolean;
+  config?: StoryConfig;  // for spend accounting (pricing, budget)
 }
 
 export async function audiobookStep(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions = {}) {
+  return accounted(runDir, opts.config, "audiobook", () => audiobookStepInner(runDir, events, opts));
+}
+
+async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions) {
   const result = await generateAudiobook(events, {
     runDir,
     narratorVoice: opts.narratorVoice,

@@ -302,3 +302,10 @@ test("direction.artist goes with every image and inspection; changing it re-rend
   assert.equal(changed.calls.length, 1);
   assert.ok(INSPECTOR_SYSTEM.includes("AUTHOR DIRECTION"));
 });
+
+test("a spent budget during image generation stops the art step instead of counting as a failed image", async () => {
+  const { BudgetExceededError } = await import("../src/usage.ts");
+  const runDir = await tmp();
+  const backend = { generate: async () => { throw new BudgetExceededError(5, 5); } };
+  await assert.rejects(renderArt([ev(0, "scene_art", { sceneIndex: 0, prompt: "x", shots: [{ startParagraph: 0, prompt: "x" }] })], { runDir, backend }), BudgetExceededError);
+});

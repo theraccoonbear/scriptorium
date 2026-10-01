@@ -6,7 +6,8 @@ import { buildRoleProviders, listModels } from "./providers.ts";
 import { renderStory, redirectArt } from "./engine.ts";
 import { replay } from "./bible.ts";
 import { parseVoiceGenders } from "./audiobook.ts";
-import { artStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
+import { accounted, artStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
+import { formatSummary, readLedger, summarize } from "./usage.ts";
 import { make } from "./make.ts";
 import { c } from "./colors.ts";
 
@@ -33,6 +34,7 @@ const USAGE = `scriptorium <command> [options]
                                                          existing run, then render the images
             [--redo <kind>:<id>,...] [--note "..."]     also recreate these references (e.g. prop:horn),
                                                          with your corrections in --note
+  cost  --out <dir>                                     what a run has spent so far, by step, role and model
   models --config <file> --provider <name>              list model ids a provider serves
 
 Options:
@@ -157,6 +159,17 @@ async function main() {
     return;
   }
 
+  if (command === "cost") {
+    if (!values.out) throw new Error("--out is required");
+    const ledger = readLedger(values.out);
+    if (ledger.length === 0) {
+      console.log(`no usage recorded in ${values.out} (runs made before spend accounting have none)`);
+      return;
+    }
+    console.log(formatSummary(summarize(ledger)));
+    return;
+  }
+
   if (command === "make") {
     const storyFile = positionals[0];
     if (!storyFile) throw new Error("usage: make <story.json> [--only <steps>] [--from <step>] [--force]");
@@ -235,7 +248,7 @@ async function main() {
     }
     const config = JSON.parse(await readFile(values.config, "utf8"));
     const log = new EventLog(values.out);
-    const scenes = await redirectArt({
+    const scenes = await accounted(values.out, config, "artdirect", () => redirectArt({
       config,
       log,
       roles: buildRoleProviders(config),
@@ -244,7 +257,7 @@ async function main() {
       notes: values.note,
       onReferences: (refs) => console.error(`[scriptorium] ${c.ok(refs.length > 0 ? `new references: ${refs.join(", ")}` : "references: none missing")}`),
       onScene: (i, shots) => console.error(`[scriptorium] ${c.ok(`scene ${i + 1}: ${shots} shot${shots === 1 ? "" : "s"}`)}`)
-    });
+    }));
     if (scenes === 0) {
       throw new Error(`no committed scenes in ${values.out}`);
     }

@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { EventLog } from "./eventlog.ts";
 import { checkDirection } from "./providers.ts";
+import { formatSummary, readLedger, summarize } from "./usage.ts";
 import { artStep, audiobookStep, loadRun, readContexts, storyStep, videoStep } from "./steps.ts";
 import { c } from "./colors.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
@@ -24,6 +25,9 @@ export interface StoryFile {
   audiobook?: { narratorVoice?: string; language?: string; voiceGenders?: Record<string, string> };
   video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
+  budget?: { usd: number };            // stop before spending more than this on the run
+  maxDraftsPerScene?: number;          // hard stop for a scene that won't settle (default 20)
+  pricing?: StoryConfig["pricing"];    // per-model USD per million tokens, over the defaults
   artStyle?: string;                   // prescriptive art style; overrides the Creator's
 }
 
@@ -58,8 +62,14 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
   const config: StoryConfig = {
     ...baseConfig,
     ...(raw.direction || baseConfig.direction ? { direction: { ...baseConfig.direction, ...raw.direction } } : {}),
-    ...(raw.artStyle ?? baseConfig.artStyle ? { artStyle: raw.artStyle ?? baseConfig.artStyle } : {})
+    ...(raw.artStyle ?? baseConfig.artStyle ? { artStyle: raw.artStyle ?? baseConfig.artStyle } : {}),
+    ...(raw.budget ?? baseConfig.budget ? { budget: raw.budget ?? baseConfig.budget } : {}),
+    ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
+    ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {})
   };
+  if (config.budget !== undefined && !(typeof config.budget.usd === "number" && config.budget.usd > 0)) {
+    throw new Error(`${path}: "budget" must look like { "usd": 5 }`);
+  }
   checkDirection(config.direction);
   const contexts = raw.context === undefined ? [] : Array.isArray(raw.context) ? raw.context : [raw.context];
   const attempts = raw.maxAttempts === "unlimited" ? Infinity : raw.maxAttempts;
@@ -152,7 +162,8 @@ const defaultRunners: StepRunners = {
   art: async (s, events) => { await artStep(s.runDir, s.config, events, false); },
   audiobook: async (s, events) => {
     await audiobookStep(s.runDir, events, {
-      narratorVoice: s.audiobook.narratorVoice, language: s.audiobook.language, characterGenders: s.audiobook.voiceGenders
+      narratorVoice: s.audiobook.narratorVoice, language: s.audiobook.language, characterGenders: s.audiobook.voiceGenders,
+      config: s.config
     });
   },
   video: async (s, events) => { await videoStep(s.runDir, events, false, s.video); }
@@ -197,5 +208,7 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
     await run[step](story, events);
   }
   console.error(`[scriptorium] ${c.ok(`done: ${steps.join(", ")}`)}`);
+  const ledger = readLedger(story.runDir);
+  if (ledger.length > 0) console.error(`[scriptorium] ${c.dim(`spend for ${story.runDir}:\n${formatSummary(summarize(ledger), story.config.budget?.usd)}`)}`);
   return steps;
 }

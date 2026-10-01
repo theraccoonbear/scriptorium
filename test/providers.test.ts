@@ -44,6 +44,7 @@ before(async () => {
       } else if (url.endsWith("/messages")) {
         send(200, {
           stop_reason: atLimit ? "max_tokens" : "end_turn",
+          usage: { input_tokens: 1000, output_tokens: 200 },
           content: [
             { type: "thinking", thinking: "hidden" },
             { type: "text", text: '{"ok":true,"issues":[]}' }
@@ -173,4 +174,28 @@ test("author direction reaches only its own layer, matched by the call's role la
   assert.ok(seen[2][1].endsWith("Cinematic, photorealistic."));
   assert.throws(() => checkDirection({ artdirectr: "x" }), /unknown layer "artdirectr"/);
   checkDirection({ artist: "x", writer: "y" });
+});
+
+test("postJson records each call's usage to the run ledger and refuses calls once the budget is spent", async () => {
+  const { Accountant, setAccountant, readLedger, BudgetExceededError } = await import("../src/usage.ts");
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-ledger-"));
+  const acc = new Accountant(runDir, { budgetUsd: 0.002, pricing: { "minimax-m3": { input: 1, output: 5 } } });
+  const previous = setAccountant(acc);
+  try {
+    const p = makeProvider({ type: "opencode-go", api: "messages", model: "minimax-m3", baseUrl: base, apiKeyEnv: "FAKE_KEY" });
+    await p.complete(req);
+    const [entry] = readLedger(runDir);
+    assert.equal(entry.role, "critic");
+    assert.equal(entry.model, "minimax-m3");
+    assert.equal(entry.input, 1000);
+    assert.equal(entry.usd, 0.002);
+    const before = requests.length;
+    await assert.rejects(p.complete(req), BudgetExceededError);
+    assert.equal(requests.length, before, "no request was sent once the budget was spent");
+  } finally {
+    setAccountant(previous);
+  }
 });

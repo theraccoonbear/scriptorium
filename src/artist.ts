@@ -5,6 +5,7 @@ import { postJson, requireKey } from "./providers.ts";
 import { parseJson } from "./roles.ts";
 import type { ArtistBackendSpec, ArtistConfig, CoverArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
 import { readVisualRefs, refKey, storyArtStyle } from "./visualrefs.ts";
+import { isBudgetError } from "./usage.ts";
 
 // The Artist renders the Art Director's scene_art / cover_art prompts into images.
 // It runs as a separate step over a finished run (like the audiobook), so image
@@ -320,6 +321,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       result.rendered++;
       emit({ type: "job_done", key: job.key, file, attempts: entry.attempts, accepted: entry.accepted });
     } catch (err) {
+      if (isBudgetError(err)) throw err;
       result.failed++;
       emit({ type: "job_failed", key: job.key, error: err instanceof Error ? err.message : String(err) });
     }
@@ -350,6 +352,7 @@ async function renderOne(
     try {
       image = await backend.generate({ prompt, references, ...(style ? { style } : {}), ...(direction ? { direction } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : {}) });
     } catch (err) {
+      if (isBudgetError(err)) throw err;
       issues = [`generation failed: ${err instanceof Error ? err.message : String(err)}`];
       emit({ type: "attempt_rejected", key: job.key, attempt, issues });
       if (attempt === maxAttempts && !image) throw err;
