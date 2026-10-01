@@ -80,6 +80,7 @@ The individual commands below still work for one-off steps.
 | `art --out <dir> [--config <file>] [--force]` | Render (or resume/retry) a run's images. Unchanged images are skipped. |
 | `artdirect --out <dir> [--config <file>] [--redo kind:id,…] [--note ".."]` | Redo the art direction for an existing run (references, shots, cover), then render. |
 | `video --out <dir> [--force]` | Assemble art + audiobook into `video/story.mp4`. |
+| `cost --out <dir>` | What a run has spent, by step, role and model. |
 | `models --config <file> --provider <name>` | List the model ids a provider serves. |
 
 npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, `video`, `test`, `typecheck`. Run `node src/cli.ts` with no command for the full usage text.
@@ -192,6 +193,20 @@ Other config keys:
 | `artWordsPerShot` | 110 | Narration words per art shot. |
 | `rngSeed` | 1 | Seeds the complication table. |
 | `artist` | Gemini | `image` and `inspector` backends (`gemini` or `mock`; `"inspector": null` skips review), `maxAttempts`, `maxReferences`, `referenceSize`, `inspectSize`. |
+
+## Spend
+
+Every paid API call is logged to `<run>/usage.jsonl`. That covers the text roles, Gemini images, the image inspector and Gemini TTS; Kokoro and ffmpeg are local and free. Each entry records the step, role, model, token counts and estimated cost. `make` and the individual commands print what each step spent, `make` ends with a breakdown by step, role and model, and `cost --out <run>` reports on any run.
+
+```jsonc
+  "budget": { "usd": 10 },       // stop before the run spends more than this
+  "maxDraftsPerScene": 20,       // stop a scene that won't settle, even with unlimited attempts
+  "pricing": { "some-model": { "input": 0.5, "output": 2 } }   // USD per million tokens
+```
+
+The budget covers the whole run, including earlier sessions, since the log lives in the run folder. It's checked before every paid call. When it runs out, the run stops with a message; raise the budget and re-run the same command to continue. A stuck scene is never committed as-is: the run stops so you can adjust direction and resume.
+
+Costs are estimates: token counts multiplied by a price table. The defaults are in `src/usage.ts`, dated 2026-10, and `pricing` overrides them. Models without a price are still logged by token count. The log keeps raw token counts, so costs can be recalculated when prices change.
 
 ## Procedural pressure
 

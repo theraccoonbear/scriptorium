@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import https from "node:https";
 import http from "node:http";
 import { c } from "./colors.ts";
+import { currentAccountant } from "./usage.ts";
 import type { CompletionRequest, Provider, ProviderSpec, Role, Roles, StoryConfig } from "./types.ts";
 
 const httpsAgent = new https.Agent({ keepAlive: true });
@@ -268,6 +269,8 @@ export async function postJson(url: string, headers: Record<string, string | und
   const role = spec?.role || "?";
   const promptKB = (bodyStr.length / 1024).toFixed(1);
   const tag = c.label(role, model);
+  // Spend accounting: refuse the call if the run's budget is spent.
+  currentAccountant()?.check();
   console.error(`[scriptorium]   ${tag} ${c.dim("start")} (prompt=${c.yellow(promptKB + "KB")}, timeout=${c.yellow(formatDuration(timeout))})`);
   const t0 = Date.now();
   for (let i = 0; i < attempts; i++) {
@@ -284,7 +287,9 @@ export async function postJson(url: string, headers: Record<string, string | und
       const respKB = (result.data.length / 1024).toFixed(1);
       const elapsed = formatDuration(Date.now() - t0);
       console.error(`[scriptorium]   ${tag} ${c.got(`${respKB}KB, ${elapsed}`)}`);
-      return JSON.parse(result.data);
+      const data = JSON.parse(result.data);
+      currentAccountant()?.record(role, model, data);
+      return data;
     }
     if (result) {
       lastErr = new Error(`HTTP ${result.status} from ${url}: ${result.data.slice(0, 300)}`);

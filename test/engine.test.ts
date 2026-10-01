@@ -430,3 +430,34 @@ test("an author art style overrides the Creator's, is recorded once, and reaches
   assert.deepEqual(styles, ["Cinematic, photorealistic, dramatic.", "Woodcut."]);
   assert.equal(storyArtStyle(again.events), "Woodcut.");
 });
+
+// --- issue #50: spend accounting ---
+test("a spent budget stops the run even from non-fatal art direction; a stuck scene stops at maxDraftsPerScene", async () => {
+  const { BudgetExceededError } = await import("../src/usage.ts");
+  const config = await loadConfig({ scenes: 1 });
+  const roles = buildRoleProviders(config);
+  roles.artdirector!.provider = { complete: async () => { throw new BudgetExceededError(5.01, 5); } };
+  await assert.rejects(runStory({ config, log: new EventLog(await tmp()), roles }), BudgetExceededError);
+
+  // The critic never approves; unlimited attempts would loop forever.
+  const stuck = await loadConfig({ scenes: 1, maxDraftsPerScene: 4 });
+  const stuckRoles = buildRoleProviders(stuck);
+  // Genuinely different complaints each draft, so none counts as a repeat.
+  const complaints = [
+    { type: "CHARACTER_ARC", entity: "the harbor argument", constraint: "", detail: "Ada forgives him far too quickly." },
+    { type: "PACE", entity: "the lighthouse climb", constraint: "", detail: "Momentum stalls on the stairs." },
+    { type: "EPISTEMIC_VIOLATION", entity: "her letter theory", constraint: "", detail: "She cannot know who wrote it yet." },
+    { type: "UNRESOLVED_SETUP", entity: "storm warning bell", constraint: "", detail: "Rung early, never mentioned afterward." },
+    { type: "TELLING_NOT_SHOWING", entity: "closing reflection", constraint: "", detail: "Explains grief instead of dramatizing it." }
+  ];
+  let n = 0;
+  const real = stuckRoles.critic!.provider.complete.bind(stuckRoles.critic!.provider);
+  stuckRoles.critic!.provider = {
+    complete: async (r) => r.role === "critic"
+      ? JSON.stringify({ ok: false, issues: [complaints[n++ % complaints.length]] })
+      : real(r)
+  };
+  const log = new EventLog(await tmp());
+  await assert.rejects(runStory({ config: stuck, log, roles: stuckRoles, maxAttempts: Infinity }), /scene 1 is stuck: 4 drafts/);
+  assert.equal(log.events.filter((e) => e.type === "scene_committed").length, 0, "never committed as-is");
+});

@@ -262,6 +262,12 @@ export interface StoryConfig {
   artStyle?: string;
   // Art Director: one shot per this many words of narration (~45s at 150 wpm). Default 110.
   artWordsPerShot?: number;
+  // Spend accounting: USD per million tokens per model (overrides the defaults
+  // in src/usage.ts), and a cap that stops the run before it's exceeded.
+  pricing?: Record<string, { input: number; output: number; cacheRead?: number; cacheWrite?: number }>;
+  budget?: { usd: number };
+  // Hard stop for a scene that won't settle, even with unlimited attempts. Default 20.
+  maxDraftsPerScene?: number;
   // Image rendering for the `art` command; omitted = DEFAULT_ARTIST_CONFIG in src/artist.ts.
   artist?: Partial<ArtistConfig>;
 }
