@@ -115,6 +115,7 @@ export interface AudiobookStepOptions {
   narratorVoice?: string;
   language?: string;
   characterGenders?: Record<string, string>;
+  kokoroVoices?: { include?: string[]; exclude?: string[] };
   force?: boolean;
   config?: StoryConfig;  // for spend accounting (pricing, budget)
 }
@@ -129,6 +130,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     narratorVoice: opts.narratorVoice,
     language: opts.language,
     characterGenders: opts.characterGenders,
+    kokoroVoices: opts.kokoroVoices,
     force: opts.force,
     onProgress: (event) => {
       if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);
