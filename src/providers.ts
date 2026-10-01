@@ -114,8 +114,8 @@ export class MockProvider {
       premise: "A lone lighthouse keeper receives a letter from someone who shouldn't know they exist.",
       tone: "Quiet, uncanny, with dry humor.",
       characters: [
-        { id: "keeper", name: "Ada", traits: "methodical, sleep-deprived", goal: "Figure out who sent the letter", voice: "Clipped sentences. Nautical terms." },
-        { id: "voice", name: "The Voice", traits: "calm, precise", goal: "Be heard", voice: "Formal, slightly out of time." }
+        { id: "keeper", name: "Ada", traits: "methodical, sleep-deprived", goal: "Figure out who sent the letter", voice: "Clipped sentences. Nautical terms.", gender: "female" },
+        { id: "voice", name: "The Voice", traits: "calm, precise", goal: "Be heard", voice: "Formal, slightly out of time.", gender: "" }
       ],
       locations: [
         { id: "tower", name: "The lighthouse", description: "Lantern room, spiral stairs, salt on every surface." },

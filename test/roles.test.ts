@@ -266,3 +266,10 @@ test("normalizeShots converts to 0-based, sorts, drops bad entries, and pins the
   ]);
   assert.deepEqual(normalizeShots({ prompt: "old shape" }, 10), []);
 });
+
+// --- issue #27: gender for voice matching ---
+test("creator and archivist are asked for character gender", async () => {
+  const { ARCHIVIST_SYSTEM } = await import("../src/roles.ts");
+  assert.ok(ARCHIVIST_SYSTEM.includes('"gender"?:"female"|"male"|""'), "archivist patch shape missing gender");
+  assert.ok(ARCHIVIST_SYSTEM.includes("Never change an existing character's recorded gender"));
+});

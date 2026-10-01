@@ -166,31 +166,62 @@ function hashString(s: string): number {
 export interface VoiceAssignment {
   narrator: string;
   characters: Record<string, string>;
+  // The gender each character's voice was matched to (absent = any voice).
+  genders: Record<string, Gender>;
 }
 
-// Deterministic: the same character id always lands on the same voice across
-// runs and re-synthesis, without persisting a mapping anywhere.
+export type Gender = "female" | "male";
+
+// Maps free-text gender (bible field, CLI flag, Kokoro's "Female"/"Male") to
+// the two voice pools. Anything else is unspecified: any voice will do.
+export function normalizeGender(value: string | undefined): Gender | undefined {
+  const v = (value ?? "").trim().toLowerCase();
+  if (["female", "f", "woman", "girl"].includes(v)) return "female";
+  if (["male", "m", "man", "boy"].includes(v)) return "male";
+  return undefined;
+}
+
+export interface VoiceGenderOptions {
+  genders?: Readonly<Record<string, string | undefined>>;      // character id -> gender
+  voiceGenders?: Readonly<Record<string, string | undefined>>; // voice id -> gender
+}
+
 export function assignVoices(
   characterIds: readonly string[],
   voices: readonly string[],
-  narratorVoice?: string
+  narratorVoice?: string,
+  { genders = {}, voiceGenders = {} }: VoiceGenderOptions = {}
 ): VoiceAssignment {
   if (voices.length === 0) throw new Error("no voices available to assign");
   const narrator = narratorVoice && voices.includes(narratorVoice) ? narratorVoice : voices[0];
   const pool = voices.filter((v) => v !== narrator);
   const available = pool.length > 0 ? pool : voices;
+  const byGender = (g: Gender) => available.filter((v) => normalizeGender(voiceGenders[v]) === g);
   const used = new Set<string>();
   const characters: Record<string, string> = {};
-  for (const id of [...characterIds].sort()) {
-    const base = hashString(id) % available.length;
-    let assigned = available[base];
-    for (let offset = 0; used.has(assigned) && offset < available.length; offset++) {
-      assigned = available[(base + offset + 1) % available.length];
+  const matched: Record<string, Gender> = {};
+  // Characters with a known gender pick first so unspecified ones can't use up
+  // the smaller same-gender pool; order within each group stays sorted.
+  const ids = [...characterIds].sort();
+  const ordered = [...ids.filter((id) => normalizeGender(genders[id])), ...ids.filter((id) => !normalizeGender(genders[id]))];
+  for (const id of ordered) {
+    const gender = normalizeGender(genders[id]);
+    const gendered = gender ? byGender(gender) : [];
+    // No voice of that gender in this language: any voice beats none.
+    const candidates = gendered.length > 0 ? gendered : available;
+    if (gender && gendered.length > 0) matched[id] = gender;
+    const base = hashString(id) % candidates.length;
+    // First unused voice from the base; if the pool is exhausted, share one
+    // (a matching gender matters more than a unique voice).
+    let assigned = candidates[base];
+    for (let offset = 0; used.has(assigned) && offset < candidates.length; offset++) {
+      assigned = candidates[(base + offset + 1) % candidates.length];
     }
+    if (used.has(assigned)) assigned = candidates[base];
     used.add(assigned);
     characters[id] = assigned;
   }
-  return { narrator, characters };
+  return { narrator, characters, genders: matched };
 }
 
 // Kokoro is multi-lingual: each voice is paired with a specific language's
@@ -227,6 +258,9 @@ export interface AudiobookOptions {
   device?: "wasm" | "webgpu" | "cpu";
   modelId?: string;
   language?: string;
+  // Overrides/sets character genders for voice matching (e.g. runs made before
+  // the bible recorded gender): character id -> "female" | "male".
+  characterGenders?: Record<string, string>;
   onProgress?: (event: AudiobookProgress) => void;
 }
 
@@ -332,7 +366,11 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   if (voiceIds.length === 0) {
     throw new Error(`no voices found for language prefix "${opts.language ?? "en"}"`);
   }
-  const assignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice);
+  const genders: Record<string, string | undefined> = {};
+  for (const ch of Object.values(bible.characters)) genders[ch.id] = ch.gender;
+  Object.assign(genders, opts.characterGenders);
+  const voiceGenders = Object.fromEntries(voiceIds.map((id) => [id, (tts.voices as Record<string, { gender?: string }>)[id]?.gender]));
+  const assignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice, { genders, voiceGenders });
 
   const outDir = `${opts.runDir}/audiobook`;
   await mkdir(outDir, { recursive: true });
@@ -381,4 +419,16 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
 // alongside the audio (e.g. the CLI) without recomputing it.
 export async function writeVoiceMap(outDir: string, assignment: VoiceAssignment): Promise<void> {
   await writeFile(`${outDir}/voices.json`, JSON.stringify(assignment, null, 2), "utf8");
+}
+
+// Parses `--voice-gender osmagus=male,merta=female`.
+export function parseVoiceGenders(spec: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (spec ?? "").split(",").map((p) => p.trim()).filter(Boolean)) {
+    const [id, gender] = part.split("=").map((x) => x?.trim());
+    if (!id || !gender) throw new Error(`--voice-gender expects id=gender pairs, got "${part}"`);
+    if (!normalizeGender(gender)) throw new Error(`--voice-gender: "${gender}" for ${id} is not female or male`);
+    out[id] = gender;
+  }
+  return out;
 }

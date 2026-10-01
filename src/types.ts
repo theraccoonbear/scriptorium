@@ -27,6 +27,9 @@ export interface Character {
   goal: string;
   voice: string;
   status: string;
+  // "female", "male", or absent/"" when unknown or unspecified. Drives the
+  // audiobook's voice choice; anything else is treated as unspecified.
+  gender?: string;
 }
 
 export interface Location {
