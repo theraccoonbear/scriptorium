@@ -28,31 +28,48 @@ ANTHROPIC_API_KEY=...    # if your config uses anthropic providers
 GEMINI_API_KEY=...       # image generation and inspection
 ```
 
-The full pipeline for one story:
+The easiest way to make a story is a **story file**: one JSON file holding everything about a story, which `make` turns into a finished video:
 
-```bash
-npm run story -- --premise "a lighthouse keeper" --setting "1980s Maine" \
-  --scenes 3 --speaker-tags --context contexts/my-world.md --out runs/keeper
-node --env-file=.env src/cli.ts audiobook --out runs/keeper-<timestamp>
-npm run video -- --out runs/keeper-<timestamp>
+```jsonc
+// stories/keeper.json — paths are relative to this file
+{
+  "config": "../story.opencode-go.config.json",  // or the config inline
+  "out": "../runs/keeper",                        // a fixed run directory
+  "premise": "a lighthouse keeper finds a letter addressed to her",
+  "setting": "a remote northern coast, 1890s",
+  "context": ["../contexts/keeper.md", "../contexts/coast.md"],
+  "scenes": 3,
+  "maxAttempts": "unlimited",
+  "speakerTags": true,
+  "audiobook": { "narratorVoice": "af_heart", "language": "en", "voiceGenders": {} }
+}
 ```
 
-`run` writes the story and renders its art when it finishes. `audiobook` and `video` are separate steps because each takes a while.
+```bash
+npm run make -- stories/keeper.json                    # story → art → audiobook → video
+npm run make -- stories/keeper.json --from audiobook   # just the later steps
+npm run make -- stories/keeper.json --only art,video
+```
+
+Re-running `make` finishes whatever's missing: the story resumes from its event log, and art, audio and video skip finished work. That covers a crash, running out of credits, or a deleted image you want regenerated. The run records its premise, setting, context and speaker tags, and `make` refuses to change them for a story already in progress unless you pass `--force`. Use a new `out` for a new story. `stories/mock.json` runs the whole pipeline offline; `stories/example.json` is a real one.
+
+The individual commands below still work for one-off steps.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `make <story.json> [--only <steps>] [--from <step>] [--force]` | Run a story file's pipeline (`story`, `art`, `audiobook`, `video`), finishing whatever's missing. `--force` allows changed story settings for a story in progress. |
 | `run --config <file> [--out <prefix>] [--scenes N] [--premise ".."] [--setting ".."] [--context <file.md> …] [--max-attempts N\|unlimited] [--speaker-tags]` | Generate a story, then render its art. `--out` is a prefix (`runs/keeper` → `runs/keeper-<timestamp>`); pointing it at an existing run directory resumes that run. |
 | `fork --from <dir> --at <sceneCount> --out <dir>` | Branch a run after a given scene. |
 | `show --out <dir>` / `bible --out <dir>` | Print the story as markdown / the current bible as JSON. |
-| `audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>] [--voice-gender id=male,…]` | Narrate each scene to `audiobook/scene-NN.wav` with local Kokoro TTS. |
+| `audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>] [--voice-gender id=male,…] [--force]` | Narrate each scene to `audiobook/scene-NN.wav` with local Kokoro TTS. Scenes whose text and voice settings are unchanged are skipped. |
 | `art --out <dir> [--config <file>] [--force]` | Render (or resume/retry) a run's images. Unchanged images are skipped. |
 | `artdirect --out <dir> [--config <file>] [--redo kind:id,…] [--note ".."]` | Redo the art direction for an existing run (references, shots, cover), then render. |
 | `video --out <dir> [--force]` | Assemble art + audiobook into `video/story.mp4`. |
 | `models --config <file> --provider <name>` | List the model ids a provider serves. |
 
-npm shortcuts: `story` (real config), `story:mock`, `art`, `artdirect`, `video`, `test`, `typecheck`. Run `node src/cli.ts` with no command for the full usage text.
+npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, `video`, `test`, `typecheck`. Run `node src/cli.ts` with no command for the full usage text.
 
 ## The roles
 

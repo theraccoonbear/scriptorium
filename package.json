@@ -12,6 +12,7 @@
     "demo": "node --env-file=.env src/cli.ts run --config story.config.json --out runs/demo",
     "story": "node --env-file=.env src/cli.ts run --config story.opencode-go.config.json",
     "story:mock": "node --env-file=.env src/cli.ts run --config story.config.json",
+    "make": "node --env-file-if-exists=.env src/cli.ts make",
     "art": "node --env-file=.env src/cli.ts art --config story.opencode-go.config.json",
     "artdirect": "node --env-file=.env src/cli.ts artdirect --config story.opencode-go.config.json",
     "video": "node src/cli.ts video"
