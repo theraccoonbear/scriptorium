@@ -6,9 +6,9 @@ import { buildRoleProviders, listModels } from "./providers.ts";
 import { renderStory, redirectArt } from "./engine.ts";
 import { replay } from "./bible.ts";
 import { parseVoiceGenders } from "./audiobook.ts";
-import { accounted, artStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
+import { accounted, artStep, castPreviewStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
 import { formatSummary, readLedger, summarize } from "./usage.ts";
-import { make } from "./make.ts";
+import { loadStoryFile, make } from "./make.ts";
 import { c } from "./colors.ts";
 
 const USAGE = `scriptorium <command> [options]
@@ -35,6 +35,8 @@ const USAGE = `scriptorium <command> [options]
                                                          existing run, then render the images
             [--redo <kind>:<id>,...] [--note "..."]     also recreate these references (e.g. prop:horn),
                                                          with your corrections in --note
+  cast  <story.json> [--as "..."]                      preview the story's cast: describe each member from
+                                                         their photos and render one portrait each
   cost  --out <dir>                                     what a run has spent so far, by step, role and model
   models --config <file> --provider <name>              list model ids a provider serves
 
@@ -147,7 +149,8 @@ async function main() {
       only: { type: "string" },
       encoder: { type: "string" },
       parallel: { type: "string" },
-      note: { type: "string" }
+      note: { type: "string" },
+      as: { type: "string" }
     }
   });
 
@@ -170,6 +173,15 @@ async function main() {
       return;
     }
     console.log(formatSummary(summarize(ledger)));
+    return;
+  }
+
+  if (command === "cast") {
+    const storyFile = positionals[0];
+    if (!storyFile) throw new Error('usage: cast <story.json> [--as "a dwarf warrior in chainmail"]');
+    const story = await loadStoryFile(storyFile);
+    const results = await castPreviewStep({ runDir: story.runDir, config: story.config, cast: story.cast, as: values.as });
+    if (results.some((r) => !r.accepted)) process.exitCode = 1;
     return;
   }
 

@@ -15,7 +15,8 @@
     "make": "node --env-file-if-exists=.env src/cli.ts make",
     "art": "node --env-file=.env src/cli.ts art --config story.opencode-go.config.json",
     "artdirect": "node --env-file=.env src/cli.ts artdirect --config story.opencode-go.config.json",
-    "video": "node src/cli.ts video"
+    "video": "node src/cli.ts video",
+    "cast": "node --env-file-if-exists=.env src/cli.ts cast"
   },
   "engines": {
     "node": ">=20"

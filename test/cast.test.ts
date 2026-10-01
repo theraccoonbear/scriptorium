@@ -121,3 +121,32 @@ test("cast members are exempt from the real-person rules, and checked for likene
   assert.match(out.prompt, /CAST \(real people starring in this story/);
   assert.match(out.prompt, /character don \(Don\) is Don, a person: fortyish/);
 });
+
+test("cast preview describes the cast into the run and renders one portrait each from their photos", async () => {
+  const { castPreviewStep } = await import("../src/steps.ts");
+  const { EventLog } = await import("../src/eventlog.ts");
+  const src = await tmp();
+  const runDir = join(await tmp(), "run");
+  const backend = new MockImageBackend();
+  const describer = new MockCastDescriber();
+  const results = await castPreviewStep({
+    runDir,
+    config: { providers: {}, roles: {}, artStyle: "Oil painting." },
+    cast: [{ name: "Don Smith", photos: [await photo(src, "don.jpg")] }, { name: "Biscuit", photos: [await photo(src, "b1.png"), await photo(src, "b2.png")] }],
+    as: "a dwarf in chainmail",
+    backend, inspector: null, describer, shrink: async (img) => img
+  });
+  assert.deepEqual(results.map((r) => [r.name, r.file.slice(runDir.length + 1), r.accepted]), [
+    ["Don Smith", "cast/preview/don-smith.png", true],
+    ["Biscuit", "cast/preview/biscuit.png", true]
+  ]);
+  assert.deepEqual(backend.calls.map((c) => c.references.map((r) => r.label)), [[CAST_PHOTO_LABEL], [CAST_PHOTO_LABEL, CAST_PHOTO_LABEL]]);
+  assert.match(backend.calls[0].prompt, /Don Smith: mock appearance.*Dressed and equipped for the story as: a dwarf in chainmail\./);
+  assert.equal(backend.calls[0].style, "Oil painting.");
+  assert.equal(backend.calls[0].aspectRatio, "3:4");
+  // The casting is recorded in the run, so the story reuses it instead of describing everyone again.
+  const events = await new EventLog(runDir).load();
+  assert.deepEqual(events.filter((e) => e.type === "cast").length, 1);
+  await castRun(runDir, [{ name: "Don Smith", photos: [join(src, "don.jpg")] }, { name: "Biscuit", photos: [join(src, "b1.png"), join(src, "b2.png")] }], describer, events);
+  assert.equal(describer.calls.length, 2);
+});

@@ -355,7 +355,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
 // Generate → inspect → regenerate with a revised prompt, up to maxAttempts.
 // If every attempt is rejected the last image is kept (accepted: false) so the
 // video still has a frame; the manifest records why.
-async function renderOne(
+export async function renderOne(
   job: ArtJob,
   references: Image[],
   backend: ImageBackend,

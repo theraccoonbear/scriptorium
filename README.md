@@ -80,6 +80,7 @@ The individual commands below still work for one-off steps.
 | `art --out <dir> [--config <file>] [--force]` | Render (or resume/retry) a run's images. Unchanged images are skipped. |
 | `artdirect --out <dir> [--config <file>] [--redo kind:id,…] [--note ".."]` | Redo the art direction for an existing run (references, shots, cover), then render. |
 | `video --out <dir> [--force]` | Assemble art + audiobook into `video/story.mp4`. |
+| `cast <story.json> [--as "..."]` | Preview a story's cast: describe each member from their photos and render one portrait each into `<run>/cast/preview/`. |
 | `cost --out <dir>` | What a run has spent, by step, role and model. |
 | `models --config <file> --provider <name>` | List the model ids a provider serves. |
 
@@ -147,6 +148,15 @@ A story file can list a **cast**: real people and animals who star in the story,
 - **Likeness checks.** The usual rule that characters must not look like real people doesn't apply to the cast. The inspector checks the reverse instead: that each cast member is recognizably the person or animal in the photos.
 
 Keep photos in a top-level `cast/` folder, which git ignores so they are never committed. They are copied into the run's `cast/` folder, and are sent to Gemini to describe and draw the cast, but go nowhere else. Two or three clear, well-lit photos, with at least one showing the face, work best. Use `.jpg`, `.png` or `.webp` files.
+
+To check the likeness before running a whole story, preview the cast:
+
+```bash
+npm run cast -- stories/us.json                                  # one portrait each, in the story's art style
+npm run cast -- stories/us.json --as "adventurers in leather armor"
+```
+
+This describes everyone, recording the descriptions in the run so the story reuses them. It then renders one portrait each from the photos into `<run>/cast/preview/`. That costs a few cents per member. If a portrait isn't right, swap or add photos, or adjust `notes`, and preview again.
 
 ## Audiobook
 
