@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { makeProvider, listModels, stripThinking } from "../src/providers.ts";
+import { makeProvider, listModels, stripThinking, OutputLimitError } from "../src/providers.ts";
 import { parseJson } from "../src/roles.ts";
 
 // A fake OpenCode Go server. Records every request and answers per path.
@@ -9,6 +9,7 @@ let server: http.Server;
 let base: string;
 let requests: Array<{ method?: string; path?: string; headers: http.IncomingHttpHeaders; body: any }>;
 let failuresLeft = 0;
+let atLimit = false;  // answer as if the model hit its output limit mid-reply
 
 before(async () => {
   process.env.FAKE_KEY = "sk-test";
@@ -35,14 +36,14 @@ before(async () => {
         send(200, {
           choices: [
             {
-              finish_reason: "stop",
+              finish_reason: atLimit ? "length" : "stop",
               message: { content: '<think>plan {"ok":false}</think>\n```json\n{"ok":true,"issues":[]}\n```' }
             }
           ]
         });
       } else if (url.endsWith("/messages")) {
         send(200, {
-          stop_reason: "end_turn",
+          stop_reason: atLimit ? "max_tokens" : "end_turn",
           content: [
             { type: "thinking", thinking: "hidden" },
             { type: "text", text: '{"ok":true,"issues":[]}' }
@@ -50,7 +51,8 @@ before(async () => {
         });
       } else if (url.endsWith("/responses")) {
         send(200, {
-          status: "completed",
+          status: atLimit ? "incomplete" : "completed",
+          ...(atLimit ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
           output: [{ type: "message", content: [{ type: "output_text", text: "resp text" }] }]
         });
       } else if (url.endsWith("/models")) {
@@ -139,4 +141,21 @@ test("missing API key fails clearly", async () => {
 test("listModels returns ids", async () => {
   const ids = await listModels({ type: "opencode-go", baseUrl: base, apiKeyEnv: "FAKE_KEY" });
   assert.deepEqual(ids, ["kimi-k3", "glm-5.3-flash"]);
+});
+
+test("a reply that stopped at the output limit fails clearly on every wire format, carrying the partial text", async () => {
+  atLimit = true;
+  try {
+    for (const api of ["chat", "messages", "responses"] as const) {
+      const p = makeProvider({ type: "opencode-go", api, model: "m", baseUrl: base, apiKeyEnv: "FAKE_KEY", maxTokens: 4096 });
+      await assert.rejects(p.complete(req), (err: unknown) => {
+        assert.ok(err instanceof OutputLimitError, `${api}: ${String(err)}`);
+        assert.match(err.message, /stopped at its output limit \(maxTokens 4096\)/);
+        assert.ok(err.partial.length > 0);
+        return true;
+      });
+    }
+  } finally {
+    atLimit = false;
+  }
 });

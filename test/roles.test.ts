@@ -365,3 +365,18 @@ test("the art style is canon: the Creator decides it, every art prompt carries i
   assert.ok(bare.prompt.includes("ART STYLE (canon — every prompt renders in exactly this and ends with it verbatim): (none yet)"));
   assert.equal(bare.result.artStyle, "Mock woodcut style.");
 });
+
+// --- issue #35: replies that stop at the output limit ---
+import { OutputLimitError } from "../src/providers.ts";
+
+test("a JSON role that hits the output limit fails once with the reason; the writer keeps its partial draft", async () => {
+  let calls = 0;
+  const limited = (partial: string) => ({
+    provider: { complete: async () => { calls++; throw new OutputLimitError({ type: "x", model: "m", maxTokens: 10 }, partial); } },
+    temperature: 0
+  });
+  await assert.rejects(artDirect(limited('{"characters":[{"id":"a"'), { bible: emptyBible(), mode: "references", appearances: { characters: {}, locations: {}, props: {} } }), /stopped at its output limit/);
+  assert.equal(calls, 1, "no pointless 'reply with valid JSON' retry");
+  const draft = await write(limited("The ridge was cold and"), { bible: emptyBible(), beat: testBeat, sceneIndex: 0, attempt: 0, sceneWords: { min: 1200, max: 1800 } });
+  assert.equal(draft.result, "The ridge was cold and");
+});
