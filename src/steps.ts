@@ -7,7 +7,9 @@ import { runStory } from "./engine.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
 import type { EncoderChoice } from "./video.ts";
-import { makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
+import { ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
+import { castContext, castRun } from "./cast.ts";
+import type { CastEntry, CastMember } from "./cast.ts";
 import { c } from "./colors.ts";
 import { Accountant, currentAccountant, LEDGER_FILE, setAccountant, usd } from "./usage.ts";
 import type { Bible, StoryConfig, StoryEvent } from "./types.ts";
@@ -44,6 +46,7 @@ export interface StoryStepOptions {
   setting?: string;
   contextPaths?: string[];
   speakerTags?: boolean;
+  cast?: CastMember[];  // real people and animals who star, from photos
 }
 
 export async function readContexts(paths: string[]): Promise<{ context?: string; contextFiles: string[] }> {
@@ -58,7 +61,13 @@ export async function storyStep(opts: StoryStepOptions): Promise<{ log: EventLog
 async function storyStepInner(opts: StoryStepOptions): Promise<{ log: EventLog; bible: Bible }> {
   const { config, runDir } = opts;
   const log = new EventLog(runDir);
-  const { context, contextFiles } = await readContexts(opts.contextPaths ?? []);
+  let { context, contextFiles } = await readContexts(opts.contextPaths ?? []);
+  if (opts.cast && opts.cast.length > 0) {
+    const cast = await castStep(runDir, config, log, opts.cast);
+    const files = await Promise.all((opts.contextPaths ?? []).map(async (p) => contextFile(p, await readFile(p, "utf8"))));
+    context = combineContexts([...files, { name: "the cast (from photos)", text: castContext(cast) }]);
+    contextFiles = [...contextFiles, "cast"];
+  }
   const bible = await runStory({
     config: {
       ...config,
@@ -78,6 +87,17 @@ async function storyStepInner(opts: StoryStepOptions): Promise<{ log: EventLog; 
     }
   });
   return { log, bible };
+}
+
+// Describes the cast from their photos (once; again only when a member's
+// name, notes or photos change) and records them in the run.
+async function castStep(runDir: string, config: StoryConfig, log: EventLog, members: CastMember[]): Promise<CastEntry[]> {
+  const events = await log.load();
+  const describer = makeCastDescriber(resolveArtistConfig(config.artist));
+  const { entries, changed } = await castRun(runDir, members, describer, events, (img) => ffmpegShrink(img, 1024));
+  if (changed) await log.append("cast", { members: entries });
+  for (const e of entries) console.error(`[scriptorium] ${c.dim(`cast: ${e.name} (${e.kind}) — ${e.appearance}`)}`);
+  return entries;
 }
 
 // Renders a run's art prompts (references, shots, cover) into <runDir>/art/.

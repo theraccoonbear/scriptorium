@@ -8,6 +8,7 @@ import { artStep, audiobookStep, loadRun, readContexts, storyStep, videoStep } f
 import { c } from "./colors.ts";
 import { CRITIC_MODES } from "./types.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
+import type { CastMember } from "./cast.ts";
 
 // A story file holds everything about one story — the config, premise,
 // context files, step options and a fixed run directory — so `make` can run
@@ -31,6 +32,8 @@ export interface StoryFile {
   pricing?: StoryConfig["pricing"];    // per-model USD per million tokens, over the defaults
   artStyle?: string;                   // prescriptive art style; overrides the Creator's
   critic?: StoryConfig["critic"];      // "blocking" (default), "advisory" or "off"
+  // Real people and animals who star in the story, from photos (paths relative to the story file).
+  cast?: { name: string; photos: string | string[]; notes?: string }[];
 }
 
 export interface ResolvedStory {
@@ -46,6 +49,7 @@ export interface ResolvedStory {
   speakerTags?: boolean;
   audiobook: NonNullable<StoryFile["audiobook"]>;
   video: NonNullable<StoryFile["video"]>;
+  cast: CastMember[];
 }
 
 export const STEPS = ["story", "art", "audiobook", "video"] as const;
@@ -82,9 +86,15 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
   if (attempts !== undefined && !(attempts === Infinity || (Number.isInteger(attempts) && attempts > 0))) {
     throw new Error(`${path}: "maxAttempts" must be a positive integer or "unlimited"`);
   }
+  if (raw.cast !== undefined && !Array.isArray(raw.cast)) throw new Error(`${path}: "cast" must be a list of { "name", "photos", "notes" }`);
+  const cast: CastMember[] = (raw.cast ?? []).map((m) => {
+    if (!m?.name || !m.photos || (Array.isArray(m.photos) && m.photos.length === 0)) throw new Error(`${path}: every cast member needs a "name" and at least one photo in "photos"`);
+    return { name: m.name, photos: (Array.isArray(m.photos) ? m.photos : [m.photos]).map(at), ...(m.notes ? { notes: m.notes } : {}) };
+  });
   return {
     file: path,
     config,
+    cast,
     configPath,
     runDir: at(raw.out),
     premise: raw.premise,
@@ -121,6 +131,7 @@ export interface StorySettings {
   context: string | null;  // hash of the combined context text
   contextFiles: string[];
   speakerTags: boolean;
+  cast?: string | null;    // hash of the cast's names, notes and photo paths
 }
 
 export async function storySettings(story: ResolvedStory): Promise<StorySettings> {
@@ -130,7 +141,8 @@ export async function storySettings(story: ResolvedStory): Promise<StorySettings
     setting: story.setting ?? null,
     context: context ? createHash("sha1").update(context).digest("hex") : null,
     contextFiles,
-    speakerTags: Boolean(story.speakerTags ?? story.config.speakerTags)
+    speakerTags: Boolean(story.speakerTags ?? story.config.speakerTags),
+    cast: story.cast.length > 0 ? createHash("sha1").update(JSON.stringify(story.cast)).digest("hex") : null
   };
 }
 
@@ -140,6 +152,7 @@ export function settingChanges(before: StorySettings, after: StorySettings): str
   if (before.setting !== after.setting) changed.push("setting");
   if (before.context !== after.context) changed.push(`context (${before.contextFiles.join(", ") || "none"} → ${after.contextFiles.join(", ") || "none"}, or their contents)`);
   if (before.speakerTags !== after.speakerTags) changed.push("speakerTags");
+  if ((before.cast ?? null) !== (after.cast ?? null)) changed.push("cast");
   return changed;
 }
 
@@ -161,7 +174,8 @@ const defaultRunners: StepRunners = {
   story: async (s) => {
     await storyStep({
       config: s.config, runDir: s.runDir, scenes: s.scenes, maxAttempts: s.maxAttempts,
-      premise: s.premise, setting: s.setting, contextPaths: s.contextPaths, speakerTags: s.speakerTags
+      premise: s.premise, setting: s.setting, contextPaths: s.contextPaths, speakerTags: s.speakerTags,
+      cast: s.cast
     });
   },
   // make never re-renders finished work; the individual commands take --force for that.

@@ -30,6 +30,7 @@ import type {
   WorldOutput
 } from "./types.ts";
 import { CRITIC_MODES } from "./types.ts";
+import { castCharacters } from "./cast.ts";
 
 export const COMPLICATIONS = [
   "An ally withholds a crucial fact.",
@@ -592,6 +593,7 @@ async function directReferences(
       // The full text is only needed to find props; the other batches get mentions.
       storyText: b.props ? storyText : [],
       appearances: refAppearances(log.events),
+      cast: castCharacters(log.events),
       artStyle: storyArtStyle(log.events)
     });
     recordTiming("artdirector", Date.now() - t0);

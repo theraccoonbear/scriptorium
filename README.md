@@ -130,6 +130,24 @@ A reviewer that only repeats complaints it already made counts as approving. Rep
 
 Before anything is generated, the **context gate** checks the combined files. It looks for hard contradictions: two files disagreeing about a fact, a file conflicting with the premise or setting, or a file contradicting itself. If it finds one, the run stops before spending anything and lists each conflict with both sides quoted. Mixing that's merely unusual, such as a character from one file dropped into another file's world, is the point and passes.
 
+### Starring you: a cast from photos
+
+A story file can list a **cast**: real people and animals who star in the story, each with one or more photos. Photo paths are relative to the story file.
+
+```jsonc
+  "cast": [
+    { "name": "Don", "photos": ["../cast/don-1.jpg", "../cast/don-2.jpg"], "notes": "he/him; the reluctant hero" },
+    { "name": "Biscuit", "photos": "../cast/biscuit.jpg", "notes": "Don's corgi, braver than he is" }
+  ]
+```
+
+- **Casting.** Before the story starts, Gemini looks at each member's photos and writes a lasting description: build, age range, hair and face, or breed and markings. A member is described again only when their name, notes or photos change.
+- **The story.** The cast joins the author context, so the story writes everyone in under their own names. A title or surname is fine, as in "Sir Don of the Hills".
+- **The art.** Each cast member's reference portrait is drawn **from their photos**, in the story's art style and in the costume the story gives them. Every shot is built from those portraits.
+- **Likeness checks.** The usual rule that characters must not look like real people doesn't apply to the cast. The inspector checks the reverse instead: that each cast member is recognizably the person or animal in the photos.
+
+Keep photos in a top-level `cast/` folder, which git ignores so they are never committed. They are copied into the run's `cast/` folder, and are sent to Gemini to describe and draw the cast, but go nowhere else. Two or three clear, well-lit photos, with at least one showing the face, work best. Use `.jpg`, `.png` or `.webp` files.
+
 ## Audiobook
 
 `audiobook` narrates each scene with [Kokoro](https://github.com/hexgrad/kokoro), running locally, so it needs no API key and can run offline. The first run downloads the model.
