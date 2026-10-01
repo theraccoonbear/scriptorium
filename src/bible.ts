@@ -31,7 +31,15 @@ export function applyPatch(bible: Bible, patch: Patch | undefined, index: number
   const next = structuredClone(bible);
   const p = patch || {};
   for (const c of p.upsertCharacters || []) {
-    upsert(next.characters, c);
+    // A recorded gender is fixed: the audiobook voice must not flip mid-story,
+    // and an empty value never erases one.
+    const known = c?.id ? next.characters[c.id]?.gender : undefined;
+    if (c && (known || !c.gender)) {
+      const { gender: _, ...rest } = c;
+      upsert(next.characters, rest);
+    } else {
+      upsert(next.characters, c);
+    }
   }
   for (const l of p.upsertLocations || []) {
     upsert(next.locations, l);
@@ -82,7 +90,7 @@ export function replay(events: StoryEvent[]): Bible {
 // Compact text view handed to every role.
 export function renderBible(bible: Bible): string {
   const chars = Object.values(bible.characters)
-    .map((c) => `- ${c.id} (${c.name}, ${c.status}): ${c.traits} | goal: ${c.goal} | voice: ${c.voice}`)
+    .map((c) => `- ${c.id} (${c.name}${c.gender ? `, ${c.gender}` : ""}, ${c.status}): ${c.traits} | goal: ${c.goal} | voice: ${c.voice}`)
     .join("\n");
   const locs = Object.values(bible.locations)
     .map((l) => `- ${l.id}: ${l.name}. ${l.description}`)

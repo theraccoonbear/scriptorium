@@ -30,12 +30,13 @@ Output ONLY JSON with this shape:
 {
   "premise":string,
   "tone":string,
-  "characters":[{"id":string,"name":string,"traits":string,"goal":string,"voice":string}],
+  "characters":[{"id":string,"name":string,"traits":string,"goal":string,"voice":string,"gender":"female"|"male"|""}],
   "locations":[{"id":string,"name":string,"description":string}],
   "threads":[{"id":string,"title":string,"status":"open"}],
   "beat":{"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[]}
 }
 Each character needs a distinct voice that will guide the Writer.
+Give each character's gender as "female" or "male" when the story has one in mind; use "" for unspecified, non-binary, or genderless characters. It picks their audiobook narration voice.
 The beat is the first scene. Payoffs must be empty (no prior setups exist).
 Create the premise, setting, and cast that make the best story — one character, five, whatever serves it.
 You will be given character names and location names — use them exactly, do not invent new ones.
@@ -181,7 +182,7 @@ ${ISSUE_RULES}
 
 export const ARCHIVIST_SYSTEM = `You are the Archivist, the only role allowed to change the story bible.
 Read the committed scene and output ONLY a JSON patch:
-{"upsertCharacters":[{"id":string,"name"?:string,"traits"?:string,"goal"?:string,"voice"?:string,"status"?:string}],
+{"upsertCharacters":[{"id":string,"name"?:string,"traits"?:string,"goal"?:string,"voice"?:string,"status"?:string,"gender"?:"female"|"male"|""}],
 "upsertLocations":[{"id":string,"name"?:string,"description"?:string}],
 "upsertThreads":[{"id":string,"title"?:string,"status"?:string}],
 "openSetups":[{"id":string,"text":string}],
@@ -189,6 +190,7 @@ Read the committed scene and output ONLY a JSON patch:
 "resolveDecisions":[string],
 "timeline":"one line summary of what happened"}
 Only record facts established in the scene.
+gender: set it ("female"/"male") for a NEW character when the scene establishes it (pronouns, terms like "mother" or "king"). Never change an existing character's recorded gender; omit the field when it is unclear.
 resolveDecisions: choices or commitments that CLOSED in this scene — decisions the characters will not re-make without new pressure. List only what the scene actually settles; an open or deferred choice does not belong here.`;
 
 export const BEAT_GATE_SYSTEM = `You are the Beat Gate. You review a beat spec BEFORE any prose is written.
@@ -322,7 +324,7 @@ async function callJson(role: Role, req: JsonCallRequest, retries = 1): Promise<
 interface CreatorFoundation {
   premise?: string;
   tone?: string;
-  characters?: { id?: string; name?: string; traits?: string; goal?: string; voice?: string }[];
+  characters?: { id?: string; name?: string; traits?: string; goal?: string; voice?: string; gender?: string }[];
   locations?: { id?: string; name?: string; description?: string }[];
   threads?: { id?: string; title?: string; status?: string }[];
   beat?: Beat;
@@ -333,7 +335,10 @@ function applyBibleData(data: CreatorFoundation): Bible {
   bible.premise = data.premise || "";
   bible.tone = data.tone || "";
   for (const c of data.characters || []) {
-    if (c.id) bible.characters[c.id] = { id: c.id, name: c.name || c.id, traits: c.traits || "", goal: c.goal || "", voice: c.voice || "", status: "active" };
+    if (c.id) {
+      bible.characters[c.id] = { id: c.id, name: c.name || c.id, traits: c.traits || "", goal: c.goal || "", voice: c.voice || "", status: "active" };
+      if (c.gender) bible.characters[c.id].gender = c.gender;
+    }
   }
   for (const l of data.locations || []) {
     if (l.id) bible.locations[l.id] = { id: l.id, name: l.name || l.id, description: l.description || "" };

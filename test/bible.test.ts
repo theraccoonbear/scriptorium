@@ -35,3 +35,17 @@ test("renderBible surfaces resolved decisions for the director", () => {
   assert.ok(withDecision.includes("he chooses not to play"));
   assert.ok(withDecision.includes("do not re-litigate"), "missing anti-rehash guidance");
 });
+
+test("a recorded gender shows in the bible and can't be changed or erased by a later patch", () => {
+  let b = emptyBible();
+  b = applyPatch(b, { upsertCharacters: [{ id: "merta", name: "Merta", gender: "female" }] }, 0);
+  assert.ok(renderBible(b).includes("- merta (Merta, female,"));
+  b = applyPatch(b, { upsertCharacters: [{ id: "merta", gender: "male", status: "teaching" }] }, 1);
+  b = applyPatch(b, { upsertCharacters: [{ id: "merta", gender: "" }] }, 2);
+  assert.equal(b.characters.merta.gender, "female");
+  assert.equal(b.characters.merta.status, "teaching");
+  // An unknown gender can be filled in later.
+  b = applyPatch(b, { upsertCharacters: [{ id: "krell", name: "Krell" }] }, 3);
+  b = applyPatch(b, { upsertCharacters: [{ id: "krell", gender: "male" }] }, 4);
+  assert.equal(b.characters.krell.gender, "male");
+});

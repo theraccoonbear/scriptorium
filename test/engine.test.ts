@@ -148,3 +148,11 @@ test("redirectArt re-shoots an existing run without touching canon", async () =>
   assert.deepEqual(replay(log.events), before);
   await assert.rejects(redirectArt({ config: plain, log, roles: buildRoleProviders(plain) }), /no artdirector role/);
 });
+
+test("creator-assigned gender lands in the bible", async () => {
+  const config = await loadConfig({ scenes: 1 });
+  const log = new EventLog(await tmp());
+  const bible = await runStory({ config, log, roles: buildRoleProviders(config) });
+  assert.equal(bible.characters.keeper.gender, "female");
+  assert.equal(bible.characters.voice.gender, undefined);
+});

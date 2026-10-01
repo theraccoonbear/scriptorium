@@ -5,7 +5,7 @@ import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders, listModels } from "./providers.ts";
 import { runStory, renderStory, redirectArt } from "./engine.ts";
 import { replay } from "./bible.ts";
-import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
+import { generateAudiobook, parseVoiceGenders, writeVoiceMap } from "./audiobook.ts";
 import { makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
 import { c } from "./colors.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
@@ -19,6 +19,7 @@ const USAGE = `scriptorium <command> [options]
   show  --out <dir>                                     print the story as markdown
   bible --out <dir>                                     print the current bible as JSON
   audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>]
+            [--voice-gender <id>=<female|male>,...]
                                                          render the run's scenes to WAV
   art   --out <dir> [--config <file>] [--force]          render the run's art prompts to images
   artdirect --out <dir> [--config <file>]               redo the art direction (shots + cover) for an
@@ -35,6 +36,10 @@ Options:
   --speaker-tags          Writer tags every paragraph with a speaker, so
                           audiobook can switch voices per character
   --narrator-voice <id>   Kokoro voice id for narration (default: af_heart)
+  --voice-gender a=male,b=female
+                          audiobook: set character genders for voice matching
+                          (overrides the bible; needed for runs made before
+                          characters had a recorded gender)
   --force                 art: re-render images whose prompt is unchanged
 
 Examples:
@@ -139,6 +144,7 @@ async function main() {
       "speaker-tags": { type: "boolean" },
       "narrator-voice": { type: "string" },
       language: { type: "string" },
+      "voice-gender": { type: "string" },
       force: { type: "boolean" }
     }
   });
@@ -267,6 +273,7 @@ async function main() {
       runDir: values.out,
       narratorVoice: values["narrator-voice"],
       language: values.language,
+      characterGenders: parseVoiceGenders(values["voice-gender"]),
       onProgress: (event) => {
         if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);
         else if (event.type === "model_ready") console.error(`[scriptorium] ${c.ok("model ready")}`);

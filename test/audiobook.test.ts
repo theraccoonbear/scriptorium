@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assignVoices, buildScenes, filterVoicesByLanguage, findUntaggedParagraphs, parseScene, sceneParagraphs, stripSpeakerTags, synthesizeScene } from "../src/audiobook.ts";
+import { assignVoices, normalizeGender, parseVoiceGenders, buildScenes, filterVoicesByLanguage, findUntaggedParagraphs, parseScene, sceneParagraphs, stripSpeakerTags, synthesizeScene } from "../src/audiobook.ts";
 import type { Synthesize } from "../src/audiobook.ts";
 import type { StoryEvent } from "../src/types.ts";
 
@@ -224,4 +224,55 @@ test("synthesizeScene reports each paragraph's start time in the scene audio", a
   assert.deepEqual(paragraphStarts, [0, 0.8, 2.4]);
   assert.equal(audio.length, (8 + 8 + 8 + 5) * 2400);
   assert.deepEqual(voices, ["n", "o", "n", "n"]);
+});
+
+// --- issue #27: voices match a character's known gender ---
+const VOICE_GENDERS = { af_heart: "Female", af_bella: "Female", af_nicole: "Female", am_adam: "Male", am_michael: "Male", bm_george: "Male" };
+const ALL_VOICES = Object.keys(VOICE_GENDERS);
+
+test("a character with a known gender gets a voice of that gender", () => {
+  for (const id of ["osmagus", "merta", "krell", "a", "bb", "ccc"]) {
+    for (const g of ["female", "male"] as const) {
+      const { characters, genders } = assignVoices([id], ALL_VOICES, "af_heart", { genders: { [id]: g }, voiceGenders: VOICE_GENDERS });
+      assert.equal(normalizeGender(VOICE_GENDERS[characters[id] as keyof typeof VOICE_GENDERS]), g, `${id} (${g}) got ${characters[id]}`);
+      assert.equal(genders[id], g);
+    }
+  }
+});
+
+test("known genders pick first, so unspecified characters can't take the last same-gender voice", () => {
+  // Narrator takes af_heart, leaving two female voices; three characters are female.
+  const genders = { merta: "female", ada: "female", zed: undefined };
+  const { characters } = assignVoices(["zed", "merta", "ada"], ALL_VOICES, "af_heart", { genders, voiceGenders: VOICE_GENDERS });
+  assert.ok(characters.merta.startsWith("af_") && characters.ada.startsWith("af_"));
+  assert.notEqual(characters.merta, characters.ada);
+});
+
+test("when the gender pool runs out, characters share a same-gender voice rather than switch gender", () => {
+  const genders = { a: "male", b: "male", c: "male", d: "male" };
+  const { characters } = assignVoices(["a", "b", "c", "d"], ALL_VOICES, "af_heart", { genders, voiceGenders: VOICE_GENDERS });
+  assert.ok(Object.values(characters).every((v) => v.startsWith("am_") || v.startsWith("bm_")), JSON.stringify(characters));
+  assert.equal(new Set(Object.values(characters)).size, 3);
+});
+
+test("unknown gender or no voice of that gender falls back to any voice", () => {
+  const onlyFemale = { af_heart: "Female", af_bella: "Female" };
+  const { characters, genders } = assignVoices(["osmagus", "x"], Object.keys(onlyFemale), "af_heart", { genders: { osmagus: "male", x: "nonbinary" }, voiceGenders: onlyFemale });
+  assert.equal(characters.osmagus, "af_bella");
+  assert.deepEqual(genders, {});
+  // Without any gender info, assignment is unchanged from before (deterministic, distinct).
+  const plain = assignVoices(["a", "b"], ALL_VOICES, "af_heart");
+  assert.deepEqual(plain.genders, {});
+  assert.notEqual(plain.characters.a, plain.characters.b);
+});
+
+test("normalizeGender and --voice-gender parsing", () => {
+  assert.equal(normalizeGender("Female"), "female");
+  assert.equal(normalizeGender(" MAN "), "male");
+  assert.equal(normalizeGender("nonbinary"), undefined);
+  assert.equal(normalizeGender(""), undefined);
+  assert.deepEqual(parseVoiceGenders("osmagus=male, merta=female"), { osmagus: "male", merta: "female" });
+  assert.deepEqual(parseVoiceGenders(undefined), {});
+  assert.throws(() => parseVoiceGenders("osmagus"), /id=gender/);
+  assert.throws(() => parseVoiceGenders("osmagus=tall"), /not female or male/);
 });
