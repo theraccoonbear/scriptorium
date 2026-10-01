@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
+import { basename } from "node:path";
+import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders, listModels } from "./providers.ts";
 import { runStory, renderStory, redirectArt } from "./engine.ts";
@@ -14,7 +16,7 @@ import type { StoryConfig, StoryEvent } from "./types.ts";
 const USAGE = `scriptorium <command> [options]
 
   run   --config <file> [--out <prefix>] [--scenes N] [--premise "..."] [--setting "..."]
-        [--context <file.md>] [--max-attempts N|unlimited] [--speaker-tags]
+        [--context <file.md> ...] [--max-attempts N|unlimited] [--speaker-tags]
         generate (or resume) a story
   fork  --from <dir> --at <sceneCount> --out <dir>      branch a run at a scene
   show  --out <dir>                                     print the story as markdown
@@ -33,7 +35,9 @@ const USAGE = `scriptorium <command> [options]
 
 Options:
   --context <file.md>     Markdown file with pre-seeded story details
-                          (characters, places, history, plot, etc.)
+                          (characters, places, history, plot, etc.). Repeat
+                          to mix files; a context gate rejects contradictions
+                          between them before anything is generated
   --premise "..."         One-line premise fed to worldbuilder + creator
   --setting "..."         Genre/setting description
   --max-attempts N        Total drafts per scene (default: 3)
@@ -50,6 +54,7 @@ Options:
 Examples:
   npm run story -- --scenes 8
   npm run story -- --context my-story.md --scenes 5
+  npm run story -- --context world.md --context hero.md --context rival.md --scenes 3
   npm run story -- --premise "a lighthouse keeper" --setting "1980s Maine" --scenes 3
   npm run story -- --max-attempts unlimited --scenes 3
   npm run story -- --speaker-tags --scenes 3
@@ -146,7 +151,7 @@ async function main() {
       provider: { type: "string" },
       premise: { type: "string" },
       setting: { type: "string" },
-      context: { type: "string" },
+      context: { type: "string", multiple: true },
       "max-attempts": { type: "string" },
       "speaker-tags": { type: "boolean" },
       "narrator-voice": { type: "string" },
@@ -182,11 +187,11 @@ async function main() {
       maxAttempts = (v === "0" || v === "unlimited" || v === "inf") ? Infinity : Number(v);
       if (Number.isNaN(maxAttempts)) throw new Error("--max-attempts must be a number, 0, or 'unlimited'");
     }
-    // --context file.md provides pre-seeded story details
-    let context = undefined;
-    if (values.context) {
-      context = await readFile(values.context, "utf8");
-    }
+    // --context file.md (repeatable) provides pre-seeded story details; files
+    // are combined under headers naming each source.
+    const contextPaths = values.context ?? [];
+    const context = combineContexts(await Promise.all(contextPaths.map(async (p) => contextFile(p, await readFile(p, "utf8")))));
+    const contextFiles = contextPaths.map((p) => basename(p));
     await updateManifest(runDir, values.config);
     await runStory({
       config: {
@@ -194,6 +199,7 @@ async function main() {
         premise: values.premise,
         setting: values.setting || config.setting,
         context,
+        contextFiles,
         speakerTags: values["speaker-tags"] ?? config.speakerTags
       },
       log,

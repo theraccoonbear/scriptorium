@@ -1,11 +1,12 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import { mulberry32, pick } from "./rng.ts";
-import { shotCountFor, direct, createAndDirect, buildWorld, write, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
+import { shotCountFor, direct, createAndDirect, buildWorld, write, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
 import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
 import { EventLog } from "./eventlog.ts";
+import { storedContext } from "./context.ts";
 import { continuistLane, dedupIssues, sameIssue, stuckIssues } from "./review.ts";
 import { refAppearances, storyArtStyle } from "./visualrefs.ts";
 import type { RefAppearances } from "./visualrefs.ts";
@@ -111,6 +112,31 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       const files = await readdir(runDir);
       seq = files.filter((f) => f.endsWith(".md")).length;
     } catch { /* empty dir */ }
+  }
+
+  // Author context: what this run was given, or — resuming without --context —
+  // what it was started with.
+  const stored = storedContext(log.events);
+  if (config.context && config.context !== stored?.text) {
+    await log.append("run_context", { files: config.contextFiles ?? [], text: config.context });
+  } else if (!config.context && stored) {
+    config = { ...config, context: stored.text, contextFiles: stored.files };
+    console.error(`[scriptorium] ${c.dim(`using this run's context${stored.files.length ? ` (${stored.files.join(", ")})` : ""}`)}`);
+  }
+
+  // Context gate: once, before anything is generated. Contradictions between
+  // the author's files stop the run here, at no cost, with both sides quoted —
+  // the models don't get to silently pick a winner between files the author wrote.
+  if (config.context && bible.sceneCount === 0) {
+    const gateRole = roles.contextgate || roles.continuist;
+    const t0 = Date.now();
+    const g = await reviewContext(gateRole, { context: config.context, premise: config.premise || undefined, setting: config.setting || undefined });
+    recordTiming("contextgate", Date.now() - t0);
+    if (runDir) await writeRoleOutput(runDir, ++seq, "contextgate", g);
+    if (!g.result.ok && g.result.issues.length > 0) {
+      throw new Error(`context gate: the author context contradicts itself — fix the files and run again:\n${g.result.issues.map((x) => `  - ${renderIssue(x)}`).join("\n")}`);
+    }
+    console.error(`[scriptorium] ${c.ok(`context gate: ${config.contextFiles?.length ?? 1} context file${(config.contextFiles?.length ?? 1) === 1 ? "" : "s"} consistent`)}`);
   }
 
   // Collect prose from committed scenes for cross-scene continuity checks.
