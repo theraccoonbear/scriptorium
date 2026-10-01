@@ -6,7 +6,9 @@ import { buildRoleProviders, listModels } from "./providers.ts";
 import { runStory, renderStory } from "./engine.ts";
 import { replay } from "./bible.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
+import { makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
 import { c } from "./colors.ts";
+import type { StoryConfig, StoryEvent } from "./types.ts";
 
 const USAGE = `scriptorium <command> [options]
 
@@ -18,6 +20,7 @@ const USAGE = `scriptorium <command> [options]
   bible --out <dir>                                     print the current bible as JSON
   audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>]
                                                          render the run's scenes to WAV
+  art   --out <dir> [--config <file>] [--force]          render the run's art prompts to images
   models --config <file> --provider <name>              list model ids a provider serves
 
 Options:
@@ -30,6 +33,7 @@ Options:
   --speaker-tags          Writer tags every paragraph with a speaker, so
                           audiobook can switch voices per character
   --narrator-voice <id>   Kokoro voice id for narration (default: af_heart)
+  --force                 art: re-render images whose prompt is unchanged
 
 Examples:
   npm run story -- --scenes 8
@@ -38,6 +42,7 @@ Examples:
   npm run story -- --max-attempts unlimited --scenes 3
   npm run story -- --speaker-tags --scenes 3
   node src/cli.ts audiobook --out runs/story-20260101-000000
+  node --env-file=.env src/cli.ts art --config story.opencode-go.config.json --out runs/story-20260101-000000
 `;
 
 const MAX_RUNS = 10;
@@ -90,6 +95,30 @@ async function updateManifest(runDir: string, config: string): Promise<unknown[]
   return manifest;
 }
 
+// Renders a run's scene_art/cover_art prompts into <runDir>/art/. Shared by `run` and `art`.
+async function renderRunArt(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined) {
+  const artist = resolveArtistConfig(config.artist);
+  const result = await renderArt(events, {
+    runDir,
+    backend: makeImageBackend(artist.image),
+    inspector: artist.inspector ? makeInspector(artist.inspector) : undefined,
+    maxAttempts: artist.maxAttempts,
+    maxReferences: artist.maxReferences,
+    force,
+    onProgress: (event) => {
+      if (event.type === "job_start") console.error(`[scriptorium] ${c.blue(c.bold(`${event.key} (${event.index + 1}/${event.total})`))}`);
+      else if (event.type === "job_skipped") console.error(`[scriptorium] ${c.dim(`${event.key} unchanged — skipping (${event.file})`)}`);
+      else if (event.type === "attempt_rejected") console.error(`[scriptorium]   ${c.retry(`attempt ${event.attempt} rejected: ${event.issues.join("; ")}`)}`);
+      else if (event.type === "job_done") console.error(`[scriptorium] ${event.accepted ? c.ok(`${event.key} written`) : c.retry(`${event.key} kept after ${event.attempts} rejected attempts`)} ${c.dim(event.file)}`);
+      else if (event.type === "job_failed") console.error(`[scriptorium] ${c.fail(`${event.key} failed: ${event.error}`)}`);
+    }
+  });
+  if (result.rendered + result.failed > 0) {
+    console.log(`${c.ok(`art: ${result.rendered} rendered, ${result.skipped} unchanged, ${result.failed} failed →`)} ${c.cyan(result.outDir + "/")}`);
+  }
+  return result;
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   const { values } = parseArgs({
@@ -107,7 +136,8 @@ async function main() {
       "max-attempts": { type: "string" },
       "speaker-tags": { type: "boolean" },
       "narrator-voice": { type: "string" },
-      language: { type: "string" }
+      language: { type: "string" },
+      force: { type: "boolean" }
     }
   });
 
@@ -158,6 +188,14 @@ async function main() {
         console.log(`${c.ok(`scene ${s.index + 1} committed`)} ${c.dim(`(tension ${s.tension}, attempts ${s.attempts})`)}`);
       }
     });
+    // Render the Art Director's prompts to images. Presentation only: a failure here warns, never fails the run.
+    if (roles.artdirector) {
+      try {
+        await renderRunArt(runDir, config, log.events, false);
+      } catch (err) {
+        console.error(`[scriptorium] ${c.retry(`art rendering failed (non-fatal): ${err instanceof Error ? err.message : String(err)} — retry with: node src/cli.ts art --out ${runDir} --config ${values.config}`)}`);
+      }
+    }
     console.log(`${c.green("run written to")} ${c.cyan(runDir + "/")}`);
     return;
   }
@@ -178,6 +216,21 @@ async function main() {
     const log = new EventLog(values.out);
     await log.load();
     console.log(command === "show" ? renderStory(log.events) : JSON.stringify(replay(log.events), null, 2));
+    return;
+  }
+
+  if (command === "art") {
+    if (!values.out) {
+      throw new Error("--out is required");
+    }
+    const config = JSON.parse(await readFile(values.config, "utf8"));
+    const log = new EventLog(values.out);
+    await log.load();
+    const result = await renderRunArt(values.out, config, log.events, values.force);
+    if (result.rendered + result.skipped + result.failed === 0) {
+      throw new Error(`no scene_art/cover_art events in ${values.out} — was the run made with an artdirector role?`);
+    }
+    if (result.failed > 0) process.exitCode = 1;
     return;
   }
 

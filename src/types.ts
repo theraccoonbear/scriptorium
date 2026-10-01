@@ -205,6 +205,36 @@ export interface StoryConfig {
   // a bible character id) so the audiobook tool can switch voices per line.
   // Off by default: story.md stays plain prose, unchanged from every prior run.
   speakerTags?: boolean;
+  // Image rendering for the `art` command; omitted = DEFAULT_ARTIST_CONFIG in src/artist.ts.
+  artist?: Partial<ArtistConfig>;
+}
+
+// ---- artist (image rendering) ----
+
+export interface GeminiSpec {
+  type: "gemini";
+  model: string;
+  apiKeyEnv?: string;    // default GEMINI_API_KEY
+  baseUrl?: string;
+  timeoutMs?: number;
+  retries?: number;
+  aspectRatio?: string;  // image only, default 16:9
+  temperature?: number;  // inspector only
+}
+
+export interface MockArtSpec {
+  type: "mock";
+  failOn?: string[];     // image: throw when the prompt contains any of these
+  rejectFirst?: number;  // inspector: reject the first N looks at each image
+}
+
+export type ArtistBackendSpec = GeminiSpec | MockArtSpec;
+
+export interface ArtistConfig {
+  image: ArtistBackendSpec;
+  inspector?: ArtistBackendSpec | null;  // null disables review
+  maxAttempts?: number;
+  maxReferences?: number;
 }
 
 // A structured role call: the model output plus the exact inputs that produced it.
