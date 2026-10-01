@@ -202,6 +202,7 @@ export interface Roles {
   beatgate?: Role;
   patchgate?: Role;
   worldgate?: Role;
+  contextgate?: Role;
   artdirector?: Role;
   [key: string]: Role | undefined;
 }
@@ -249,6 +250,7 @@ export interface StoryConfig {
   premise?: string;
   setting?: string;
   context?: string;
+  contextFiles?: string[];  // where `context` came from (one or more --context files)
   // When true, the writer tags every paragraph with a speaker (`narrator:` or
   // a bible character id) so the audiobook tool can switch voices per line.
   // Off by default: story.md stays plain prose, unchanged from every prior run.
