@@ -26,7 +26,8 @@ const USAGE = `scriptorium <command> [options]
             [--voice-gender <id>=<female|male>,...]
                                                          render the run's scenes to WAV
   art   --out <dir> [--config <file>] [--force]          render the run's art prompts to images
-  video --out <dir> [--force]                          assemble art + audiobook into video/story.mp4
+  video --out <dir> [--encoder auto|nvenc|x264] [--parallel N] [--force]
+                                                         assemble art + audiobook into video/story.mp4
                                                          (Ken Burns shots, timed crossfades, subtitles)
   artdirect --out <dir> [--config <file>]               redo the art direction (shots + cover) for an
                                                          existing run, then render the images
@@ -139,6 +140,8 @@ async function main() {
       force: { type: "boolean" },
       redo: { type: "string" },
       only: { type: "string" },
+      encoder: { type: "string" },
+      parallel: { type: "string" },
       note: { type: "string" }
     }
   });
@@ -218,7 +221,11 @@ async function main() {
     }
     const log = new EventLog(values.out);
     await log.load();
-    await videoStep(values.out, log.events, values.force);
+    const encoder = values.encoder ?? "auto";
+    if (!["auto", "nvenc", "x264"].includes(encoder)) throw new Error("--encoder must be auto, nvenc or x264");
+    const parallel = values.parallel ? Number(values.parallel) : undefined;
+    if (parallel !== undefined && !(Number.isInteger(parallel) && parallel > 0)) throw new Error("--parallel must be a positive integer");
+    await videoStep(values.out, log.events, values.force, { encoder: encoder as "auto" | "nvenc" | "x264", parallel });
     return;
   }
 

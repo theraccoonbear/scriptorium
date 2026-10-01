@@ -124,16 +124,74 @@ test("renderVideo writes the timeline, caches scene parts, and errors clearly wi
   const calls: string[][] = [];
   // Fake ffmpeg: record the call and create its output file (the last arg).
   const run = async (args: string[]) => { calls.push(args); await writeFile(args[args.length - 1], "out"); };
-  const result = await renderVideo(events, { runDir, run });
+  const result = await renderVideo(events, { runDir, run, encoder: "x264", parallel: 1 });
   assert.equal(result.durationSec, (180 + 1800 + 45 + 600) / 30);
   const outputs = calls.map((a) => a[a.length - 1].split("/").pop());
-  assert.deepEqual(outputs, ["intro.mp4", "scene-01.mp4", "gap-45.mp4", "scene-02.mp4", "story.mp4", "thumbnail.jpg"]);
-  assert.equal(await readFile(join(runDir, "video", "parts", "parts.txt"), "utf8"), "file 'intro.mp4'\nfile 'scene-01.mp4'\nfile 'gap-45.mp4'\nfile 'scene-02.mp4'\n");
+  assert.deepEqual(outputs, ["intro.mp4", "gap-45-x264.mp4", "scene-01.mp4", "scene-02.mp4", "story.mp4", "thumbnail.jpg"]);
+  assert.equal(await readFile(join(runDir, "video", "parts", "parts.txt"), "utf8"), "file 'intro.mp4'\nfile 'scene-01.mp4'\nfile 'gap-45-x264.mp4'\nfile 'scene-02.mp4'\n");
   assert.ok((await readFile(join(runDir, "video", "story.srt"), "utf8")).includes("Three."));
   assert.equal(JSON.parse(await readFile(join(runDir, "video", "timeline.json"), "utf8")).scenes.length, 2);
 
   // Second render: intro, gap and scenes are cached; only the final mux and thumbnail rerun.
   calls.length = 0;
-  await renderVideo(events, { runDir, run });
+  await renderVideo(events, { runDir, run, encoder: "x264", parallel: 1 });
   assert.deepEqual(calls.map((a) => a[a.length - 1].split("/").pop()), ["story.mp4", "thumbnail.jpg"]);
+});
+
+test("encoder: auto picks NVENC when a test encode works, x264 when it doesn't; args per encoder", async () => {
+  const { resolveEncoder, encodeArgs } = await import("../src/video.ts");
+  const probes: string[][] = [];
+  assert.equal(await resolveEncoder("auto", async (args) => { probes.push(args); }), "nvenc");
+  assert.ok(probes[0].includes("h264_nvenc") && probes[0].at(-1) === "-");
+  assert.equal(await resolveEncoder("auto", async () => { throw new Error("no nvenc"); }), "x264");
+  assert.equal(await resolveEncoder("x264", async () => { throw new Error("never called"); }), "x264");
+  assert.ok(encodeArgs("nvenc").join(" ").includes("-c:v h264_nvenc -preset p5 -tune hq -rc vbr -cq 26"));
+  assert.ok(encodeArgs("x264").join(" ").includes("-c:v libx264 -preset medium -crf 18"));
+});
+
+test("scenes render in parallel up to the limit, keep their order, and re-render when the encoder changes", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-video-par-"));
+  await mkdir(join(runDir, "art"), { recursive: true });
+  const many: ArtManifest = { cover: entry("cover.jpg", undefined, undefined) };
+  const sceneTimings: Timings = { sampleRate: 24000, scenes: [] };
+  const events: StoryEvent[] = [];
+  for (let i = 0; i < 5; i++) {
+    many[`scene-0${i + 1}-01`] = entry(`scene-0${i + 1}-01.jpg`, i, 0);
+    sceneTimings.scenes.push({ index: i, file: `scene-0${i + 1}.wav`, durationSec: 10, paragraphStarts: [0] });
+    events.push({ seq: i, type: "scene_committed", ts: "t", data: { index: i, prose: "Words." } });
+  }
+  await writeFile(join(runDir, "art", "art.json"), JSON.stringify(many));
+  for (const e of Object.values(many)) await writeFile(join(runDir, "art", e.file), "img");
+  await mkdir(join(runDir, "audiobook"), { recursive: true });
+  await writeFile(join(runDir, "audiobook", "timings.json"), JSON.stringify(sceneTimings));
+
+  let inFlight = 0;
+  let peak = 0;
+  const quietFlags: boolean[] = [];
+  const run = async (args: string[], o?: { quiet?: boolean }) => {
+    const out = args[args.length - 1];
+    if (out.includes("scene-")) {
+      quietFlags.push(Boolean(o?.quiet));
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+    }
+    await writeFile(out, "out");
+  };
+  await renderVideo(events, { runDir, run, encoder: "nvenc", parallel: 3 });
+  assert.equal(peak, 3);
+  assert.ok(quietFlags.every(Boolean), "parallel renders run without live progress");
+  const order = (await readFile(join(runDir, "video", "parts", "parts.txt"), "utf8")).match(/scene-\d+/g);
+  assert.deepEqual(order, ["scene-01", "scene-02", "scene-03", "scene-04", "scene-05"]);
+
+  // Same encoder: all cached. Different encoder: all scenes redone, new gap clip.
+  const outputs: string[] = [];
+  const recording = async (args: string[]) => { outputs.push(args[args.length - 1].split("/").pop()!); await writeFile(args[args.length - 1], "out"); };
+  await renderVideo(events, { runDir, run: recording, encoder: "nvenc", parallel: 3 });
+  assert.deepEqual(outputs.filter((o) => o.startsWith("scene-")), []);
+  outputs.length = 0;
+  await renderVideo(events, { runDir, run: recording, encoder: "x264", parallel: 3 });
+  assert.equal(outputs.filter((o) => o.startsWith("scene-")).length, 5);
+  assert.ok(outputs.includes("gap-45-x264.mp4"));
 });

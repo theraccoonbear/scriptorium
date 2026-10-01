@@ -151,7 +151,7 @@ It needs `ffmpeg` on the `PATH`.
 
 **Sync:** everything is frame-exact at 30 fps, so the pictures can't drift from the voice.
 
-**Rendering:** the plan is written to `video/timeline.json` first, along with warnings, such as images the inspector never accepted. Each scene renders in one ffmpeg pass at about real time on a CPU. Intermediate files go in `video/parts/` and are cached.
+**Rendering:** the plan is written to `video/timeline.json` first, along with warnings, such as images the inspector never accepted. Each scene renders in one ffmpeg pass, several scenes at once (`--parallel`, default 3). Encoding uses NVIDIA's hardware encoder (NVENC) when available, about 3× faster than x264 at the same size and quality, and falls back to x264 (`--encoder auto|nvenc|x264`; a story file's `video` block takes the same options). Intermediate files go in `video/parts/` and are cached.
 
 ## Configure
 
