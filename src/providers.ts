@@ -77,6 +77,8 @@ export class MockProvider {
         return JSON.stringify({ ok: true, issues: [] });
       case "worldgate":
         return JSON.stringify({ ok: true, issues: [] });
+      case "contextgate":
+        return JSON.stringify({ ok: true, issues: [] });
       case "artdirector": {
         if (ctx.mode === "references") {
           const ref = (id: string) => ({ id, appearance: `Mock look for ${id}.`, prompt: `Mock reference image of ${id}.` });
@@ -525,7 +527,7 @@ export async function listModels(spec: ProviderSpec): Promise<string[]> {
 
 // Adaptive timeouts per role. Floor set from observed minimums, ceiling from P99 + safety.
 const roleTimings: Record<string, number[]> = {};
-const ROLE_FLOORS: Record<string, number> = { worldbuilder: 180000, director: 180000, writer: 180000, continuist: 180000, critic: 180000, archivist: 180000, beatgate: 180000, patchgate: 180000, worldgate: 180000, artdirector: 180000 };
+const ROLE_FLOORS: Record<string, number> = { worldbuilder: 180000, director: 180000, writer: 180000, continuist: 180000, critic: 180000, archivist: 180000, beatgate: 180000, patchgate: 180000, worldgate: 180000, contextgate: 180000, artdirector: 180000 };
 const TIMEOUT_CEILING_MS = 120000;
 const TIMEOUT_SAFETY = 1.5;
 

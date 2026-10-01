@@ -253,6 +253,25 @@ ${ISSUE_RULES}
 - ok: true if the patch is safe to apply.
 - Only record what the committed scene actually establishes — flag anything inferred, assumed, or carried over from an uncommitted draft.`;
 
+export const CONTEXT_GATE_SYSTEM = `You are the Context Gate. Before anything is generated, you review the author's context — one or more files, each under a "### from <file>" header — together with the premise and setting.
+Your job: catch HARD contradictions the story could not honor, so the author can fix them before the run spends anything.
+
+Output ONLY JSON:
+{"ok":boolean,"issues":[ISSUE]}
+
+${ISSUE_SCHEMA}
+
+Allowed types:
+- CONTEXT_CONTRADICTION: two files assert facts that cannot both be true (one says a character is 4'8", another 5'2"; two files give the same object different forms; a character is dead in one and alive in another at the same point)
+- PREMISE_CONFLICT: a file asserts something the premise or setting rules out
+- UNSATISFIABLE_CONSTRAINT: a single file contradicts itself
+
+RULES:
+- entity = the fact in dispute. detail MUST quote both sides with the file each came from, e.g. osmagus.md: "stands 4'8"" vs village.md: "no adult over four feet".
+- Mixing is the point: a character from one file placed in another file's world, unusual combinations, tonal contrast, or one file adding detail another leaves open are NOT issues. Different files describing different things never conflict.
+- Only flag what a writer could not reconcile without dropping or rewriting one of the assertions.
+- ok: true when nothing conflicts.`;
+
 export const WORLD_GATE_SYSTEM = `You are the World Gate. You review the Worldbuilder's output before the Creator uses it.
 Your job: catch names and setting details that are unusable or clash with the premise.
 
@@ -812,6 +831,21 @@ export async function reviewWorld(role: Role, params: {
     prompt,
     ctx: { world, setting, premise, previousIssues }
   });
+}
+
+// Gate the author's (combined) context once, before anything is generated.
+export async function reviewContext(role: Role, params: {
+  context: string;
+  premise?: string;
+  setting?: string;
+}): Promise<RoleOutput<Verdict>> {
+  const { context, premise, setting } = params;
+  const prompt = [
+    premise ? `STORY PREMISE: ${premise}` : "",
+    setting ? `Genre and setting: ${setting}` : "",
+    `AUTHOR CONTEXT:\n${context}`
+  ].filter(Boolean).join("\n\n");
+  return runGate(role, { label: "contextgate", system: CONTEXT_GATE_SYSTEM, prompt, ctx: { context, premise, setting } });
 }
 
 // Gate an archivist patch before it mutates the bible.

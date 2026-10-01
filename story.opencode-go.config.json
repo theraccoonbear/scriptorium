@@ -7,7 +7,7 @@
     "go": { "type": "opencode-go", "api": "chat", "model": "deepseek-v4-flash", "maxTokens": 8192 },
     "go-fast": { "type": "opencode-go", "api": "chat", "model": "glm-5.3-flash", "maxTokens": 8192 },
     "go-critic": { "type": "opencode-go", "api": "chat", "model": "space-bunny-free", "maxTokens": 8192 },
-    "haiku": { "type": "anthropic", "model": "claude-haiku-4-5-20251001", "apiKeyEnv": "ANTHROPIC_API_KEY", "maxTokens": 4096 }
+    "haiku": { "type": "anthropic", "model": "claude-haiku-4-5-20251001", "apiKeyEnv": "ANTHROPIC_API_KEY", "maxTokens": 16384 }
   },
   "artist": {
     "image": { "type": "gemini", "model": "gemini-3.1-flash-image", "aspectRatio": "16:9" },
