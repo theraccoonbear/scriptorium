@@ -487,10 +487,9 @@ export async function write(role: Role, params: {
         const example = ids[0] || "character_id";
         return [
           "SPEAKER TAGS (required — this run feeds an audiobook pipeline):",
-          `- Start EVERY paragraph with a speaker tag and a colon: \`narrator: \` for description and action, or a character's bible id for their dialogue and interiority (e.g. \`${example}: \`).`,
+          `- Start EVERY paragraph with a speaker tag and a colon: \`narrator: \` for description and action, or a character's bible id for the paragraph where they speak (e.g. \`${example}: \`).`,
           `- Valid tags: narrator, ${ids.join(", ") || "(no characters yet)"}.`,
-          "- One speaker per paragraph — if narration and dialogue mix within a beat, split them into separate tagged paragraphs.",
-          "- Tags are structural markup, not prose — do not also narrate who is speaking inside a character's own tagged paragraph."
+          "- Write dialogue normally — ordinary quotation marks, ordinary attribution (\"Riggins said\", \"she whispered\"). Attribution and action beats are pulled out automatically by quote position, so you do not need to split a paragraph just because it mixes narration with a character's line."
         ].join("\n");
       })()
     : "";

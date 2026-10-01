@@ -47,15 +47,83 @@ function mergeConsecutive(segments: SpeakerSegment[]): SpeakerSegment[] {
   return merged;
 }
 
+// Attribution ("Riggins said", "she whispered") is never inside the quote
+// marks — that boundary already exists unambiguously in standard prose, so
+// there is no need for a human or an LLM to pre-split narration from dialogue
+// by hand. A paragraph tagged for a character still gets its unquoted spans
+// (action, attribution) read by the narrator; only the quoted spans are
+// voiced as that character. Quotes are paired by position, not nesting —
+// adequate for standard double-quoted dialogue, not for quotes-within-quotes.
+function splitByQuotes(speaker: string, text: string): SpeakerSegment[] {
+  const parts: SpeakerSegment[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('"', i);
+    if (open === -1) {
+      parts.push({ speaker: "narrator", text: text.slice(i) });
+      break;
+    }
+    if (open > i) parts.push({ speaker: "narrator", text: text.slice(i, open) });
+    const close = text.indexOf('"', open + 1);
+    if (close === -1) {
+      // Unterminated quote (truncated draft) — treat the rest as spoken rather than drop it.
+      parts.push({ speaker, text: text.slice(open) });
+      break;
+    }
+    parts.push({ speaker, text: text.slice(open, close + 1) });
+    i = close + 1;
+  }
+  return parts
+    .map((p) => ({ ...p, text: p.text.trim() }))
+    .filter((p) => p.text.length > 0);
+}
+
+// The book-markdown renderer for tagged prose: strip the leading `speaker: `
+// off each paragraph and nothing else — the prose underneath was never
+// altered to make it audio-ready, so recovering reader-facing text needs no
+// reconstruction (no re-inserted attribution, no reflowed paragraphs).
+// Untagged prose (speakerTags off) passes through unchanged.
+export function stripSpeakerTags(prose: string, knownSpeakers: ReadonlySet<string>): string {
+  return prose
+    .split(/\n{2,}/)
+    .map((para) => {
+      const trimmed = para.trim();
+      const m = trimmed.match(TAG_LINE);
+      if (m && (m[1] === "narrator" || knownSpeakers.has(m[1]))) {
+        return m[2].trim();
+      }
+      return para;
+    })
+    .join("\n\n");
+}
+
+// Non-blocking: flags paragraphs that don't start with a known tag so a
+// speakerTags run can be checked for writer compliance without a full gate.
+// parseScene already falls back such paragraphs to narrator, so this never
+// breaks a run — it's a quality signal, not a correctness requirement.
+export function findUntaggedParagraphs(prose: string, knownSpeakers: ReadonlySet<string>): string[] {
+  return prose
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .filter((para) => {
+      const m = para.match(TAG_LINE);
+      return !(m && (m[1] === "narrator" || knownSpeakers.has(m[1])));
+    });
+}
+
 export function parseScene(index: number, prose: string, knownSpeakers: ReadonlySet<string>): Scene {
   const paragraphs = prose.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean).map(stripMarkdown);
   const segments: SpeakerSegment[] = [];
   let tagged = false;
   for (const para of paragraphs) {
     const m = para.match(TAG_LINE);
-    if (m && (m[1] === "narrator" || knownSpeakers.has(m[1]))) {
+    if (m && m[1] === "narrator") {
       tagged = true;
-      segments.push({ speaker: m[1], text: m[2].trim() });
+      segments.push({ speaker: "narrator", text: m[2].trim() });
+    } else if (m && knownSpeakers.has(m[1])) {
+      tagged = true;
+      segments.push(...splitByQuotes(m[1], m[2].trim()));
     } else {
       segments.push({ speaker: "narrator", text: para });
     }
@@ -107,6 +175,22 @@ export function assignVoices(
   return { narrator, characters };
 }
 
+// Kokoro is multi-lingual: each voice is paired with a specific language's
+// phonemizer (the id's prefix — af/am = American English, bf/bm = British
+// English, jf/jm = Japanese, zf/zm = Mandarin, etc). Feeding English text
+// through a voice tagged for another language runs it through that
+// language's phonemization rules, producing garbled, mispronounced output —
+// not an accent, just the wrong letter-to-sound mapping. Filter to the
+// requested language's voices before assigning any.
+export function filterVoicesByLanguage(
+  voices: Readonly<Record<string, { language: string }>>,
+  languagePrefix: string
+): string[] {
+  return Object.entries(voices)
+    .filter(([, v]) => v.language.startsWith(languagePrefix))
+    .map(([id]) => id);
+}
+
 export function buildScenes(events: StoryEvent[]): Scene[] {
   const bible = replay(events);
   const knownIds = new Set(Object.keys(bible.characters));
@@ -124,6 +208,7 @@ export interface AudiobookOptions {
   dtype?: "fp32" | "fp16" | "q8" | "q4" | "q4f16";
   device?: "wasm" | "webgpu" | "cpu";
   modelId?: string;
+  language?: string;
   onProgress?: (event: AudiobookProgress) => void;
 }
 
@@ -172,7 +257,10 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     device: opts.device ?? "cpu"
   });
   onProgress({ type: "model_ready" });
-  const voiceIds = Object.keys(tts.voices);
+  const voiceIds = filterVoicesByLanguage(tts.voices, opts.language ?? "en");
+  if (voiceIds.length === 0) {
+    throw new Error(`no voices found for language prefix "${opts.language ?? "en"}"`);
+  }
   const assignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice);
 
   const outDir = `${opts.runDir}/audiobook`;

@@ -16,7 +16,8 @@ const USAGE = `scriptorium <command> [options]
   fork  --from <dir> --at <sceneCount> --out <dir>      branch a run at a scene
   show  --out <dir>                                     print the story as markdown
   bible --out <dir>                                     print the current bible as JSON
-  audiobook --out <dir> [--narrator-voice <id>]          render the run's scenes to WAV
+  audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>]
+                                                         render the run's scenes to WAV
   models --config <file> --provider <name>              list model ids a provider serves
 
 Options:
@@ -105,7 +106,8 @@ async function main() {
       context: { type: "string" },
       "max-attempts": { type: "string" },
       "speaker-tags": { type: "boolean" },
-      "narrator-voice": { type: "string" }
+      "narrator-voice": { type: "string" },
+      language: { type: "string" }
     }
   });
 
@@ -188,6 +190,7 @@ async function main() {
     const result = await generateAudiobook(log.events, {
       runDir: values.out,
       narratorVoice: values["narrator-voice"],
+      language: values.language,
       onProgress: (event) => {
         if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);
         else if (event.type === "model_ready") console.error(`[scriptorium] ${c.ok("model ready")}`);

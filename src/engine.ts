@@ -2,6 +2,7 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import { mulberry32, pick } from "./rng.ts";
 import { direct, createAndDirect, buildWorld, write, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, normalizeIssue, renderIssue } from "./roles.ts";
+import { findUntaggedParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
 import { EventLog } from "./eventlog.ts";
@@ -58,11 +59,12 @@ async function writeRoleOutput(runDir: string, seq: number, role: string, { prom
 }
 
 async function writeStoryIncremental(runDir: string, events: StoryEvent[]): Promise<void> {
+  const knownSpeakers = new Set(Object.keys(replay(events).characters));
   const md = events
     .filter((e) => e.type === "scene_committed")
     .map((e) => {
       const d = e.data as SceneCommittedData;
-      return `## Scene ${d.index + 1}\n\n${d.prose}`;
+      return `## Scene ${d.index + 1}\n\n${stripSpeakerTags(d.prose, knownSpeakers)}`;
     })
     .join("\n\n");
   await writeFile(`${runDir}/story.md`, md + "\n", "utf8");
@@ -269,6 +271,17 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         prose = writeOut.result;
         attempt++;
 
+        // Non-blocking compliance check: parseScene already falls back an
+        // untagged paragraph to narrator, so this can't break the run — it's
+        // a quality signal (the writer skipped a tag) worth surfacing, not a
+        // reason to burn a revision attempt on.
+        if (config.speakerTags) {
+          const untagged = findUntaggedParagraphs(prose, new Set(Object.keys(bible.characters)));
+          if (untagged.length > 0) {
+            console.error(`[scriptorium]   ${c.retry(`${untagged.length} paragraph${untagged.length === 1 ? "" : "s"} missing a speaker tag — falling back to narrator`)}`);
+          }
+        }
+
         // Continuist and critic run in parallel — identical context, different prompts.
         t0 = Date.now();
         const gateCtx = {
@@ -402,11 +415,12 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
 }
 
 export function renderStory(events: StoryEvent[]): string {
+  const knownSpeakers = new Set(Object.keys(replay(events).characters));
   return events
     .filter((e) => e.type === "scene_committed")
     .map((e) => {
       const d = e.data as SceneCommittedData;
-      return `## Scene ${d.index + 1}\n\n${d.prose}`;
+      return `## Scene ${d.index + 1}\n\n${stripSpeakerTags(d.prose, knownSpeakers)}`;
     })
     .join("\n\n");
 }

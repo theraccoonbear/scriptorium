@@ -166,7 +166,7 @@ test("writer adds speaker tag instructions with valid bible ids when speakerTags
   assert.ok(out.prompt.includes("narrator:"), "missing narrator tag instruction");
   assert.ok(out.prompt.includes("osmagus"), "missing character id in valid tag list");
   assert.ok(out.prompt.includes("mettka"), "missing second character id in valid tag list");
-  assert.ok(out.prompt.includes("One speaker per paragraph"), "missing one-speaker-per-paragraph rule");
+  assert.ok(out.prompt.includes("Write dialogue normally"), "missing natural-dialogue instruction");
 });
 
 // --- issue #6: unaddressed practical gaps ---
