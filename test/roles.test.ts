@@ -211,3 +211,19 @@ test("art director prompt builder includes the scene, or the beat summary for th
   assert.ok(cover.prompt.includes(`2. [${testBeat.location}]`));
   assert.ok(!cover.prompt.includes("COMMITTED SCENE"));
 });
+
+// --- issue #20: post-commit roles see the whole scene ---
+import { archive, reviewPatch } from "../src/roles.ts";
+
+test("archivist, patch gate and art director see the scene's ending, not a truncated prefix", async () => {
+  const ending = "The letter from Torvin was waiting downstairs on the bar.";
+  const prose = `${"Osmagus lifts the horn. ".repeat(500)}\n\n${ending}`;
+  assert.ok(prose.length > 10000);
+  const params = { bible: emptyBible(), beat: testBeat, prose, sceneIndex: 0 };
+  const arch = await archive(mockRole, { ...params, isFinal: false });
+  assert.ok(arch.prompt.includes(ending), "archivist prompt is missing the scene ending");
+  const gate = await reviewPatch(mockRole, { ...params, patch: {} });
+  assert.ok(gate.prompt.includes(ending), "patch gate prompt is missing the scene ending");
+  const art = await artDirect(mockRole, { ...params, mode: "scene" });
+  assert.ok(art.prompt.includes(ending), "art director prompt is missing the scene ending");
+});
