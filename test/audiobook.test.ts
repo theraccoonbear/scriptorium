@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assignVoices, normalizeGender, parseVoiceGenders, buildScenes, filterVoicesByLanguage, findUntaggedParagraphs, parseScene, sceneParagraphs, stripSpeakerTags, synthesizeScene } from "../src/audiobook.ts";
+import { assignVoices, curateVoices, normalizeGender, parseVoiceGenders, buildScenes, filterVoicesByLanguage, findUntaggedParagraphs, parseScene, sceneParagraphs, stripSpeakerTags, synthesizeScene } from "../src/audiobook.ts";
 import type { Synthesize } from "../src/audiobook.ts";
 import type { StoryEvent } from "../src/types.ts";
 
@@ -283,4 +283,10 @@ test("the TTS model cache is shared outside the repo, overridable", async () => 
   assert.equal(modelCacheDir({ XDG_CACHE_HOME: "/xdg" }), "/xdg/scriptorium/models");
   assert.ok(modelCacheDir({}).endsWith("/.cache/scriptorium/models"));
   assert.ok(!modelCacheDir({}).includes("node_modules"));
+});
+
+test("curateVoices drops excluded Kokoro voices; an include list wins", () => {
+  assert.deepEqual(curateVoices(["af_heart", "am_adam", "am_liam", "am_michael"], { exclude: ["am_adam", "am_liam"] }), ["af_heart", "am_michael"]);
+  assert.deepEqual(curateVoices(["af_heart", "am_adam"], { include: ["am_adam"], exclude: ["am_adam"] }), ["am_adam"]);
+  assert.deepEqual(curateVoices(["af_heart", "am_adam"]), ["af_heart", "am_adam"]);
 });

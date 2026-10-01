@@ -23,7 +23,7 @@ export interface StoryFile {
   scenes?: number;
   maxAttempts?: number | "unlimited";
   speakerTags?: boolean;
-  audiobook?: { narratorVoice?: string; language?: string; voiceGenders?: Record<string, string> };
+  audiobook?: { narratorVoice?: string; language?: string; voiceGenders?: Record<string, string>; kokoroVoices?: { include?: string[]; exclude?: string[] } };
   video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
   budget?: { usd: number };            // stop before spending more than this on the run
@@ -168,7 +168,7 @@ const defaultRunners: StepRunners = {
   art: async (s, events) => { await artStep(s.runDir, s.config, events, false); },
   audiobook: async (s, events) => {
     await audiobookStep(s.runDir, events, {
-      narratorVoice: s.audiobook.narratorVoice, language: s.audiobook.language, characterGenders: s.audiobook.voiceGenders,
+      narratorVoice: s.audiobook.narratorVoice, language: s.audiobook.language, characterGenders: s.audiobook.voiceGenders, kokoroVoices: s.audiobook.kokoroVoices,
       config: s.config
     });
   },

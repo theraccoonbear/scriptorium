@@ -241,6 +241,12 @@ export function assignVoices(
 // language's phonemization rules, producing garbled, mispronounced output —
 // not an accent, just the wrong letter-to-sound mapping. Filter to the
 // requested language's voices before assigning any.
+// Curate Kokoro's voices: an include list wins; otherwise drop the excluded ones.
+export function curateVoices(voiceIds: string[], curation: { include?: string[]; exclude?: string[] } = {}): string[] {
+  if (curation.include?.length) return voiceIds.filter((v) => curation.include!.includes(v));
+  return voiceIds.filter((v) => !curation.exclude?.includes(v));
+}
+
 export function filterVoicesByLanguage(
   voices: Readonly<Record<string, { language: string }>>,
   languagePrefix: string
@@ -271,6 +277,8 @@ export interface AudiobookOptions {
   // Overrides/sets character genders for voice matching (e.g. runs made before
   // the bible recorded gender): character id -> "female" | "male".
   characterGenders?: Record<string, string>;
+  // Kokoro voices to use or avoid (e.g. weak or overused ones), by id.
+  kokoroVoices?: { include?: string[]; exclude?: string[] };
   force?: boolean;  // re-render scenes whose text and voice settings are unchanged
   onProgress?: (event: AudiobookProgress) => void;
 }
@@ -388,7 +396,11 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   Object.assign(genders, opts.characterGenders);
   const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   const dtype = opts.dtype ?? "q8";
-  const settings = { narratorVoice: opts.narratorVoice ?? null, language: opts.language ?? "en", genders, modelId, dtype };
+  const settings = {
+    narratorVoice: opts.narratorVoice ?? null, language: opts.language ?? "en", genders, modelId, dtype,
+    // Only part of the key when set, so audiobooks made before this option stay current.
+    ...(opts.kokoroVoices ? { kokoroVoices: opts.kokoroVoices } : {})
+  };
 
   // Skip scenes whose WAV exists and was made from the same text and settings.
   let manifest: AudioManifest | undefined;
@@ -446,9 +458,9 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   type VoiceId = keyof InstanceType<typeof KokoroTTS>["voices"];
   const tts = await KokoroTTS.from_pretrained(modelId, { dtype, device: opts.device ?? "cpu" });
   onProgress({ type: "model_ready" });
-  const voiceIds = filterVoicesByLanguage(tts.voices, opts.language ?? "en");
+  const voiceIds = curateVoices(filterVoicesByLanguage(tts.voices, opts.language ?? "en"), opts.kokoroVoices);
   if (voiceIds.length === 0) {
-    throw new Error(`no voices found for language prefix "${opts.language ?? "en"}"`);
+    throw new Error(`no Kokoro voices left for language "${opts.language ?? "en"}" after include/exclude`);
   }
   const voiceGenders = Object.fromEntries(voiceIds.map((id) => [id, (tts.voices as Record<string, { gender?: string }>)[id]?.gender]));
   const assignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice, { genders, voiceGenders });
