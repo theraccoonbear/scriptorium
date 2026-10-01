@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
@@ -7,7 +7,11 @@ import { runStory } from "./engine.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
 import type { EncoderChoice } from "./video.ts";
-import { makeImageBackend, makeInspector, renderArt, resolveArtistConfig } from "./artist.ts";
+import { CAST_PHOTO_LABEL, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig } from "./artist.ts";
+import type { ImageBackend, Inspector, Shrink } from "./artist.ts";
+import { castContext, castRun, loadImage, slug } from "./cast.ts";
+import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
+import { storyArtStyle } from "./visualrefs.ts";
 import { c } from "./colors.ts";
 import { Accountant, currentAccountant, LEDGER_FILE, setAccountant, usd } from "./usage.ts";
 import type { Bible, StoryConfig, StoryEvent } from "./types.ts";
@@ -44,6 +48,7 @@ export interface StoryStepOptions {
   setting?: string;
   contextPaths?: string[];
   speakerTags?: boolean;
+  cast?: CastMember[];  // real people and animals who star, from photos
 }
 
 export async function readContexts(paths: string[]): Promise<{ context?: string; contextFiles: string[] }> {
@@ -58,7 +63,13 @@ export async function storyStep(opts: StoryStepOptions): Promise<{ log: EventLog
 async function storyStepInner(opts: StoryStepOptions): Promise<{ log: EventLog; bible: Bible }> {
   const { config, runDir } = opts;
   const log = new EventLog(runDir);
-  const { context, contextFiles } = await readContexts(opts.contextPaths ?? []);
+  let { context, contextFiles } = await readContexts(opts.contextPaths ?? []);
+  if (opts.cast && opts.cast.length > 0) {
+    const cast = await castStep(runDir, config, log, opts.cast);
+    const files = await Promise.all((opts.contextPaths ?? []).map(async (p) => contextFile(p, await readFile(p, "utf8"))));
+    context = combineContexts([...files, { name: "the cast (from photos)", text: castContext(cast) }]);
+    contextFiles = [...contextFiles, "cast"];
+  }
   const bible = await runStory({
     config: {
       ...config,
@@ -78,6 +89,72 @@ async function storyStepInner(opts: StoryStepOptions): Promise<{ log: EventLog; 
     }
   });
   return { log, bible };
+}
+
+// Describes the cast from their photos (once; again only when a member's
+// name, notes or photos change) and records them in the run.
+async function castStep(runDir: string, config: StoryConfig, log: EventLog, members: CastMember[], describer?: CastDescriber, shrink: Shrink = ffmpegShrink): Promise<CastEntry[]> {
+  const events = await log.load();
+  const { entries, changed } = await castRun(runDir, members, describer ?? makeCastDescriber(resolveArtistConfig(config.artist)), events, (img) => shrink(img, 1024));
+  if (changed) await log.append("cast", { members: entries });
+  for (const e of entries) console.error(`[scriptorium] ${c.dim(`cast: ${e.name} (${e.kind}) — ${e.appearance}`)}`);
+  return entries;
+}
+
+// A quick look at the cast before a whole story: describes each member (the
+// same casting the story step does, recorded in the run so the story reuses
+// it) and renders one portrait each from their photos, in the story's art
+// style, into <runDir>/cast/preview/. `as` dresses them for the part.
+export interface CastPreviewOptions {
+  runDir: string;
+  config: StoryConfig;
+  cast: CastMember[];
+  as?: string;
+  backend?: ImageBackend;    // injectable for tests
+  inspector?: Inspector | null;
+  describer?: CastDescriber;
+  shrink?: Shrink;
+}
+
+export async function castPreviewStep(opts: CastPreviewOptions): Promise<{ name: string; file: string; accepted: boolean; issues: string[] }[]> {
+  return accounted(opts.runDir, opts.config, "cast", () => castPreviewInner(opts));
+}
+
+async function castPreviewInner(opts: CastPreviewOptions) {
+  const { runDir, config } = opts;
+  if (opts.cast.length === 0) throw new Error("this story file has no \"cast\"");
+  const artist = resolveArtistConfig(config.artist);
+  const log = new EventLog(runDir);
+  const entries = await castStep(runDir, config, log, opts.cast, opts.describer, opts.shrink);
+  const backend = opts.backend ?? makeImageBackend(artist.image);
+  const inspector = opts.inspector === undefined ? (artist.inspector ? makeInspector(artist.inspector) : undefined) : opts.inspector ?? undefined;
+  const shrink = opts.shrink ?? ffmpegShrink;
+  const style = config.artStyle ?? storyArtStyle(log.events);
+  const direction = config.direction?.artist?.trim() || undefined;
+  const outDir = join(runDir, "cast", "preview");
+  await mkdir(outDir, { recursive: true });
+  const results = [];
+  for (const e of entries) {
+    const subject = e.kind === "animal" ? "this animal" : "this person";
+    const prompt = [
+      `A full-body character portrait of ${subject}: ${e.appearance}`,
+      opts.as ? `Dressed and equipped for the story as: ${opts.as}.` : "",
+      "A relaxed, natural pose with a hint of personality; plain, softly lit background; no other figures; no text."
+    ].filter(Boolean).join(" ");
+    const references = await Promise.all(e.photos.slice(0, 3).map(async (p) => ({ ...(await shrink(await loadImage(join(runDir, p)), 768)), label: CAST_PHOTO_LABEL })));
+    console.error(`[scriptorium] ${c.blue(c.bold(`portrait: ${e.name}`))}`);
+    const out = await renderOne(
+      { key: `cast-${slug(e.name)}`, prompt, ref: { kind: "character", id: slug(e.name) } },
+      references, backend, inspector, artist.maxAttempts ?? 3,
+      (ev) => { if (ev.type === "attempt_rejected") console.error(`[scriptorium]   ${c.retry(`attempt ${ev.attempt} rejected: ${ev.issues.join("; ")}`)}`); },
+      style, (img) => shrink(img, artist.inspectSize ?? 1024), direction
+    );
+    const file = join(outDir, `${slug(e.name)}.${extensionFor(out.image.mimeType)}`);
+    await writeFile(file, out.image.data);
+    console.log(`${out.accepted ? c.ok(`${e.name}:`) : c.retry(`${e.name} (kept after ${out.attempts} rejected attempts):`)} ${c.cyan(file)}`);
+    results.push({ name: e.name, file, accepted: out.accepted, issues: out.issues });
+  }
+  return results;
 }
 
 // Renders a run's art prompts (references, shots, cover) into <runDir>/art/.

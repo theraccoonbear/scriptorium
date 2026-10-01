@@ -80,6 +80,7 @@ The individual commands below still work for one-off steps.
 | `art --out <dir> [--config <file>] [--force]` | Render (or resume/retry) a run's images. Unchanged images are skipped. |
 | `artdirect --out <dir> [--config <file>] [--redo kind:id,…] [--note ".."]` | Redo the art direction for an existing run (references, shots, cover), then render. |
 | `video --out <dir> [--force]` | Assemble art + audiobook into `video/story.mp4`. |
+| `cast <story.json> [--as "..."]` | Preview a story's cast: describe each member from their photos and render one portrait each into `<run>/cast/preview/`. |
 | `cost --out <dir>` | What a run has spent, by step, role and model. |
 | `models --config <file> --provider <name>` | List the model ids a provider serves. |
 
@@ -129,6 +130,33 @@ A reviewer that only repeats complaints it already made counts as approving. Rep
 `--context` can be repeated to mix and match, for example `--context world.md --context hero.md --context rival.md`. Each file goes in under a `### from <file>` header, so every role can tell where a detail came from. The run remembers its context, so resuming without `--context` uses the same files.
 
 Before anything is generated, the **context gate** checks the combined files. It looks for hard contradictions: two files disagreeing about a fact, a file conflicting with the premise or setting, or a file contradicting itself. If it finds one, the run stops before spending anything and lists each conflict with both sides quoted. Mixing that's merely unusual, such as a character from one file dropped into another file's world, is the point and passes.
+
+### Starring you: a cast from photos
+
+A story file can list a **cast**: real people and animals who star in the story, each with one or more photos. Photo paths are relative to the story file.
+
+```jsonc
+  "cast": [
+    { "name": "Don", "photos": ["../cast/don-1.jpg", "../cast/don-2.jpg"], "notes": "he/him; the reluctant hero" },
+    { "name": "Biscuit", "photos": "../cast/biscuit.jpg", "notes": "Don's corgi, braver than he is" }
+  ]
+```
+
+- **Casting.** Before the story starts, Gemini looks at each member's photos and writes a lasting description: build, age range, hair and face, or breed and markings. A member is described again only when their name, notes or photos change.
+- **The story.** The cast joins the author context, so the story writes everyone in under their own names. A title or surname is fine, as in "Sir Don of the Hills".
+- **The art.** Each cast member's reference portrait is drawn **from their photos**, in the story's art style and in the costume the story gives them. Every shot is built from those portraits.
+- **Likeness checks.** The usual rule that characters must not look like real people doesn't apply to the cast. The inspector checks the reverse instead: that each cast member is recognizably the person or animal in the photos.
+
+Keep photos in a top-level `cast/` folder, which git ignores so they are never committed. They are copied into the run's `cast/` folder, and are sent to Gemini to describe and draw the cast, but go nowhere else. Two or three clear, well-lit photos, with at least one showing the face, work best. Use `.jpg`, `.png` or `.webp` files.
+
+To check the likeness before running a whole story, preview the cast:
+
+```bash
+npm run cast -- stories/us.json                                  # one portrait each, in the story's art style
+npm run cast -- stories/us.json --as "adventurers in leather armor"
+```
+
+This describes everyone, recording the descriptions in the run so the story reuses them. It then renders one portrait each from the photos into `<run>/cast/preview/`. That costs a few cents per member. If a portrait isn't right, swap or add photos, or adjust `notes`, and preview again.
 
 ## Audiobook
 

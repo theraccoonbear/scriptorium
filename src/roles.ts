@@ -313,7 +313,7 @@ MODES:
   - Match the bible (including recorded gender) and everything the STORY MENTIONS and STORY TEXT show — pronouns, age, build, hair, beard, clothing, materials, landmarks. Never contradict the story; invent only what it leaves open.
   - appearance: one or two sentences fixing what never changes, concrete and distinctive so two things can never be confused. Characters: height and build, age, skin, hair and facial hair (style and color), face, signature clothing or gear. Locations: terrain, architecture, landmarks, materials, vegetation, characteristic light. Props: true size AND proportions — overall length/height plus width or diameter at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"); the image model cannot infer proportions from length alone. Then the silhouette that makes it that kind of object — what an expert would recognize it by — then materials, colors, markings, condition — and how it is held, carried, or used whenever that changes how it looks in a scene (an instrument's playing position, a weapon's carry).
   - prompt: characters — a full-body reference portrait of that one character in a neutral pose, plain softly lit background, no other figures. Locations — a wide establishing view of the place with NO people, showing what defines it. Props — the object alone, whole and centered, on a plain background, drawn at its true proportions (state the length-to-width relationship explicitly, e.g. "long and slender, like a five-foot pole") and showing the shape that identifies it (a long or large object is shown at full length; say so explicitly). All in the story's ART STYLE.
-  - Every character must look ORIGINAL: never resemble, evoke, or be described in terms of any real person, actor, or celebrity.
+  - Every character must look ORIGINAL: never resemble, evoke, or be described in terms of any real person, actor, or celebrity — EXCEPT the CAST, real people and animals starring in this story by the author's choice. A cast member's portrait is drawn from their real photos: its appearance is their CAST appearance (plus the costume and gear the story gives them), and its prompt is a full-body portrait of exactly that person or animal, recognizably them, in the story's ART STYLE.
 - SCENE: break the committed scene into SHOTS — a sequence of stills that follows the narration. The scene is given as numbered paragraphs, and you are told how many shots to make. Each shot starts at a paragraph and stays on screen until the next shot's paragraph is read aloud.
   Output ONLY JSON:
   {"shots":[{"start_paragraph":number,"prompt":string,"characters":[characterId],"location":locationId,"props":[propId]}]}
@@ -1028,6 +1028,8 @@ export async function artDirect(role: Role, params: {
   storyText?: string[];
   // canonical looks already established
   appearances?: RefAppearances;
+  // references mode: characters who are real cast members (id -> who they are, from their photos)
+  cast?: Record<string, { name: string; kind: "person" | "animal"; appearance: string; notes?: string }>;
   // the story's art style (bible canon); absent = the Art Director defines one
   artStyle?: string;
   // earlier art prompts, oldest first, for visual continuity
@@ -1067,6 +1069,10 @@ export async function artDirect(role: Role, params: {
     parts.push(`KNOWN PROPS: ${knownProps.filter((id) => !redo.includes(id)).join(", ") || "(none yet)"}`);
     if (redo.length > 0) parts.push(`RECREATE these props (keep the id): ${redo.map((id) => `${id} (${appearances.props[id]?.name ?? id})`).join(", ")}`);
     if (params.notes?.trim()) parts.push(`AUTHOR NOTES (follow exactly):\n${params.notes.trim()}`);
+    const cast = Object.entries(params.cast ?? {}).filter(([id]) => bible.characters[id]);
+    if (cast.length > 0) {
+      parts.push(`CAST (real ${cast.some(([, m]) => m.kind === "animal") ? "people and animals" : "people"} starring in this story — their likeness is intended; their portraits are drawn from their photos):\n${cast.map(([id, m]) => `- character ${id} (${bible.characters[id].name}) is ${m.name}, ${m.kind === "animal" ? "an animal" : "a person"}: ${m.appearance}`).join("\n")}`);
+    }
     if (objectIds.length > 0) parts.push(`OBJECTS NEEDING REFERENCES (canon — props with these ids): ${objectIds.map((id) => `${id} (${bible.objects[id]?.name ?? id})`).join(", ")}`);
     const discover = params.discoverProps ?? true;
     parts.push(`Create references for — characters: ${characterIds.join(", ") || "(none)"}; locations: ${locationIds.join(", ") || "(none)"}; props: ${[...objectIds, ...(params.redoProps ?? [])].join(", ") || "(none)"}${discover ? "; plus any other new key props." : ". No other props this time."}`);

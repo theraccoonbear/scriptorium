@@ -6,6 +6,8 @@ import { parseJson } from "./roles.ts";
 import type { ArtistBackendSpec, ArtistConfig, CoverArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
 import { readVisualRefs, refKey, storyArtStyle } from "./visualrefs.ts";
 import { isBudgetError } from "./usage.ts";
+import { CAST_SYSTEM, castCharacters, loadImage, toCastDescription } from "./cast.ts";
+import type { CastDescriber } from "./cast.ts";
 
 // The Artist renders the Art Director's scene_art / cover_art prompts into images.
 // It runs as a separate step over a finished run (like the audiobook), so image
@@ -31,6 +33,8 @@ export interface ImageRequest {
 export const PORTRAIT_LABEL = "Canonical look of a character who appears in this image — match their face, build, hair, colors and clothing exactly, but NOT the reference's pose, expression or framing: pose and move them exactly as this image's description says:";
 export const LOCATION_LABEL = "The place where this image is set — keep its landmarks, architecture, terrain and materials, but choose your own camera angle and framing:";
 export const PROP_LABEL = "A key object that appears in this image — match its shape, materials, colors and markings exactly:";
+export const CAST_PHOTO_LABEL = "Real photo of the person or animal this character IS — the portrait must be unmistakably them (same face and features, build, skin, hair; for an animal, breed, coat and markings), redrawn in the story's art style and dressed as the description says, not as in the photo:";
+export const CAST_PORTRAIT_LABEL = "Canonical look of a character who appears in this image — a real cast member, so this likeness is intended: match their face, build, hair, colors and clothing exactly, but NOT the reference's pose, expression or framing: pose and move them exactly as this image's description says:";
 export const SCENE_LABEL = "Earlier image from the same story — match its art style, not its composition or poses:";
 export const STYLE_LABEL = "Reference image of something ELSE from the same story — match only its art style, not its subject:";
 
@@ -68,7 +72,7 @@ CHECK FOR:
 - PROMPT MISMATCH: the main subject, action, or setting described in the prompt is missing or wrong.
 - REFERENCE MATCH: each character must match their CHARACTER PORTRAIT (face, build, hair and facial hair color, clothing); the setting must keep the LOCATION reference's landmarks, architecture and materials (any camera angle is fine); each key object must match its PROP reference (shape, materials, colors, markings). A different-looking person, place or object in their stead is an issue.
 - CONTINUITY: the overall art style must match the other reference images.
-- REAL PERSON: any figure that looks like a recognizable real person, actor, or celebrity.
+- REAL PERSON: any figure that looks like a recognizable real person, actor, or celebrity — EXCEPT a real cast member: a character given as a REAL PHOTO or a CAST MEMBER PORTRAIT is meant to look like that person. For those, check the opposite: they must be recognizably the person (or animal) in the reference — face and features, build, coloring; for an animal, breed, coat and markings. A likeness that drifts away from them is an issue.
 - AUTHOR DIRECTION: if given, the image must satisfy it (it is the author's explicit instruction for every image).
 - STYLE: if an ART STYLE is given, the image must be rendered in it (medium, palette, line, level of realism). A different medium or a jump in realism is an issue.
 - STAGING: the prompt describes motion or a decisive action, but the figures are stiff — standing still, posed, facing the camera like a portrait, or copying a reference portrait's pose — or the shot ignores the camera angle the prompt names. A flat, lifeless version of an action prompt is an issue.
@@ -86,6 +90,8 @@ export interface ArtJob {
   sceneIndex?: number;
   startParagraph?: number;
   ref?: { kind: VisualRefKind; id: string };  // set for canonical reference images
+  photos?: string[];      // a cast member's portrait: their photos (run-relative), passed as input images
+  photoKey?: string;      // what the photos are (the cast hash) — a skip key
   // What the image shows, whose references to pass (shots and cover).
   characters?: string[];
   location?: string;
@@ -107,9 +113,16 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
     }
   }
   const order: Record<VisualRefKind, number> = { character: 0, location: 1, prop: 2 };
+  const cast = castCharacters(events);
   const refJobs: ArtJob[] = readVisualRefs(events)
     .sort((a, b) => order[a.kind] - order[b.kind] || a.id.localeCompare(b.id))
-    .map((r) => ({ key: refKey(r.kind, r.id), prompt: r.prompt, ref: { kind: r.kind, id: r.id } }));
+    .map((r) => {
+      const member = r.kind === "character" ? cast[r.id] : undefined;
+      return {
+        key: refKey(r.kind, r.id), prompt: r.prompt, ref: { kind: r.kind, id: r.id },
+        ...(member ? { photos: member.photos, photoKey: member.hash } : {})
+      };
+    });
   const refIds = (kind: VisualRefKind) => new Set(refJobs.filter((j) => j.ref!.kind === kind).map((j) => j.ref!.id));
   const jobs: ArtJob[] = [...scenes.entries()]
     .sort(([a], [b]) => a - b)
@@ -174,6 +187,7 @@ export interface ManifestEntry {
   finalPrompt: string;  // the prompt that produced the kept image
   direction?: string;   // the author's art direction it was rendered under (also a skip key)
   style?: string;       // the art style it was rendered in (also a skip key)
+  photos?: string;      // a cast portrait's photos (the cast hash; also a skip key)
   attempts: number;
   accepted: boolean;    // false = attempts ran out; the last image was kept anyway
   issues: string[];
@@ -264,17 +278,23 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     if (job.ref) refs.set(refKey(job.ref.kind, job.ref.id), small);
     else rendered.push(small);
   };
+  const castIds = new Set(Object.keys(castCharacters(events)));
   const refImages = (kind: VisualRefKind, ids: string[], limit: number): Image[] =>
     ids.flatMap((id) => {
       const img = refs.get(refKey(kind, id));
-      return img ? [{ ...img, label: REF_LABEL[kind] }] : [];
+      const label = kind === "character" && castIds.has(id) ? CAST_PORTRAIT_LABEL : REF_LABEL[kind];
+      return img ? [{ ...img, label }] : [];
     }).slice(0, limit);
   // A shot gets the references for what it shows — up to 3 characters, its
   // location, 2 props — then a recent render or two for style. Image models
   // lose track past a handful of references, hence the caps. A reference job
   // gets two earlier references, for style only.
-  const referencesFor = (job: ArtJob): Image[] => {
-    if (job.ref) return [...refs.values()].slice(-2).map((img) => ({ ...img, label: STYLE_LABEL }));
+  const referencesFor = async (job: ArtJob): Promise<Image[]> => {
+    if (job.ref) {
+      // A cast member's portrait is drawn from their photos.
+      const photos = await Promise.all((job.photos ?? []).slice(0, 3).map(async (p) => ({ ...(await shrink(await loadImage(join(opts.runDir, p)), referenceSize)), label: CAST_PHOTO_LABEL })));
+      return [...photos, ...[...refs.values()].slice(-2).map((img) => ({ ...img, label: STYLE_LABEL }))];
+    }
     const canon = [
       ...refImages("character", job.characters ?? [], maxPortraits),
       ...refImages("location", job.location ? [job.location] : [], 1),
@@ -287,7 +307,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
 
   for (const [index, job] of jobs.entries()) {
     const prior = manifest[job.key];
-    if (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && existing.has(prior.file)) {
+    if (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && prior.photos === job.photoKey && existing.has(prior.file)) {
       // Same image, but keep its placement current in case the shot's anchor moved.
       prior.sceneIndex = job.sceneIndex;
       prior.startParagraph = job.startParagraph;
@@ -297,7 +317,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       continue;
     }
     emit({ type: "job_start", key: job.key, index, total: jobs.length });
-    const references = referencesFor(job);
+    const references = await referencesFor(job);
     try {
       const forInspection = (img: Image) => shrink(img, inspectSize);
       const entry = await renderOne(job, references, opts.backend, opts.inspector, maxAttempts, emit, style, forInspection, direction);
@@ -312,6 +332,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         finalPrompt: entry.finalPrompt,
         ...(style ? { style } : {}),
         ...(direction ? { direction } : {}),
+        ...(job.photoKey ? { photos: job.photoKey } : {}),
         attempts: entry.attempts,
         accepted: entry.accepted,
         issues: entry.issues
@@ -334,7 +355,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
 // Generate → inspect → regenerate with a revised prompt, up to maxAttempts.
 // If every attempt is rejected the last image is kept (accepted: false) so the
 // video still has a frame; the manifest records why.
-async function renderOne(
+export async function renderOne(
   job: ArtJob,
   references: Image[],
   backend: ImageBackend,
@@ -430,7 +451,10 @@ export class GeminiInspector implements Inspector {
     if (direction) parts.push({ text: `AUTHOR DIRECTION:\n${direction}` });
     parts.push({ text: "CANDIDATE IMAGE:" }, imagePart(image));
     for (const ref of references) {
-      const kind = ref.label === PORTRAIT_LABEL ? "CHARACTER PORTRAIT" : ref.label === LOCATION_LABEL ? "LOCATION" : ref.label === PROP_LABEL ? "PROP" : "art style only";
+      const kind = ref.label === PORTRAIT_LABEL ? "CHARACTER PORTRAIT"
+        : ref.label === CAST_PORTRAIT_LABEL ? "CHARACTER PORTRAIT — CAST MEMBER (a real person; likeness intended)"
+        : ref.label === CAST_PHOTO_LABEL ? "REAL PHOTO of the cast member this portrait must depict"
+        : ref.label === LOCATION_LABEL ? "LOCATION" : ref.label === PROP_LABEL ? "PROP" : "art style only";
       parts.push({ text: `REFERENCE IMAGE — ${kind}:` });
       parts.push(imagePart(ref));
     }
@@ -494,6 +518,41 @@ export class MockInspector implements Inspector {
     }
     return { ok: true, issues: [] };
   }
+}
+
+// ---- casting: describe a cast member from their photos ----
+
+export class GeminiCastDescriber implements CastDescriber {
+  spec: GeminiSpec;
+  constructor(spec: GeminiSpec) { this.spec = spec; }
+
+  async describe(member: { name: string; notes?: string }, photos: Image[]) {
+    const parts: GeminiPart[] = [{ text: `Describe this ${member.notes ? `cast member (author's note: ${member.notes})` : "cast member"} from ${photos.length === 1 ? "this photo" : `these ${photos.length} photos of the same subject`}.` }];
+    for (const p of photos) parts.push(imagePart(p));
+    const data = await geminiGenerate(this.spec, "casting", {
+      systemInstruction: { parts: [{ text: CAST_SYSTEM }] },
+      contents: [{ role: "user", parts }],
+      generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
+    });
+    const text = (data.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? "").join("");
+    return toCastDescription(parseJson(text));
+  }
+}
+
+export class MockCastDescriber implements CastDescriber {
+  calls: { name: string; photos: number }[] = [];
+  async describe(member: { name: string }, photos: Image[]) {
+    this.calls.push({ name: member.name, photos: photos.length });
+    return { kind: "person" as const, appearance: `${member.name}: mock appearance from ${photos.length} photo(s).` };
+  }
+}
+
+// Casting uses the inspector's vision model (or Gemini's default one).
+export function makeCastDescriber(config: ArtistConfig): CastDescriber {
+  const spec = config.inspector ?? DEFAULT_ARTIST_CONFIG.inspector!;
+  if (spec.type === "mock") return new MockCastDescriber();
+  if (spec.type === "gemini") return new GeminiCastDescriber(spec);
+  throw new Error(`Unknown casting backend type: ${(spec as { type: string }).type}`);
 }
 
 // ---- config ----

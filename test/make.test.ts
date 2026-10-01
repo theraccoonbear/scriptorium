@@ -135,3 +135,17 @@ test("story files set the critic mode and reject unknown ones", async () => {
   const bad = await storyDir({ critic: "polite" });
   await assert.rejects(loadStoryFile(bad.file), /"critic" must be one of blocking, advisory, off/);
 });
+
+test("story files list a cast with photos relative to the file; a changed cast is a changed story", async () => {
+  const { dir, file } = await storyDir({ cast: [{ name: "Don", photos: ["cast/don.jpg", "/abs/don2.jpg"], notes: "he/him" }, { name: "Biscuit", photos: "biscuit.png" }] });
+  const s = await loadStoryFile(file);
+  assert.deepEqual(s.cast, [
+    { name: "Don", photos: [join(dir, "cast/don.jpg"), "/abs/don2.jpg"], notes: "he/him" },
+    { name: "Biscuit", photos: [join(dir, "biscuit.png")] }
+  ]);
+  const bad = await storyDir({ cast: [{ name: "Don" }] });
+  await assert.rejects(loadStoryFile(bad.file), /needs a "name" and at least one photo/);
+  const base = { premise: "a", setting: null, context: "h", contextFiles: ["x.md"], speakerTags: true };
+  assert.deepEqual(settingChanges({ ...base }, { ...base, cast: null }), [], "stories made before casts stay valid");
+  assert.deepEqual(settingChanges({ ...base, cast: "h1" }, { ...base, cast: "h2" }), ["cast"]);
+});
