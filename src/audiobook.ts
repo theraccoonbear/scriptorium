@@ -385,7 +385,7 @@ export type TtsEngine = "kokoro" | "gemini";
 
 // One TTS pass over `text`, yielding audio per sentence-ish chunk. `context` is
 // the text just before this piece (for engines that act the line).
-export type Synthesize = (text: string, voice: string, ctx?: { speaker: string; context: string; delivery?: string }) => AsyncIterable<{ text: string; audio: Float32Array }>;
+export type Synthesize = (text: string, voice: string, ctx?: { speaker: string; context: string; delivery?: string; piece?: number }) => AsyncIterable<{ text: string; audio: Float32Array }>;
 
 // Linear resample for engines whose output rate differs from the audiobook's.
 export function resample(samples: Float32Array, from: number, to: number): Float32Array {
@@ -409,6 +409,19 @@ export interface SynthesizedScene {
 // segment) so each paragraph's start offset in the audio is known exactly.
 // Kokoro already synthesizes sentence by sentence, so splitting at paragraph
 // boundaries costs nothing extra.
+// A scene's voiced pieces in voicing order: each segment's "\n\n"-separated
+// parts, with the paragraph each comes from. Batched Gemini voicing and
+// synthesizeScene both use this, so piece numbers line up.
+export function scenePieces(scene: Scene): { segment: number; speaker: string; text: string; paragraph: number | undefined }[] {
+  return scene.segments.flatMap((seg, s) => {
+    const parts = seg.text.split("\n\n");
+    const aligned = parts.length === seg.paragraphs.length;
+    return aligned
+      ? parts.map((text, k) => ({ segment: s, speaker: seg.speaker, text, paragraph: seg.paragraphs[k] }))
+      : [{ segment: s, speaker: seg.speaker, text: seg.text, paragraph: seg.paragraphs[0] }];
+  });
+}
+
 export async function synthesizeScene(
   scene: Scene,
   voiceFor: (speaker: string) => string,
@@ -420,16 +433,14 @@ export async function synthesizeScene(
   const starts: Array<number | undefined> = [];
   let samples = 0;
   const recent: string[] = [];  // the last few pieces spoken, as context for acted lines
+  const all = scenePieces(scene);
   for (const [s, seg] of scene.segments.entries()) {
-    const pieces = seg.text.split("\n\n");
-    const aligned = pieces.length === seg.paragraphs.length;
-    const work = aligned ? pieces.map((text, k) => ({ text, paragraph: seg.paragraphs[k] })) : [{ text: seg.text, paragraph: seg.paragraphs[0] }];
-    for (const { text, paragraph } of work) {
+    for (const { text, paragraph, piece } of all.map((x, piece) => ({ ...x, piece })).filter((x) => x.segment === s)) {
       if (paragraph !== undefined && starts[paragraph] === undefined) starts[paragraph] = samples / SAMPLE_RATE;
       const context = recent.join(" ").slice(-500);
       const d = paragraph !== undefined ? scene.delivery?.[paragraph] : undefined;
       const delivery = d && d.speaker === seg.speaker ? d.note : undefined;
-      for await (const chunk of synth(text, voiceFor(seg.speaker), { speaker: seg.speaker, context, ...(delivery ? { delivery } : {}) })) {
+      for await (const chunk of synth(text, voiceFor(seg.speaker), { speaker: seg.speaker, context, piece, ...(delivery ? { delivery } : {}) })) {
         chunks.push(chunk.audio);
         samples += chunk.audio.length;
         onChunk(s, seg.speaker, chunk.text);
