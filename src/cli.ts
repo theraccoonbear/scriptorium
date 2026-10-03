@@ -9,6 +9,8 @@ import { parseVoiceGenders } from "./audiobook.ts";
 import { accounted, artStep, castPreviewStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
 import { formatSummary, readLedger, summarize } from "./usage.ts";
 import { loadStoryFile, make } from "./make.ts";
+import { GEMINI_MODES } from "./geminiBatch.ts";
+import type { GeminiMode } from "./geminiBatch.ts";
 import { c } from "./colors.ts";
 
 const USAGE = `scriptorium <command> [options]
@@ -27,6 +29,7 @@ const USAGE = `scriptorium <command> [options]
             [--voice-gender <id>=<female|male>,...] [--dialogue kokoro|gemini]
             [--narration kokoro|gemini] [--exclude-voices <kokoro ids>]
             [--character-voice <id>=<kokoro voice>,...] [--config <file>] [--force]
+            [--gemini-mode line|palette|speaker] [--palette-size N]
                                                          render the run's scenes to WAV
   art   --out <dir> [--config <file>] [--force]          render the run's art prompts to images
   video --out <dir> [--encoder auto|nvenc|x264] [--parallel N] [--force]
@@ -123,6 +126,11 @@ async function updateManifest(runDir: string, config: string): Promise<unknown[]
   return manifest;
 }
 
+function geminiModeFlag(value: string): GeminiMode {
+  if (!(GEMINI_MODES as readonly string[]).includes(value)) throw new Error(`--gemini-mode must be one of ${GEMINI_MODES.join(", ")}`);
+  return value as GeminiMode;
+}
+
 function engineFlag(value: string | undefined, flag: string): "kokoro" | "gemini" | undefined {
   if (value === undefined) return undefined;
   if (value !== "kokoro" && value !== "gemini") throw new Error(`${flag} must be kokoro or gemini`);
@@ -151,6 +159,8 @@ async function main() {
       "voice-gender": { type: "string" },
       "exclude-voices": { type: "string" },
       "character-voice": { type: "string" },
+      "gemini-mode": { type: "string" },
+      "palette-size": { type: "string" },
       force: { type: "boolean" },
       redo: { type: "string" },
       only: { type: "string" },
@@ -319,6 +329,8 @@ async function main() {
       narration: engineFlag(values.narration, "--narration"),
       kokoroVoices: values["exclude-voices"] ? { exclude: values["exclude-voices"].split(",").map((v) => v.trim()).filter(Boolean) } : undefined,
       characterVoices: values["character-voice"] ? Object.fromEntries(values["character-voice"].split(",").map((p) => p.split("=").map((x) => x.trim())).filter((p) => p.length === 2 && p[0] && p[1])) : undefined,
+      ...(values["gemini-mode"] ? { geminiMode: geminiModeFlag(values["gemini-mode"]) } : {}),
+      ...(values["palette-size"] ? { paletteSize: Number(values["palette-size"]) } : {}),
       force: values.force,
       // An explicit --config lets untagged scenes be tagged (and spending tracked).
       ...(process.argv.includes("--config") ? { config: JSON.parse(await readFile(values.config, "utf8")) } : {})

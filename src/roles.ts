@@ -831,6 +831,32 @@ export function taggingProblem(t: SpeakerTagging, paragraphCount: number, castId
   return undefined;
 }
 
+export const PALETTE_SYSTEM = `You reduce one speaker's per-line delivery notes to a small palette of distinct tones — like reducing an image to a few colours. Each tone will direct a voice actor for every line assigned to it.
+
+Output ONLY JSON:
+{"tones":[string],"assign":[number]}
+
+- tones: at most the PALETTE SIZE given, each 2-6 words of performance direction ("low, suppressed fury", "bright, deflecting charm"). Cover the speaker's real range; merge near-duplicates.
+- assign: exactly one entry per numbered note, in order: the 0-based index of the tone closest to that note.`;
+
+export async function buildPalette(role: Role, params: { speaker: string; notes: string[]; size: number }): Promise<RoleOutput<{ tones: string[]; assign: number[] }>> {
+  const { speaker, notes, size } = params;
+  let prompt = `SPEAKER: ${speaker}\nPALETTE SIZE: ${size}\n\nNOTES (${notes.length}):\n${notes.map((n, i) => `[${i + 1}] ${n}`).join("\n")}`;
+  let problem = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = await callJson(role, { role: "palette", system: PALETTE_SYSTEM, prompt, ctx: { notes, size } });
+    const r = (out.result ?? {}) as { tones?: unknown; assign?: unknown };
+    const tones = Array.isArray(r.tones) ? r.tones.map((t) => String(t).trim()).filter(Boolean) : [];
+    const assign = Array.isArray(r.assign) ? r.assign.map(Number) : [];
+    if (tones.length === 0 || tones.length > size) problem = `${tones.length} tones (want 1-${size})`;
+    else if (assign.length !== notes.length) problem = `${assign.length} assignments for ${notes.length} notes`;
+    else if (assign.some((i) => !Number.isInteger(i) || i < 0 || i >= tones.length)) problem = "an assignment points at no tone";
+    else return { ...out, result: { tones, assign } };
+    prompt = `${prompt}\n\nYour last reply was unusable: ${problem}. Reply again.`;
+  }
+  throw new Error(`tone palette for ${speaker} failed: ${problem}`);
+}
+
 // Context shared by the two prose gates. Same inputs, different prompts.
 export interface ProseGateParams {
   bible: Bible;

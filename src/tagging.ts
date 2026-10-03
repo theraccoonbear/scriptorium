@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { replay } from "./bible.ts";
-import { sameSpeaker, tagSpeakers } from "./roles.ts";
+import { buildPalette, sameSpeaker, tagSpeakers } from "./roles.ts";
 import type { EventLog } from "./eventlog.ts";
 import type { Character, Role, SceneCommittedData, StoryEvent } from "./types.ts";
 
@@ -269,4 +269,66 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
     onScene(d.index, [...new Set(checked.tags.filter((t) => t !== "narrator"))]);
   }
   return tagged;
+}
+
+// ---- tone palettes (geminiMode "palette") ----
+
+export interface TonePaletteData {
+  size: number;
+  source: string;  // hash of the notes the palette was made from
+  speakers: Record<string, { tones: string[] }>;
+  assign: Record<string, { speaker: string; tone: number }>;  // "scene:paragraph" -> its speaker and their tone index
+}
+
+// Every (speaker, scene, paragraph, note) the tags give, with speaker aliases applied.
+function deliveryNotes(events: StoryEvent[]): { speaker: string; key: string; note: string }[] {
+  const aliases = speakerAliases(events);
+  const out: { speaker: string; key: string; note: string }[] = [];
+  for (const d of [...sceneTags(events).values()].sort((a, b) => a.index - b.index)) {
+    d.tags.forEach((tag, p) => {
+      const note = d.delivery[p]?.trim();
+      if (note) out.push({ speaker: aliases.get(tag) ?? tag, key: `${d.index}:${p}`, note });
+    });
+  }
+  return out;
+}
+
+export function latestPalette(events: StoryEvent[], size: number): TonePaletteData | undefined {
+  const source = proseHash(JSON.stringify({ size, notes: deliveryNotes(events) }));
+  const e = [...events].reverse().find((x) => x.type === "tone_palette" && (x.data as TonePaletteData).source === source);
+  return e?.data as TonePaletteData | undefined;
+}
+
+// Reduces each speaker's delivery notes to at most `size` tones (once per set of
+// notes). A speaker with few enough distinct notes keeps them as they are.
+export async function paletteRun(log: EventLog, role: Role, size: number): Promise<TonePaletteData> {
+  const existing = latestPalette(log.events, size);
+  if (existing) return existing;
+  const notes = deliveryNotes(log.events);
+  const data: TonePaletteData = { size, source: proseHash(JSON.stringify({ size, notes })), speakers: {}, assign: {} };
+  for (const speaker of [...new Set(notes.map((n) => n.speaker))]) {
+    const mine = notes.filter((n) => n.speaker === speaker);
+    const distinct = [...new Set(mine.map((n) => n.note))];
+    let tones: string[];
+    let index: (note: string, i: number) => number;
+    if (distinct.length <= size) {
+      tones = distinct;
+      index = (note) => distinct.indexOf(note);
+    } else {
+      const out = await buildPalette(role, { speaker, notes: distinct, size });
+      tones = out.result.tones;
+      index = (note) => out.result.assign[distinct.indexOf(note)];
+    }
+    data.speakers[speaker] = { tones };
+    mine.forEach((n, i) => { data.assign[n.key] = { speaker, tone: index(n.note, i) }; });
+  }
+  await log.append("tone_palette", data);
+  return data;
+}
+
+// The palette tone a speaker's piece of a paragraph is performed in.
+export function paletteTone(palette: TonePaletteData | undefined, scene: number, paragraph: number, speaker: string): string | undefined {
+  if (!palette) return undefined;
+  const a = palette.assign[`${scene}:${paragraph}`];
+  return a && a.speaker === speaker ? palette.speakers[speaker]?.tones[a.tone] : undefined;
 }

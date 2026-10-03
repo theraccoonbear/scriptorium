@@ -12,7 +12,9 @@ import type { ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
-import { needsTagging, sceneTags, tagRun } from "./tagging.ts";
+import { needsTagging, paletteRun, sceneTags, tagRun } from "./tagging.ts";
+import type { TonePaletteData } from "./tagging.ts";
+import type { GeminiMode } from "./geminiBatch.ts";
 import { replay } from "./bible.ts";
 import { c } from "./colors.ts";
 import { Accountant, currentAccountant, LEDGER_FILE, setAccountant, usd } from "./usage.ts";
@@ -200,6 +202,9 @@ export interface AudiobookStepOptions {
   geminiVoices?: Record<string, string>;
   kokoroVoices?: { include?: string[]; exclude?: string[] };
   characterVoices?: Record<string, string>;
+  geminiMode?: GeminiMode;
+  paletteSize?: number;  // palette mode: tones per speaker (default 4)
+  geminiRpm?: number;
   force?: boolean;
   config?: StoryConfig;  // for spend accounting (pricing, budget)
 }
@@ -236,6 +241,17 @@ export async function audiobookStep(runDir: string, events: StoryEvent[], opts: 
 
 async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions) {
   events = await tagStep(runDir, events, opts.config);
+  let palette: TonePaletteData | undefined;
+  if (opts.geminiMode === "palette") {
+    const roles = opts.config ? buildRoleProviders(opts.config) : undefined;
+    const role = roles?.tagger ?? roles?.continuist;
+    if (!role) throw new Error('geminiMode "palette" needs a config (for the tagger\'s model) — pass --config');
+    const log = new EventLog(runDir);
+    await log.load();
+    palette = await paletteRun(log, role, opts.paletteSize ?? 4);
+    for (const [speaker, p] of Object.entries(palette.speakers)) console.error(`[scriptorium] ${c.dim(`palette ${speaker}: ${p.tones.join(" · ")}`)}`);
+    events = log.events;
+  }
   const result = await generateAudiobook(events, {
     runDir,
     narratorVoice: opts.narratorVoice,
@@ -247,6 +263,9 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     geminiVoices: opts.geminiVoices,
     kokoroVoices: opts.kokoroVoices,
     characterVoices: opts.characterVoices,
+    geminiMode: opts.geminiMode,
+    palette,
+    geminiRpm: opts.geminiRpm,
     force: opts.force,
     onProgress: (event) => {
       if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);
@@ -257,6 +276,8 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
       else if (event.type === "chunk_done") console.error(`[scriptorium]   ${c.dim(`[${event.speaker}] ${event.text.slice(0, 60)}${event.text.length > 60 ? "..." : ""}`)}`);
       else if (event.type === "segment_done") console.error(`[scriptorium]   ${c.dim(`segment ${event.segmentIndex + 1}/${event.segments} (${event.speaker}) done`)}`);
       else if (event.type === "scene_done") console.error(`[scriptorium] ${c.ok(`scene ${event.index + 1} written`)} ${c.dim(event.path)}`);
+      else if (event.type === "batch_done") console.error(`[scriptorium]   ${c.dim(`batch ${event.batch}/${event.batches}: ${event.speaker}${event.tone ? ` (${event.tone})` : ""}, ${event.lines} line${event.lines === 1 ? "" : "s"}`)}`);
+      else if (event.type === "batch_failed") console.error(`[scriptorium]   ${c.retry(`batch for ${event.speaker} (${event.lines} lines) failed — voicing them one by one: ${event.error.slice(0, 120)}`)}`);
     }
   });
   await writeVoiceMap(result.outDir, result.voices);
