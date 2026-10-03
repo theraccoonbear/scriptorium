@@ -741,6 +741,7 @@ Output ONLY JSON:
 
 export interface SpeakerTagging {
   missing?: number;    // paragraphs the tagger skipped (now narrator)
+  tones?: (number | null)[];  // with palettes: per paragraph, an index into its speaker's palette
   tags: string[];
   delivery: string[];  // per paragraph; "" = a plain read
   newSpeakers: { id: string; name: string; gender?: string; description?: string }[];
@@ -752,18 +753,20 @@ export async function tagSpeakers(role: Role, params: {
   paragraphs: string[];
   cast: { id: string; name: string; voice?: string }[];
   note?: string;  // extra instruction (e.g. a targeted retry)
+  palettes?: Record<string, string[]>;  // speaker id (and "narrator") -> tones to choose from
 }): Promise<RoleOutput<SpeakerTagging>> {
-  const { paragraphs, cast, note } = params;
+  const { paragraphs, cast, note, palettes } = params;
   const castBlock = cast.map((c) => `- ${c.id}: ${c.name}${c.voice ? ` (${c.voice})` : ""}`).join("\n") || "(none)";
   let prompt = [
     `CAST:\n${castBlock}`,
+    palettes ? `TONE PALETTES — for each paragraph also give "tone": the 0-based index of the tone in its speaker's palette that best fits how it is performed:\n${Object.entries(palettes).map(([id, tones]) => `- ${id}: ${tones.map((t, i) => `${i} = ${t}`).join("; ")}`).join("\n")}` : "",
     `SCENE (${paragraphs.length} numbered paragraphs):\n${paragraphs.map((p, n) => `[${n + 1}] ${p}`).join("\n\n")}`,
     note ?? ""
   ].filter(Boolean).join("\n\n");
   let lastProblem = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await callJson(role, { role: "tagger", system: TAGGER_SYSTEM, prompt, ctx: { paragraphs, castIds: cast.map((c) => c.id) } });
-    const tagging = foldKnownSpeakers(toTagging(out.result, paragraphs.length), cast);
+    const tagging = foldKnownSpeakers(toTagging(out.result, paragraphs.length, palettes), cast);
     lastProblem = taggingProblem(tagging, paragraphs.length, cast.map((c) => c.id)) ?? "";
     if (!lastProblem) return { ...out, result: tagging };
     prompt = `${prompt}\n\nYour last reply was unusable: ${lastProblem}. Reply again, with one entry for each of the ${paragraphs.length} paragraphs.`;
@@ -774,16 +777,19 @@ export async function tagSpeakers(role: Role, params: {
 // Entries are keyed by paragraph number, so one skipped paragraph can't shift
 // every label after it. A few missing paragraphs become narration (missing
 // counts them); too many make the tagging unusable.
-function toTagging(raw: unknown, paragraphCount: number): SpeakerTagging {
+function toTagging(raw: unknown, paragraphCount: number, palettes?: Record<string, string[]>): SpeakerTagging {
   const r = (raw ?? {}) as { paragraphs?: unknown; newSpeakers?: unknown };
   const tags: string[] = Array(paragraphCount).fill("");
   const delivery: string[] = Array(paragraphCount).fill("");
+  const tones: (number | null)[] = Array(paragraphCount).fill(null);
   for (const entry of Array.isArray(r.paragraphs) ? r.paragraphs : []) {
-    const e = (entry ?? {}) as { n?: unknown; speaker?: unknown; delivery?: unknown };
+    const e = (entry ?? {}) as { n?: unknown; speaker?: unknown; delivery?: unknown; tone?: unknown };
     const n = Number(e.n);
     if (!Number.isInteger(n) || n < 1 || n > paragraphCount) continue;
     tags[n - 1] = String(e.speaker ?? "").trim().toLowerCase();
     delivery[n - 1] = String(e.delivery ?? "").trim();
+    const t = Number(e.tone);
+    if (e.tone !== undefined && e.tone !== null && Number.isInteger(t)) tones[n - 1] = t;
   }
   const missing = tags.filter((t) => !t).length;
   for (let n = 0; n < paragraphCount; n++) if (!tags[n]) tags[n] = "narrator";
@@ -796,7 +802,9 @@ function toTagging(raw: unknown, paragraphCount: number): SpeakerTagging {
       ...(x.gender === "female" || x.gender === "male" ? { gender: x.gender } : {}),
       ...(x.description ? { description: String(x.description) } : {})
     }));
-  return { tags, delivery, newSpeakers, missing };
+  // A tone only counts if it indexes its speaker's palette.
+  const checkedTones = palettes ? tones.map((t, n) => (t !== null && t >= 0 && t < (palettes[tags[n]]?.length ?? 0) ? t : null)) : undefined;
+  return { tags, delivery, newSpeakers, missing, ...(checkedTones ? { tones: checkedTones } : {}) };
 }
 
 // A "new" speaker who is someone already in the cast (same name, or the name a
@@ -831,37 +839,41 @@ export function taggingProblem(t: SpeakerTagging, paragraphCount: number, castId
   return undefined;
 }
 
-export const PALETTE_SYSTEM = `You reduce one speaker's per-line delivery notes to a small palette of distinct tones — like reducing an image to a few colours. Each tone will direct a voice actor for every line assigned to it.
+export const PALETTE_SYSTEM = `You are casting director and voice director for an audiobook. You read the whole script and give each speaking character a small palette of distinct performance tones — like choosing a few colours that can paint every line they speak. Each line will later be performed in one of its speaker's tones.
 
 Output ONLY JSON:
-{"tones":[string],"assign":[number]}
+{"palettes":{"<character id>":[string]}}
 
-- tones: at most the PALETTE SIZE given, each 2-6 words of performance direction ("low, suppressed fury", "bright, deflecting charm"). Cover the speaker's real range; merge near-duplicates.
-- assign: exactly one entry per numbered note, in order: the 0-based index of the tone closest to that note.`;
+- One entry per character in CAST who speaks in the script (skip anyone who never speaks), using the CAST id.
+- Each palette has at most the PALETTE SIZE given: tones of 2-6 words of performance direction ("low, suppressed fury", "bright, deflecting charm").
+- Draw them from what the character actually says and goes through across the WHOLE script: cover their real range, from their most common register to their most extreme moment. No near-duplicates.`;
 
-export async function buildPalette(role: Role, params: { speaker: string; notes: string[]; size: number; fixedTones?: string[] }): Promise<RoleOutput<{ tones: string[]; assign: number[] }>> {
-  const { speaker, notes, fixedTones } = params;
-  const size = fixedTones ? fixedTones.length : params.size;
+// Designs each speaker's tone palette from the whole script.
+export async function designPalettes(role: Role, params: { script: string; cast: { id: string; name: string; voice?: string }[]; size: number }): Promise<RoleOutput<Record<string, string[]>>> {
+  const { script, cast, size } = params;
   let prompt = [
-    `SPEAKER: ${speaker}`,
-    fixedTones
-      ? `THE PALETTE IS FIXED — return exactly these tones, in this order, and only choose the assignments:\n${fixedTones.map((t, i) => `${i}: ${t}`).join("\n")}`
-      : `PALETTE SIZE: ${size}`,
-    `NOTES (${notes.length}):\n${notes.map((n, i) => `[${i + 1}] ${n}`).join("\n")}`
+    `CAST:\n${cast.map((c) => `- ${c.id}: ${c.name}${c.voice ? ` (${c.voice})` : ""}`).join("\n")}`,
+    `PALETTE SIZE: ${size}`,
+    `SCRIPT:\n${script}`
   ].join("\n\n");
   let problem = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const out = await callJson(role, { role: "palette", system: PALETTE_SYSTEM, prompt, ctx: { notes, size } });
-    const r = (out.result ?? {}) as { tones?: unknown; assign?: unknown };
-    const tones = fixedTones ?? (Array.isArray(r.tones) ? r.tones.map((t) => String(t).trim()).filter(Boolean) : []);
-    const assign = Array.isArray(r.assign) ? r.assign.map(Number) : [];
-    if (tones.length === 0 || tones.length > size) problem = `${tones.length} tones (want 1-${size})`;
-    else if (assign.length !== notes.length) problem = `${assign.length} assignments for ${notes.length} notes`;
-    else if (assign.some((i) => !Number.isInteger(i) || i < 0 || i >= tones.length)) problem = "an assignment points at no tone";
-    else return { ...out, result: { tones: fixedTones ?? tones, assign } };
+    const out = await callJson(role, { role: "palette", system: PALETTE_SYSTEM, prompt, ctx: { castIds: cast.map((c) => c.id), size } });
+    const raw = ((out.result ?? {}) as { palettes?: Record<string, unknown> }).palettes ?? {};
+    const ids = new Set(cast.map((c) => c.id));
+    const palettes: Record<string, string[]> = {};
+    problem = "";
+    for (const [id, tones] of Object.entries(raw)) {
+      const list = Array.isArray(tones) ? tones.map((t) => String(t).trim()).filter(Boolean) : [];
+      if (!ids.has(id)) { problem = `"${id}" is not a CAST id`; break; }
+      if (list.length === 0 || list.length > size) { problem = `${id} has ${list.length} tones (want 1-${size})`; break; }
+      palettes[id] = list;
+    }
+    if (!problem && Object.keys(palettes).length === 0) problem = "no palettes";
+    if (!problem) return { ...out, result: palettes };
     prompt = `${prompt}\n\nYour last reply was unusable: ${problem}. Reply again.`;
   }
-  throw new Error(`tone palette for ${speaker} failed: ${problem}`);
+  throw new Error(`tone palettes failed: ${problem}`);
 }
 
 // Context shared by the two prose gates. Same inputs, different prompts.

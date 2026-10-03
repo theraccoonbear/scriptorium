@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { replay } from "./bible.ts";
 import { planBatches, voiceBatch } from "./geminiBatch.ts";
 import type { BatchPiece, GeminiMode } from "./geminiBatch.ts";
-import { paletteTone } from "./tagging.ts";
+import { paletteToneFor } from "./tagging.ts";
 import type { TonePaletteData } from "./tagging.ts";
 import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
@@ -555,12 +555,12 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
   bible: Bible;
   voiceFor: (speaker: string) => string;
   speak: Speak;
-  palette?: TonePaletteData;
+  toneOf?: (scene: number, paragraph: number, speaker: string) => string | undefined;
   onProgress: (event: AudiobookProgress) => void;
 }): Promise<Map<number, Float32Array>> {
   const pieces: BatchPiece[] = scenePieces(scene).flatMap((x, order) => {
     if (!p.voiceFor(x.speaker).startsWith("gemini:") || !speakable(x.text)) return [];
-    const tone = mode === "palette" && x.paragraph !== undefined ? paletteTone(p.palette, scene.index, x.paragraph, x.speaker) : undefined;
+    const tone = mode === "palette" && x.paragraph !== undefined ? p.toneOf?.(scene.index, x.paragraph, x.speaker) : undefined;
     return [{ order, speaker: x.speaker, text: x.text, ...(tone ? { tone } : {}) }];
   });
   const out = new Map<number, Float32Array>();
@@ -708,6 +708,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     onFallback: (speaker, error) => onProgress({ type: "line_fallback", speaker, error })
   });
   const mode: GeminiMode = usesGemini ? opts.geminiMode ?? "line" : "line";
+  const toneOf = mode === "palette" && opts.palette ? paletteToneFor(events, opts.palette) : undefined;
   // Batched modes voice each scene's Gemini pieces up front; synth hands them out
   // by piece number, and anything a batch couldn't voice goes line by line.
   let batched = new Map<number, Float32Array>();
@@ -720,7 +721,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   for (const scene of todo) {
     const segments = scene.segments.length;
     onProgress({ type: "scene_start", index: scene.index, total: scenes.length, segments });
-    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak, palette: opts.palette, onProgress });
+    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak, toneOf, onProgress });
     const { audio, paragraphStarts } = await synthesizeScene(
       scene,
       voiceFor,

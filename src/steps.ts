@@ -12,7 +12,7 @@ import type { ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
-import { needsTagging, paletteRun, sceneTags, tagRun } from "./tagging.ts";
+import { designRun, needsTagging, sceneTags, tagRun } from "./tagging.ts";
 import type { TonePaletteData } from "./tagging.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 import { replay } from "./bible.ts";
@@ -213,13 +213,13 @@ export interface AudiobookStepOptions {
 // so every story can be voiced. Uses the config's "tagger" role, else its
 // continuist's model (a cheap one). Without a config, untagged scenes are read
 // by the narrator alone.
-async function tagStep(runDir: string, events: StoryEvent[], config?: StoryConfig): Promise<StoryEvent[]> {
+async function tagStep(runDir: string, events: StoryEvent[], config?: StoryConfig, palette?: TonePaletteData): Promise<StoryEvent[]> {
   const bible = replay(events);
   const known = new Set(Object.keys(bible.characters));
   const tags = sceneTags(events);
   const untagged = events.filter((e) => e.type === "scene_committed")
     .map((e) => e.data as SceneCommittedData)
-    .filter((d) => !tags.has(d.index) && needsTagging(d.prose, known));
+    .filter((d) => (!tags.has(d.index) || (palette && tags.get(d.index)!.palette !== palette.source)) && needsTagging(d.prose, known));
   if (untagged.length === 0) return events;
   const roles = config ? buildRoleProviders(config) : undefined;
   const role = roles?.tagger ?? roles?.continuist;
@@ -231,7 +231,7 @@ async function tagStep(runDir: string, events: StoryEvent[], config?: StoryConfi
   await log.load();
   await tagRun(log, role, (index, speakers) => {
     console.error(`[scriptorium] ${c.ok(`scene ${index + 1} tagged`)} ${c.dim(`(speakers: ${speakers.join(", ") || "narrator only"})`)}`);
-  });
+  }, palette);
   return log.events;
 }
 
@@ -240,7 +240,8 @@ export async function audiobookStep(runDir: string, events: StoryEvent[], opts: 
 }
 
 async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions) {
-  events = await tagStep(runDir, events, opts.config);
+  // Palette mode: design each speaker's tones from the whole script first, so
+  // tagging can choose a tone for every line from them.
   let palette: TonePaletteData | undefined;
   if (opts.geminiMode === "palette") {
     const roles = opts.config ? buildRoleProviders(opts.config) : undefined;
@@ -248,10 +249,11 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     if (!role) throw new Error('geminiMode "palette" needs a config (for the tagger\'s model) — pass --config');
     const log = new EventLog(runDir);
     await log.load();
-    palette = await paletteRun(log, role, opts.paletteSize ?? 4);
+    palette = await designRun(log, role, opts.paletteSize ?? 4);
     for (const [speaker, p] of Object.entries(palette.speakers)) console.error(`[scriptorium] ${c.dim(`palette ${speaker}: ${p.tones.join(" · ")}`)}`);
     events = log.events;
   }
+  events = await tagStep(runDir, events, opts.config, palette);
   const result = await generateAudiobook(events, {
     runDir,
     narratorVoice: opts.narratorVoice,

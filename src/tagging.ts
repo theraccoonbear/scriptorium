@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { replay } from "./bible.ts";
-import { buildPalette, sameSpeaker, tagSpeakers } from "./roles.ts";
+import { designPalettes, sameSpeaker, tagSpeakers } from "./roles.ts";
 import type { EventLog } from "./eventlog.ts";
 import type { Character, Role, SceneCommittedData, StoryEvent } from "./types.ts";
 
@@ -15,6 +15,8 @@ export const TAGGER_VERSION = 2;
 
 export interface SceneTagsData {
   version?: number;
+  tones?: (number | null)[];  // palette mode: per paragraph, an index into its speaker's palette
+  palette?: string;            // the palette (its source hash) the tones index
   checks?: string[];  // what the quote heuristics corrected, e.g. "¶12: corin → nell (attributed)"
   index: number;
   source: string;  // hash of the committed prose these tags were made for
@@ -223,7 +225,8 @@ export function taggedCharacters(events: StoryEvent[], bibleIds: ReadonlySet<str
 
 // Tags every committed scene written without tags (and not tagged yet), appending
 // a scene_tags event for each. Returns the scenes tagged.
-export async function tagRun(log: EventLog, role: Role, onScene: (index: number, speakers: string[]) => void = () => {}): Promise<number[]> {
+export async function tagRun(log: EventLog, role: Role, onScene: (index: number, speakers: string[]) => void = () => {}, palette?: TonePaletteData): Promise<number[]> {
+  const palettes = palette ? Object.fromEntries(Object.entries(palette.speakers).map(([id, p]) => [id, p.tones])) : undefined;
   const done = sceneTags(log.events);
   const tagged: number[] = [];
   const committed = log.events.filter((e) => e.type === "scene_committed");
@@ -232,11 +235,15 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
     // The cast as it stood once this scene was committed, plus speakers already found.
     const bible = replay(log.events.slice(0, log.events.indexOf(e) + 1));
     const known = new Set(Object.keys(bible.characters));
-    if (done.has(d.index) || !needsTagging(d.prose, known)) continue;
+    // Tagged already — unless palette mode needs tones from this palette.
+    const prior = done.get(d.index);
+    if ((prior && (!palette || prior.palette === palette.source)) || !needsTagging(d.prose, known)) continue;
     const extra = taggedCharacters(log.events, known);
     const cast = [...Object.values(bible.characters), ...Object.values(extra)].map((c) => ({ id: c.id, name: c.name, voice: c.voice }));
     const paragraphs = proseParagraphs(d.prose);
-    const out = await tagSpeakers(role, { paragraphs, cast });
+    const out = await tagSpeakers(role, { paragraphs, cast, ...(palettes ? { palettes } : {}) });
+    const tones = out.result.tones ? [...out.result.tones] : undefined;
+    const tonedFor = [...out.result.tags];  // the speaker each tone was chosen for
     if (out.result.missing) console.error(`[scriptorium]   tagger skipped ${out.result.missing} paragraph${out.result.missing === 1 ? "" : "s"} of scene ${d.index + 1} — read by the narrator`);
     const genders = new Map([...Object.values(bible.characters), ...Object.values(extra)].map((c) => [c.id, c.gender]));
     const checkCast = () => [...cast.map((c) => ({ ...c, gender: genders.get(c.id) })), ...out.result.newSpeakers];
@@ -247,12 +254,14 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
       const again = await tagSpeakers(role, {
         paragraphs: ask.map((x) => paragraphs[x.paragraph]),
         cast: [...cast, ...out.result.newSpeakers.map((sp) => ({ id: sp.id, name: sp.name, voice: sp.description }))],
+        ...(palettes ? { palettes } : {}),
         note: `Look again at these paragraphs; a check doubted your first answer:\n${ask.map((x, k) => `- [${k + 1}] ${x.reason}`).join("\n")}\nA paragraph with a spoken line in quotation marks is never narrator. If the speaker isn't in CAST, add them to newSpeakers.`
       });
       const retagged = [...checked.tags];
       ask.forEach((x, k) => {
         const tag = again.result.tags[k];
         if (tag !== retagged[x.paragraph]) { checked.checks.push(`¶${x.paragraph + 1}: ${retagged[x.paragraph]} → ${tag} (asked again: ${x.reason})`); retagged[x.paragraph] = tag; }
+        if (tones) { tones[x.paragraph] = again.result.tones?.[k] ?? null; tonedFor[x.paragraph] = tag; }
       });
       for (const sp of again.result.newSpeakers) if (!out.result.newSpeakers.some((y) => y.id === sp.id)) out.result.newSpeakers.push(sp);
       const before = checked.checks;
@@ -263,7 +272,13 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
     console.error(`[scriptorium]   scene ${d.index + 1}: ${paragraphs.length} paragraphs, ${checked.dialogue} with dialogue, ${checked.checks.length} corrected by quote checks`);
     for (const x of stillNarrator) console.error(`[scriptorium]   ✗ scene ${d.index + 1} ¶${x.paragraph + 1}: dialogue still tagged narrator — the narrator will read the line: ${paragraphs[x.paragraph].slice(0, 80)}`);
     for (const ch of checked.checks) console.error(`[scriptorium]     ${ch}`);
-    const data: SceneTagsData = { version: TAGGER_VERSION, index: d.index, source: proseHash(d.prose), tags: checked.tags, delivery: out.result.delivery, speakers: out.result.newSpeakers, ...(checked.checks.length ? { checks: checked.checks } : {}) };
+    // A tone is kept only while it indexes the final speaker's palette (a quote check may have changed the speaker).
+    const finalTones = tones && palettes ? checked.tags.map((tag, n) => (tag === tonedFor[n] && tones[n] !== null && tones[n]! < (palettes[tag]?.length ?? 0) ? tones[n] : null)) : undefined;
+    const data: SceneTagsData = {
+      version: TAGGER_VERSION, index: d.index, source: proseHash(d.prose), tags: checked.tags, delivery: out.result.delivery, speakers: out.result.newSpeakers,
+      ...(checked.checks.length ? { checks: checked.checks } : {}),
+      ...(finalTones && palette ? { tones: finalTones, palette: palette.source } : {})
+    };
     await log.append("scene_tags", data);
     tagged.push(d.index);
     onScene(d.index, [...new Set(checked.tags.filter((t) => t !== "narrator"))]);
@@ -283,68 +298,57 @@ export const NARRATOR_TONES = [
 ];
 
 // Bumped when palette logic changes, so palettes made by older logic are remade.
-const PALETTE_VERSION = 2;
+const PALETTE_VERSION = 3;
 
 export interface TonePaletteData {
+  version?: number;
   size: number;
-  source: string;  // hash of the notes the palette was made from
-  speakers: Record<string, { tones: string[] }>;
-  assign: Record<string, { speaker: string; tone: number }>;  // "scene:paragraph" -> its speaker and their tone index
+  source: string;  // hash of what it was designed from (script, cast, size)
+  speakers: Record<string, { tones: string[] }>;  // includes "narrator" (NARRATOR_TONES)
 }
 
-// Every (speaker, scene, paragraph, note) the tags give, with speaker aliases applied.
-function deliveryNotes(events: StoryEvent[]): { speaker: string; key: string; note: string }[] {
-  const aliases = speakerAliases(events);
-  const out: { speaker: string; key: string; note: string }[] = [];
-  for (const d of [...sceneTags(events).values()].sort((a, b) => a.index - b.index)) {
-    d.tags.forEach((tag, p) => {
-      const note = d.delivery[p]?.trim();
-      if (note) out.push({ speaker: aliases.get(tag) ?? tag, key: `${d.index}:${p}`, note });
-    });
-  }
-  return out;
+function paletteInputs(events: StoryEvent[], size: number) {
+  const committed = events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData).sort((a, b) => a.index - b.index);
+  const bible = replay(events);
+  const known = new Set(Object.keys(bible.characters));
+  const cast = [...Object.values(bible.characters), ...Object.values(taggedCharacters(events, known))].map((c) => ({ id: c.id, name: c.name, voice: c.voice }));
+  const script = committed.map((d) => `=== SCENE ${d.index + 1} ===\n${d.prose}`).join("\n\n");
+  const source = proseHash(JSON.stringify({ version: PALETTE_VERSION, size, script, cast: cast.map((c) => c.id) }));
+  return { cast, script, source };
 }
 
 export function latestPalette(events: StoryEvent[], size: number): TonePaletteData | undefined {
-  const source = proseHash(JSON.stringify({ version: PALETTE_VERSION, size, notes: deliveryNotes(events) }));
+  const { source } = paletteInputs(events, size);
   const e = [...events].reverse().find((x) => x.type === "tone_palette" && (x.data as TonePaletteData).source === source);
   return e?.data as TonePaletteData | undefined;
 }
 
-// Reduces each speaker's delivery notes to at most `size` tones (once per set of
-// notes). A speaker with few enough distinct notes keeps them as they are.
-export async function paletteRun(log: EventLog, role: Role, size: number): Promise<TonePaletteData> {
+// Designs every speaker's tone palette from the whole script (once per script
+// and cast); the narrator always reads in NARRATOR_TONES.
+export async function designRun(log: EventLog, role: Role, size: number): Promise<TonePaletteData> {
   const existing = latestPalette(log.events, size);
   if (existing) return existing;
-  const notes = deliveryNotes(log.events);
-  const data: TonePaletteData = { size, source: proseHash(JSON.stringify({ version: PALETTE_VERSION, size, notes })), speakers: {}, assign: {} };
-  for (const speaker of [...new Set(notes.map((n) => n.speaker))]) {
-    const mine = notes.filter((n) => n.speaker === speaker);
-    const distinct = [...new Set(mine.map((n) => n.note))];
-    let tones: string[];
-    let index: (note: string, i: number) => number;
-    if (speaker === "narrator") {
-      const out = await buildPalette(role, { speaker, notes: distinct, size, fixedTones: NARRATOR_TONES });
-      tones = NARRATOR_TONES;
-      index = (note) => out.result.assign[distinct.indexOf(note)];
-    } else if (distinct.length <= size) {
-      tones = distinct;
-      index = (note) => distinct.indexOf(note);
-    } else {
-      const out = await buildPalette(role, { speaker, notes: distinct, size });
-      tones = out.result.tones;
-      index = (note) => out.result.assign[distinct.indexOf(note)];
-    }
-    data.speakers[speaker] = { tones };
-    mine.forEach((n, i) => { data.assign[n.key] = { speaker, tone: index(n.note, i) }; });
-  }
+  const { cast, script, source } = paletteInputs(log.events, size);
+  const out = await designPalettes(role, { script, cast, size });
+  const speakers: Record<string, { tones: string[] }> = { narrator: { tones: NARRATOR_TONES } };
+  for (const [id, tones] of Object.entries(out.result)) speakers[id] = { tones };
+  const data: TonePaletteData = { version: PALETTE_VERSION, size, source, speakers };
   await log.append("tone_palette", data);
   return data;
 }
 
-// The palette tone a speaker's piece of a paragraph is performed in.
-export function paletteTone(palette: TonePaletteData | undefined, scene: number, paragraph: number, speaker: string): string | undefined {
-  if (!palette) return undefined;
-  const a = palette.assign[`${scene}:${paragraph}`];
-  return a && a.speaker === speaker ? palette.speakers[speaker]?.tones[a.tone] : undefined;
+// The palette tone each piece is performed in: (scene, paragraph, speaker) -> tone,
+// from scene tags made with this palette. A piece whose speaker isn't the
+// paragraph's tagged speaker (narration around a quote) has no tone of its own.
+export function paletteToneFor(events: StoryEvent[], palette: TonePaletteData): (scene: number, paragraph: number, speaker: string) => string | undefined {
+  const tags = sceneTags(events);
+  const aliases = speakerAliases(events);
+  return (scene, paragraph, speaker) => {
+    const t = tags.get(scene);
+    if (!t || t.palette !== palette.source || !t.tones) return undefined;
+    const tagged = aliases.get(t.tags[paragraph]) ?? t.tags[paragraph];
+    const i = t.tones[paragraph];
+    if (tagged !== speaker || i === null || i === undefined) return speaker === "narrator" ? palette.speakers.narrator?.tones[0] : undefined;
+    return palette.speakers[speaker]?.tones[i];
+  };
 }

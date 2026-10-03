@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BATCH_PAUSE_NOTE, batchPrompt, planBatches, splitOnSilences, splitProblem, voiceBatch } from "../src/geminiBatch.ts";
 import { parseScene, scenePieces, voiceSceneBatches } from "../src/audiobook.ts";
-import { paletteRun, paletteTone } from "../src/tagging.ts";
+import { designRun, paletteToneFor, tagRun, sceneTags, proseHash, NARRATOR_TONES } from "../src/tagging.ts";
 import { EventLog } from "../src/eventlog.ts";
 import { emptyBible } from "../src/bible.ts";
 import type { Role } from "../src/types.ts";
@@ -85,8 +85,9 @@ test("a whole scene is voiced in batches: one request per speaker (and tone), ev
     const lines = prompt.split("#### TRANSCRIPT\n")[1].split("\n\n");
     return { samples: audio(lines.flatMap((_, i) => (i ? [{ silence: 2 }, { sound: 1 }] : [{ sound: 1 }]))), sampleRate: RATE };
   };
-  const palette = { size: 4, source: "x", speakers: { nell: { tones: ["curt"] } }, assign: { "0:3": { speaker: "nell", tone: 0 } } };
-  const out = await voiceSceneBatches(scene, "palette", { bible, voiceFor: (s) => `gemini:${s === "nell" ? "Kore" : "Charon"}`, speak, palette, onProgress: () => {} });
+  // Nell's last paragraph (index 3) is curt; everything else is untoned.
+  const toneOf = (_scene: number, paragraph: number, speaker: string) => (speaker === "nell" && paragraph === 3 ? "curt" : undefined);
+  const out = await voiceSceneBatches(scene, "palette", { bible, voiceFor: (s) => `gemini:${s === "nell" ? "Kore" : "Charon"}`, speak, toneOf, onProgress: () => {} });
   const all = scenePieces(scene);
   assert.equal(out.size, all.length, "every piece has audio");
   // narrator (4 pieces), nell untoned (1), nell curt (2), edrick (1) = 4 requests for 8 pieces
@@ -95,38 +96,43 @@ test("a whole scene is voiced in batches: one request per speaker (and tone), ev
   assert.ok(prompts.every((p) => p.includes(BATCH_PAUSE_NOTE)));
 });
 
-test("tone palettes: few notes are kept as they are; many are reduced by the model; tones belong to their speaker", async () => {
+test("palettes are designed from the whole script; tagging picks each line's tone from them", async () => {
   const log = new EventLog(await mkdtemp(join(tmpdir(), "scriptorium-pal-")));
   await log.load();
-  const prose = ['"A."', '"B."', '"C."', '"D."'].join("\n\n");
-  const { proseHash } = await import("../src/tagging.ts");
-  await log.append("scene_committed", { index: 0, prose, bible: { characters: { nell: { id: "nell", name: "Nell" }, corin: { id: "corin", name: "Corin" } } } });
-  await log.append("scene_tags", { version: 2, index: 0, source: proseHash(prose), tags: ["nell", "nell", "nell", "corin"], delivery: ["curt", "furious", "pleading", "bright"], speakers: [] });
-  const calls: string[] = [];
-  const role: Role = { provider: { complete: async (req) => { calls.push(req.prompt); return JSON.stringify({ tones: ["hard", "soft"], assign: [0, 0, 1] }); } } };
-  const pal = await paletteRun(log, role, 2);
-  assert.equal(calls.length, 1, "only Nell (3 notes > 2) needed the model");
-  assert.deepEqual(pal.speakers, { nell: { tones: ["hard", "soft"] }, corin: { tones: ["bright"] } });
-  assert.equal(paletteTone(pal, 0, 2, "nell"), "soft");
-  assert.equal(paletteTone(pal, 0, 2, "narrator"), undefined, "narration in Nell's paragraph doesn't take her tone");
-  await paletteRun(log, role, 2);
-  assert.equal(calls.length, 1, "made once per set of notes");
-});
+  const scene1 = ['"Go home," Corin said.', '"Not without you," Nell said.', "The fire hissed."].join("\n\n");
+  const scene2 = ['"Please," Nell said.'].join("\n\n");
+  const cast = { characters: { nell: { id: "nell", name: "Nell", traits: "", goal: "", voice: "clipped", status: "active" }, corin: { id: "corin", name: "Corin", traits: "", goal: "", voice: "light", status: "active" } } };
+  await log.append("scene_committed", { index: 0, prose: scene1, bible: cast });
+  await log.append("scene_committed", { index: 1, prose: scene2 });
+  const prompts: Record<string, string[]> = { palette: [], tagger: [] };
+  const role: Role = { provider: { complete: async (req) => {
+    prompts[req.role].push(req.prompt);
+    if (req.role === "palette") return JSON.stringify({ palettes: { nell: ["low, furious", "pleading"], corin: ["bright, deflecting"] } });
+    const n = (req.ctx as { paragraphs: string[] }).paragraphs.length;
+    // Scene 1: Corin (tone 0), Nell (tone 0), narration tagged nell by mistake (tone 1). Scene 2: Nell pleading.
+    return JSON.stringify({ paragraphs: n === 3
+      ? [{ n: 1, speaker: "corin", tone: 0 }, { n: 2, speaker: "nell", tone: 0 }, { n: 3, speaker: "nell", tone: 1 }]
+      : [{ n: 1, speaker: "nell", tone: 1 }], newSpeakers: [] });
+  } } };
+  const palette = await designRun(log, role, 2);
+  assert.match(prompts.palette[0], /=== SCENE 1 ===[\s\S]*=== SCENE 2 ===/, "the whole script, in one call");
+  assert.deepEqual(palette.speakers, { narrator: { tones: NARRATOR_TONES }, nell: { tones: ["low, furious", "pleading"] }, corin: { tones: ["bright, deflecting"] } });
+  assert.equal(await designRun(log, role, 2), palette, "designed once per script");
+  assert.equal(prompts.palette.length, 1);
 
-test("the narrator's palette is a fixed list; its notes are only assigned to it", async () => {
-  const { NARRATOR_TONES } = await import("../src/tagging.ts");
-  const log = new EventLog(await mkdtemp(join(tmpdir(), "scriptorium-pal-")));
-  await log.load();
-  const prose = ["The room went still.", "Nobody answered."].join("\n\n");
-  const { proseHash } = await import("../src/tagging.ts");
-  await log.append("scene_committed", { index: 0, prose, bible: { characters: {} } });
-  await log.append("scene_tags", { version: 2, index: 0, source: proseHash(prose), tags: ["narrator", "narrator"], delivery: ["tense", "silence, which is answer enough"], speakers: [] });
-  const prompts: string[] = [];
-  // The model tries to invent tones anyway; only its assignments are used.
-  const role: Role = { provider: { complete: async (req) => { prompts.push(req.prompt); return JSON.stringify({ tones: ["made up"], assign: [1, 0] }); } } };
-  const pal = await paletteRun(log, role, 4);
-  assert.deepEqual(pal.speakers.narrator.tones, NARRATOR_TONES);
-  assert.match(prompts[0], /THE PALETTE IS FIXED/);
-  assert.equal(paletteTone(pal, 0, 0, "narrator"), "tense and quickening");
-  assert.equal(paletteTone(pal, 0, 1, "narrator"), "neutral, measured storytelling");
+  await tagRun(log, role, () => {}, palette);
+  assert.match(prompts.tagger[0], /TONE PALETTES[\s\S]*- nell: 0 = low, furious; 1 = pleading/);
+  const tone = paletteToneFor(log.events, palette);
+  assert.equal(tone(0, 0, "corin"), "bright, deflecting");
+  assert.equal(tone(0, 1, "nell"), "low, furious");
+  assert.equal(tone(1, 0, "nell"), "pleading");
+  assert.equal(tone(0, 2, "nell"), undefined, "the quote check made the third paragraph narrator, so Nell's tone index is dropped");
+  assert.equal(tone(0, 2, "narrator"), NARRATOR_TONES[0], "narration reads in the narrator's neutral tone");
+  assert.equal(tone(0, 1, "narrator"), NARRATOR_TONES[0], "narration around Nell's quote doesn't take her tone");
+  assert.equal(sceneTags(log.events).get(0)!.palette, palette.source);
+
+  // A scene tagged without this palette is tagged again for it.
+  await log.append("scene_tags", { version: 2, index: 1, source: proseHash(scene2), tags: ["nell"], delivery: [""], speakers: [] });
+  await tagRun(log, role, () => {}, palette);
+  assert.equal(paletteToneFor(log.events, palette)(1, 0, "nell"), "pleading");
 });

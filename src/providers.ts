@@ -73,10 +73,9 @@ export class MockProvider {
       case "editor":
         return ctx.prose ?? "";
       case "palette": {
-        // Each note keeps its own tone, up to the palette size; the rest share the last.
-        const notes: string[] = ctx.notes ?? [];
-        const tones = notes.slice(0, ctx.size ?? 4);
-        return JSON.stringify({ tones, assign: notes.map((_: string, i: number) => Math.min(i, tones.length - 1)) });
+        // Two tones for every cast member.
+        const ids: string[] = ctx.castIds ?? [];
+        return JSON.stringify({ palettes: Object.fromEntries(ids.map((id) => [id, ["plain", "intense"].slice(0, ctx.size ?? 2)])) });
       }
       case "tagger": {
         // A paragraph with a quotation is the first cast member's; the rest is narration.
