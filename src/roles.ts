@@ -751,13 +751,15 @@ export interface SpeakerTagging {
 export async function tagSpeakers(role: Role, params: {
   paragraphs: string[];
   cast: { id: string; name: string; voice?: string }[];
+  note?: string;  // extra instruction (e.g. a targeted retry)
 }): Promise<RoleOutput<SpeakerTagging>> {
-  const { paragraphs, cast } = params;
+  const { paragraphs, cast, note } = params;
   const castBlock = cast.map((c) => `- ${c.id}: ${c.name}${c.voice ? ` (${c.voice})` : ""}`).join("\n") || "(none)";
   let prompt = [
     `CAST:\n${castBlock}`,
-    `SCENE (${paragraphs.length} numbered paragraphs):\n${paragraphs.map((p, n) => `[${n + 1}] ${p}`).join("\n\n")}`
-  ].join("\n\n");
+    `SCENE (${paragraphs.length} numbered paragraphs):\n${paragraphs.map((p, n) => `[${n + 1}] ${p}`).join("\n\n")}`,
+    note ?? ""
+  ].filter(Boolean).join("\n\n");
   let lastProblem = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await callJson(role, { role: "tagger", system: TAGGER_SYSTEM, prompt, ctx: { paragraphs, castIds: cast.map((c) => c.id) } });

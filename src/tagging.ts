@@ -9,7 +9,12 @@ import type { Character, Role, SceneCommittedData, StoryEvent } from "./types.ts
 // how). The labels live in "scene_tags" events beside the committed prose,
 // which is never changed — story.md stays exactly what the writer wrote.
 
+// Bumped when tagging logic changes, so scenes tagged by an older version are
+// tagged again. 2: quote checks, targeted retry for dialogue tagged narrator.
+export const TAGGER_VERSION = 2;
+
 export interface SceneTagsData {
+  version?: number;
   checks?: string[];  // what the quote heuristics corrected, e.g. "¶12: corin → nell (attributed)"
   index: number;
   source: string;  // hash of the committed prose these tags were made for
@@ -86,21 +91,26 @@ export function attributedSpeaker(narration: string, cast: { id: string; name: s
   const found = new Set<string>();
   for (const [word, ids] of owners) {
     if (ids.size !== 1) continue;  // "Ashby" names two people
-    const re = new RegExp(`\\b${word}\\s+(?:${SPEECH_VERBS})\\b|\\b(?:${SPEECH_VERBS})\\s+${word}\\b`, "u");
+    // "Nell said", "said Nell", and "Hesketh, behind the bar, said" (the same clause, no sentence break between).
+    const re = new RegExp(`\\b${word}\\b[^.!?;"\u201C\u201D]{0,40}?\\b(?:${SPEECH_VERBS})\\b|\\b(?:${SPEECH_VERBS})\\s+${word}\\b`, "u");
     if (re.test(narration)) found.add([...ids][0]);
   }
   return found.size === 1 ? [...found][0] : undefined;
 }
 
-// Applies the quote heuristics to a tagging: no quotes means narrator; an
-// explicit attribution wins; dialogue tagged narrator is rescued by attribution.
-export function checkTags(paragraphs: string[], tags: string[], cast: { id: string; name: string; gender?: string }[]): { tags: string[]; checks: string[]; dialogue: number; unresolved: number } {
+// The quote checks. Code detects, the model decides: the only label code sets
+// is the structural one (no spoken quote means narrator). Everything else —
+// dialogue tagged narrator, a tag that disagrees with an explicit "Nell said",
+// "she said" on a man's line — is a doubt, sent back to the tagger with the reason.
+export interface TagDoubt { paragraph: number; reason: string }
+
+export function checkTags(paragraphs: string[], tags: string[], cast: { id: string; name: string; gender?: string }[]): { tags: string[]; checks: string[]; doubts: TagDoubt[]; dialogue: number } {
   const genderOf = new Map(cast.map((c) => [c.id, c.gender]));
   const pronounRe = new RegExp(`\\b(she|he)\\s+(?:${SPEECH_VERBS})\\b|\\b(?:${SPEECH_VERBS})\\s+(she|he)\\b`, "i");
   const out = [...tags];
   const checks: string[] = [];
+  const doubts: TagDoubt[] = [];
   let dialogue = 0;
-  let unresolved = 0;
   paragraphs.forEach((p, n) => {
     const { lines, narration } = splitSpeech(p);
     const tag = out[n];
@@ -109,16 +119,34 @@ export function checkTags(paragraphs: string[], tags: string[], cast: { id: stri
       return;
     }
     dialogue++;
+    if (tag === "narrator") { doubts.push({ paragraph: n, reason: "it contains a spoken line in quotation marks, so it is not narrator" }); return; }
     const said = attributedSpeaker(narration, cast);
-    if (said && said !== tag) { checks.push(`¶${n + 1}: ${tag} → ${said} (attributed)`); out[n] = said; }
-    else if (!said && tag === "narrator") unresolved++;
-    // "she said" on a man's line (or "he said" on a woman's) is flagged, not fixed: a pronoun can't say which woman.
+    if (said && said !== tag) doubts.push({ paragraph: n, reason: `you said ${tag}, but the narration seems to attribute the line to ${said}` });
     const m = narration.match(pronounRe);
     const pronoun = (m?.[1] ?? m?.[2])?.toLowerCase();
-    const gender = genderOf.get(out[n]);
-    if (pronoun && gender && (pronoun === "she") !== (gender === "female")) checks.push(`¶${n + 1}: "${pronoun} said" but tagged ${out[n]} (${gender}) — check`);
+    const gender = genderOf.get(tag);
+    if (pronoun && gender && (pronoun === "she") !== (gender === "female")) doubts.push({ paragraph: n, reason: `the narration says "${pronoun} said", but you tagged ${tag} (${gender})` });
   });
-  return { tags: out, checks, dialogue, unresolved };
+  return { tags: out, checks, doubts, dialogue };
+}
+
+// What the narrator must never read: a quotation mark in a narrator piece is
+// someone's line in the wrong voice. Returns "scene N ¶M: text" for each.
+export function voicingProblems(scenes: { index: number; segments: { speaker: string; text: string; paragraphs: number[] }[] }[]): string[] {
+  const out: string[] = [];
+  for (const sc of scenes) {
+    for (const seg of sc.segments) {
+      if (seg.speaker !== "narrator") continue;
+      const pieces = seg.text.split("\n\n");
+      pieces.forEach((text, k) => {
+        if (splitSpeech(text).lines.length > 0) {
+          const p = seg.paragraphs[pieces.length === seg.paragraphs.length ? k : 0];
+          out.push(`scene ${sc.index + 1} ¶${(p ?? 0) + 1}: ${text.slice(0, 90)}`);
+        }
+      });
+    }
+  }
+  return out;
 }
 
 // The scene as voiced: one line per spoken piece, who reads it, and how.
@@ -148,7 +176,7 @@ export function sceneTags(events: StoryEvent[]): Map<number, SceneTagsData> {
     if (e.type !== "scene_tags") continue;
     const d = e.data as SceneTagsData;
     const p = prose.get(d.index);
-    if (p !== undefined && proseHash(p) === d.source) out.set(d.index, d);
+    if (p !== undefined && proseHash(p) === d.source && (d.version ?? 1) >= TAGGER_VERSION) out.set(d.index, d);
   }
   return out;
 }
@@ -211,10 +239,31 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
     const out = await tagSpeakers(role, { paragraphs, cast });
     if (out.result.missing) console.error(`[scriptorium]   tagger skipped ${out.result.missing} paragraph${out.result.missing === 1 ? "" : "s"} of scene ${d.index + 1} — read by the narrator`);
     const genders = new Map([...Object.values(bible.characters), ...Object.values(extra)].map((c) => [c.id, c.gender]));
-    const checked = checkTags(paragraphs, out.result.tags, [...cast.map((c) => ({ ...c, gender: genders.get(c.id) })), ...out.result.newSpeakers]);
-    console.error(`[scriptorium]   scene ${d.index + 1}: ${paragraphs.length} paragraphs, ${checked.dialogue} with dialogue, ${checked.checks.length} corrected by quote checks${checked.unresolved ? `, ${checked.unresolved} with dialogue left to the narrator` : ""}`);
+    const checkCast = () => [...cast.map((c) => ({ ...c, gender: genders.get(c.id) })), ...out.result.newSpeakers];
+    let checked = checkTags(paragraphs, out.result.tags, checkCast());
+    // Doubtful paragraphs go back to the tagger, each with the reason; it decides.
+    if (checked.doubts.length > 0) {
+      const ask = [...new Map(checked.doubts.map((x) => [x.paragraph, x])).values()];
+      const again = await tagSpeakers(role, {
+        paragraphs: ask.map((x) => paragraphs[x.paragraph]),
+        cast: [...cast, ...out.result.newSpeakers.map((sp) => ({ id: sp.id, name: sp.name, voice: sp.description }))],
+        note: `Look again at these paragraphs; a check doubted your first answer:\n${ask.map((x, k) => `- [${k + 1}] ${x.reason}`).join("\n")}\nA paragraph with a spoken line in quotation marks is never narrator. If the speaker isn't in CAST, add them to newSpeakers.`
+      });
+      const retagged = [...checked.tags];
+      ask.forEach((x, k) => {
+        const tag = again.result.tags[k];
+        if (tag !== retagged[x.paragraph]) { checked.checks.push(`¶${x.paragraph + 1}: ${retagged[x.paragraph]} → ${tag} (asked again: ${x.reason})`); retagged[x.paragraph] = tag; }
+      });
+      for (const sp of again.result.newSpeakers) if (!out.result.newSpeakers.some((y) => y.id === sp.id)) out.result.newSpeakers.push(sp);
+      const before = checked.checks;
+      checked = checkTags(paragraphs, retagged, checkCast());
+      checked.checks = [...before, ...checked.checks];
+    }
+    const stillNarrator = checked.doubts.filter((x) => checked.tags[x.paragraph] === "narrator");
+    console.error(`[scriptorium]   scene ${d.index + 1}: ${paragraphs.length} paragraphs, ${checked.dialogue} with dialogue, ${checked.checks.length} corrected by quote checks`);
+    for (const x of stillNarrator) console.error(`[scriptorium]   ✗ scene ${d.index + 1} ¶${x.paragraph + 1}: dialogue still tagged narrator — the narrator will read the line: ${paragraphs[x.paragraph].slice(0, 80)}`);
     for (const ch of checked.checks) console.error(`[scriptorium]     ${ch}`);
-    const data: SceneTagsData = { index: d.index, source: proseHash(d.prose), tags: checked.tags, delivery: out.result.delivery, speakers: out.result.newSpeakers, ...(checked.checks.length ? { checks: checked.checks } : {}) };
+    const data: SceneTagsData = { version: TAGGER_VERSION, index: d.index, source: proseHash(d.prose), tags: checked.tags, delivery: out.result.delivery, speakers: out.result.newSpeakers, ...(checked.checks.length ? { checks: checked.checks } : {}) };
     await log.append("scene_tags", data);
     tagged.push(d.index);
     onScene(d.index, [...new Set(out.result.tags.filter((t) => t !== "narrator"))]);

@@ -9,7 +9,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { replay } from "./bible.ts";
-import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters } from "./tagging.ts";
+import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
 import type { Speak } from "./geminiTts.ts";
 import { isBudgetError } from "./usage.ts";
@@ -536,6 +536,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   await mkdir(outDir, { recursive: true });
   // What will be voiced, readable: who reads each piece, and how.
   await writeFile(`${outDir}/script.md`, renderScript(scenes), "utf8");
+  for (const problem of voicingProblems(scenes)) console.error(`[scriptorium] ✗ narrator would read a spoken line — ${problem}`);
 
   const genders: Record<string, string | undefined> = {};
   for (const ch of Object.values(bible.characters)) genders[ch.id] = ch.gender;
