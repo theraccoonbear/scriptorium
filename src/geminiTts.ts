@@ -82,12 +82,38 @@ export interface GeminiTtsSpec {
   model?: string;
   apiKeyEnv?: string;
   timeoutMs?: number;
+  retries?: number;  // immediate HTTP retries per call (default 2)
+  minIntervalMs?: number;  // least time between requests (pacing for a requests-per-minute cap)
 }
 
 export type Speak = (prompt: string, voice: string) => Promise<{ samples: Float32Array; sampleRate: number }>;
 
-export function geminiSpeaker(spec: GeminiTtsSpec = {}): Speak {
+// Gemini TTS has a low requests-per-minute cap. A rate-limited line waits and
+// tries again (up to about two minutes) instead of falling back to Kokoro.
+const RATE_LIMIT_WAITS_MS = [15000, 20000, 30000, 30000, 30000];
+
+export function geminiSpeaker(spec: GeminiTtsSpec = {}, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Speak {
   const model = spec.model ?? DEFAULT_GEMINI_TTS_MODEL;
+  const call = geminiCall(spec, model);
+  let last = 0;
+  return async (prompt, voice) => {
+    for (let wait = 0; ; wait++) {
+      const gap = (spec.minIntervalMs ?? 0) - (Date.now() - last);
+      if (gap > 0) await sleep(gap);
+      last = Date.now();
+      try {
+        return await call(prompt, voice);
+      } catch (err) {
+        const limited = /\b429\b|RESOURCE_EXHAUSTED/.test(err instanceof Error ? err.message : String(err));
+        if (!limited || wait >= RATE_LIMIT_WAITS_MS.length) throw err;
+        console.error(`[scriptorium]   Gemini TTS rate limit — waiting ${RATE_LIMIT_WAITS_MS[wait] / 1000}s`);
+        await sleep(RATE_LIMIT_WAITS_MS[wait]);
+      }
+    }
+  };
+}
+
+function geminiCall(spec: GeminiTtsSpec, model: string): Speak {
   return async (prompt, voice) => {
     const data = await postJson(
       `${GEMINI_BASE}/models/${model}:generateContent`,
@@ -96,7 +122,7 @@ export function geminiSpeaker(spec: GeminiTtsSpec = {}): Speak {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
       },
-      { type: "gemini", model, role: "tts", timeoutMs: spec.timeoutMs ?? 60000, retries: 2 }
+      { type: "gemini", model, role: "tts", timeoutMs: spec.timeoutMs ?? 60000, retries: spec.retries ?? 1 }
     );
     const part = (data.candidates?.[0]?.content?.parts ?? []).find((p: { inlineData?: unknown }) => p.inlineData);
     if (!part) throw new Error(`Gemini TTS returned no audio (${data.candidates?.[0]?.finishReason ?? data.promptFeedback?.blockReason ?? "no candidates"})`);
