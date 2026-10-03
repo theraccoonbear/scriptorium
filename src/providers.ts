@@ -75,7 +75,7 @@ export class MockProvider {
       case "tagger": {
         // A paragraph with a quotation is the first cast member's; the rest is narration.
         const castIds: string[] = ctx.castIds ?? [];
-        return JSON.stringify({ tags: (ctx.paragraphs ?? []).map((p: string) => (p.includes('"') && castIds[0] ? castIds[0] : "narrator")), newSpeakers: [] });
+        return JSON.stringify({ paragraphs: (ctx.paragraphs ?? []).map((p: string, n: number) => ({ n: n + 1, speaker: p.includes('"') && castIds[0] ? castIds[0] : "narrator", delivery: "" })), newSpeakers: [] });
       }
       case "archivist":
         return JSON.stringify(this.archive(ctx));
@@ -564,7 +564,7 @@ export function timeoutForRole(roleName: string): number {
 // "artist" is the image model, handled by the art step.
 export const DIRECTION_LAYERS = [
   "contextgate", "worldbuilder", "worldgate", "creator", "director", "beatgate",
-  "writer", "editor", "continuist", "critic", "archivist", "patchgate", "artdirector", "artist"
+  "writer", "editor", "tagger", "continuist", "critic", "archivist", "patchgate", "artdirector", "artist"
 ] as const;
 
 export function checkDirection(direction: Record<string, string> | undefined): void {

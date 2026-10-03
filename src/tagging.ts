@@ -91,6 +91,7 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
     const extra = taggedCharacters(log.events, known);
     const cast = [...Object.values(bible.characters), ...Object.values(extra)].map((c) => ({ id: c.id, name: c.name, voice: c.voice }));
     const out = await tagSpeakers(role, { paragraphs: proseParagraphs(d.prose), cast });
+    if (out.result.missing) console.error(`[scriptorium]   tagger skipped ${out.result.missing} paragraph${out.result.missing === 1 ? "" : "s"} of scene ${d.index + 1} — read by the narrator`);
     const data: SceneTagsData = { index: d.index, source: proseHash(d.prose), tags: out.result.tags, delivery: out.result.delivery, speakers: out.result.newSpeakers };
     await log.append("scene_tags", data);
     tagged.push(d.index);

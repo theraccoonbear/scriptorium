@@ -29,8 +29,12 @@ function fakeRole(...replies: unknown[]): Role & { prompts: string[] } {
 }
 
 const GOOD = {
-  tags: ["narrator", "corin", "nell", "old_one"],
-  delivery: ["", "tired, almost gentle", "low and furious", "slow, vast, amused"],
+  paragraphs: [
+    { n: 1, speaker: "narrator", delivery: "" },
+    { n: 2, speaker: "corin", delivery: "tired, almost gentle" },
+    { n: 3, speaker: "nell", delivery: "low and furious" },
+    { n: 4, speaker: "old_one", delivery: "slow, vast, amused" }
+  ],
   newSpeakers: [{ id: "old_one", name: "The Old One", description: "An ancient dragon; a voice like a file drawn across stone." }]
 };
 
@@ -40,13 +44,23 @@ test("the tagger labels paragraphs without ever seeing them back, and is checked
   assert.match(taggingProblem({ tags: ["narrator", "bob"], delivery: [], newSpeakers: [] }, 2, ["corin"])!, /unknown speaker "bob"/);
   assert.match(taggingProblem({ tags: ["corin"], delivery: [], newSpeakers: [{ id: "corin", name: "x" }] }, 1, ["corin"])!, /must be a new snake_case id/);
 
-  // A short reply is retried, with the problem named.
-  const role = fakeRole({ tags: ["narrator"] }, GOOD);
-  const out = await tagSpeakers(role, { paragraphs: PROSE.split("\n\n"), cast: [{ id: "corin", name: "Corin Ashby" }, { id: "nell", name: "Nell Ashby" }] });
-  assert.deepEqual(out.result.tags, GOOD.tags);
-  assert.deepEqual(out.result.delivery, GOOD.delivery);
-  assert.match(role.prompts[1], /1 tags for 4 paragraphs/);
-  await assert.rejects(tagSpeakers(fakeRole({ tags: [] }), { paragraphs: ["a"], cast: [] }), /speaker tagging failed/);
+  const cast = [{ id: "corin", name: "Corin Ashby" }, { id: "nell", name: "Nell Ashby" }];
+  const paragraphs = PROSE.split("\n\n");
+  const out = await tagSpeakers(fakeRole(GOOD), { paragraphs, cast });
+  assert.deepEqual(out.result.tags, ["narrator", "corin", "nell", "old_one"]);
+  assert.deepEqual(out.result.delivery, ["", "tired, almost gentle", "low and furious", "slow, vast, amused"]);
+
+  // Entries are keyed by number: one skipped paragraph becomes narration, and the rest keep their speakers.
+  const skipped = await tagSpeakers(fakeRole({ ...GOOD, paragraphs: GOOD.paragraphs.filter((p) => p.n !== 2) }), { paragraphs, cast });
+  assert.deepEqual(skipped.result.tags, ["narrator", "narrator", "nell", "old_one"]);
+  assert.equal(skipped.result.missing, 1);
+
+  // Too many missing, or an unknown speaker, is retried with the problem named, then refused.
+  const bad = fakeRole({ ...GOOD, paragraphs: GOOD.paragraphs.map((p) => (p.n === 2 ? { ...p, speaker: "bob" } : p)) }, GOOD);
+  await tagSpeakers(bad, { paragraphs, cast });
+  assert.match(bad.prompts[1], /unknown speaker "bob"/);
+  const many = Array.from({ length: 40 }, (_, n) => `p${n}`);
+  await assert.rejects(tagSpeakers(fakeRole({ paragraphs: [{ n: 1, speaker: "narrator" }] }), { paragraphs: many, cast: [] }), /39 of 40 paragraphs have no entry/);
 });
 
 test("tagging a run: plain-prose scenes get scene_tags once; the committed prose is untouched", async () => {

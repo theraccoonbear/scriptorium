@@ -730,16 +730,17 @@ export async function edit(role: Role, params: {
 export const TAGGER_SYSTEM = `You label who speaks in each paragraph of a story scene, for an audiobook. You never change or repeat the text.
 
 Output ONLY JSON:
-{"tags":[string],"delivery":[string],"newSpeakers":[{"id":string,"name":string,"gender":"female"|"male"|"","description":string}]}
+{"paragraphs":[{"n":number,"speaker":string,"delivery":string}],"newSpeakers":[{"id":string,"name":string,"gender":"female"|"male"|"","description":string}]}
 
-- tags: exactly one per numbered paragraph, in order: "narrator" for a paragraph with no spoken line, or the id of the character who speaks in it.
+- paragraphs: one entry for EVERY numbered paragraph, with n its number: speaker is "narrator" for a paragraph with no spoken line, or the id of the character who speaks in it.
 - Use the ids in CAST. A paragraph that mixes narration with a character's spoken line gets that character's id; the attribution and action around the quote are handled automatically.
 - If two characters speak in one paragraph, use the one who says the most.
 - A speaking character who is not in CAST (a creature, a guard, a voice in the dark) gets a new snake_case id, listed once in newSpeakers with a name, a gender only if the text establishes it, and one sentence on who they are and how they sound.
 - Unspoken thoughts, sounds, and words read off a page are narrator.
-- delivery: one entry per paragraph, a few words directing how its speaker performs it, from what the scene makes clear — e.g. "low and furious, trying not to be overheard", "dry, unhurried", "hushed, dreading what comes next". "" when a plain read is right. Never add words to be spoken.`;
+- delivery: a few words directing how the paragraph's speaker performs it, from what the scene makes clear — e.g. "low and furious, trying not to be overheard", "dry, unhurried", "hushed, dreading what comes next". "" when a plain read is right. Never add words to be spoken.`;
 
 export interface SpeakerTagging {
+  missing?: number;    // paragraphs the tagger skipped (now narrator)
   tags: string[];
   delivery: string[];  // per paragraph; "" = a plain read
   newSpeakers: { id: string; name: string; gender?: string; description?: string }[];
@@ -760,19 +761,30 @@ export async function tagSpeakers(role: Role, params: {
   let lastProblem = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await callJson(role, { role: "tagger", system: TAGGER_SYSTEM, prompt, ctx: { paragraphs, castIds: cast.map((c) => c.id) } });
-    const tagging = toTagging(out.result);
+    const tagging = toTagging(out.result, paragraphs.length);
     lastProblem = taggingProblem(tagging, paragraphs.length, cast.map((c) => c.id)) ?? "";
     if (!lastProblem) return { ...out, result: tagging };
-    prompt = `${prompt}\n\nYour last reply was unusable: ${lastProblem}. Reply again with exactly ${paragraphs.length} tags.`;
+    prompt = `${prompt}\n\nYour last reply was unusable: ${lastProblem}. Reply again, with one entry for each of the ${paragraphs.length} paragraphs.`;
   }
   throw new Error(`speaker tagging failed: ${lastProblem}`);
 }
 
-function toTagging(raw: unknown): SpeakerTagging {
-  const r = (raw ?? {}) as { tags?: unknown; newSpeakers?: unknown };
-  const tags = Array.isArray(r.tags) ? r.tags.map((t) => String(t).trim().toLowerCase()) : [];
-  const given = Array.isArray((raw as { delivery?: unknown })?.delivery) ? ((raw as { delivery: unknown[] }).delivery).map((d) => String(d ?? "").trim()) : [];
-  const delivery = tags.map((_, n) => given[n] ?? "");
+// Entries are keyed by paragraph number, so one skipped paragraph can't shift
+// every label after it. A few missing paragraphs become narration (missing
+// counts them); too many make the tagging unusable.
+function toTagging(raw: unknown, paragraphCount: number): SpeakerTagging {
+  const r = (raw ?? {}) as { paragraphs?: unknown; newSpeakers?: unknown };
+  const tags: string[] = Array(paragraphCount).fill("");
+  const delivery: string[] = Array(paragraphCount).fill("");
+  for (const entry of Array.isArray(r.paragraphs) ? r.paragraphs : []) {
+    const e = (entry ?? {}) as { n?: unknown; speaker?: unknown; delivery?: unknown };
+    const n = Number(e.n);
+    if (!Number.isInteger(n) || n < 1 || n > paragraphCount) continue;
+    tags[n - 1] = String(e.speaker ?? "").trim().toLowerCase();
+    delivery[n - 1] = String(e.delivery ?? "").trim();
+  }
+  const missing = tags.filter((t) => !t).length;
+  for (let n = 0; n < paragraphCount; n++) if (!tags[n]) tags[n] = "narrator";
   const newSpeakers = (Array.isArray(r.newSpeakers) ? r.newSpeakers : [])
     .map((x) => x as Record<string, unknown>)
     .filter((x) => typeof x.id === "string")
@@ -782,12 +794,13 @@ function toTagging(raw: unknown): SpeakerTagging {
       ...(x.gender === "female" || x.gender === "male" ? { gender: x.gender } : {}),
       ...(x.description ? { description: String(x.description) } : {})
     }));
-  return { tags, delivery, newSpeakers };
+  return { tags, delivery, newSpeakers, missing };
 }
 
 // Why a tagging can't be used, or undefined when it's sound.
 export function taggingProblem(t: SpeakerTagging, paragraphCount: number, castIds: string[]): string | undefined {
   if (t.tags.length !== paragraphCount) return `${t.tags.length} tags for ${paragraphCount} paragraphs`;
+  if ((t.missing ?? 0) > Math.max(2, Math.floor(paragraphCount * 0.1))) return `${t.missing} of ${paragraphCount} paragraphs have no entry`;
   const valid = new Set(["narrator", ...castIds, ...t.newSpeakers.map((s) => s.id)]);
   const bad = t.tags.find((tag) => !valid.has(tag));
   if (bad) return `unknown speaker "${bad}" (not narrator, in CAST, or in newSpeakers)`;
