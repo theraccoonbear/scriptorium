@@ -266,7 +266,7 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
     const data: SceneTagsData = { version: TAGGER_VERSION, index: d.index, source: proseHash(d.prose), tags: checked.tags, delivery: out.result.delivery, speakers: out.result.newSpeakers, ...(checked.checks.length ? { checks: checked.checks } : {}) };
     await log.append("scene_tags", data);
     tagged.push(d.index);
-    onScene(d.index, [...new Set(out.result.tags.filter((t) => t !== "narrator"))]);
+    onScene(d.index, [...new Set(checked.tags.filter((t) => t !== "narrator"))]);
   }
   return tagged;
 }
