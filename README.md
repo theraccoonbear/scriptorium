@@ -168,6 +168,8 @@ This describes everyone, recording the descriptions in the run so the story reus
 - **Voice curation:** `"kokoroVoices": { "exclude": ["am_adam"] }` in a story file's `audiobook` block (or `--exclude-voices`) keeps weak or overused voices out. An `include` list instead limits the cast to exactly those voices.
 - **Chosen voices:** `"characterVoices": { "osmagus": "bm_george" }` in the `audiobook` block (or `--character-voice osmagus=bm_george`) gives a character the voice you pick, by bible id. Nobody else is assigned that voice.
 - **Timings:** `audiobook/timings.json` records each scene's duration and the start time of every paragraph. Video assembly uses it.
+- **Acted dialogue (optional):** `--dialogue gemini`, or `"dialogue": "gemini"` in a story file's `audiobook` block, has Gemini TTS perform each character's lines while Kokoro keeps the narration. Each line gets the character's traits and voice sheet from the bible plus the narration just before it, in Gemini's structured prompt format, so only the line is spoken. Characters get distinct, gender-matched Gemini voices (override with `geminiVoices`). A failed or implausibly long reply is retried once, then falls back to that character's Kokoro voice. It costs cents per chapter (Gemini Flash TTS is about $0.81 per hour of generated audio at 2026 rates). `"narration": "gemini"` moves the narration over too.
+- **Curating Kokoro voices:** `--exclude-voices af_bella,am_michael`, or `"kokoroVoices": { "exclude": […] }` / `{ "include": […] }` in a story file, drops weak or overused voices from character assignment.
 
 ## Art
 

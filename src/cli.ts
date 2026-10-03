@@ -24,8 +24,9 @@ const USAGE = `scriptorium <command> [options]
   show  --out <dir>                                     print the story as markdown
   bible --out <dir>                                     print the current bible as JSON
   audiobook --out <dir> [--narrator-voice <id>] [--language <prefix>]
-            [--voice-gender <id>=<female|male>,...] [--exclude-voices <kokoro ids>]
-            [--character-voice <id>=<kokoro voice>,...]
+            [--voice-gender <id>=<female|male>,...] [--dialogue kokoro|gemini]
+            [--narration kokoro|gemini] [--exclude-voices <kokoro ids>]
+            [--character-voice <id>=<kokoro voice>,...] [--force]
                                                          render the run's scenes to WAV
   art   --out <dir> [--config <file>] [--force]          render the run's art prompts to images
   video --out <dir> [--encoder auto|nvenc|x264] [--parallel N] [--force]
@@ -122,6 +123,12 @@ async function updateManifest(runDir: string, config: string): Promise<unknown[]
   return manifest;
 }
 
+function engineFlag(value: string | undefined, flag: string): "kokoro" | "gemini" | undefined {
+  if (value === undefined) return undefined;
+  if (value !== "kokoro" && value !== "gemini") throw new Error(`${flag} must be kokoro or gemini`);
+  return value;
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   const { values, positionals } = parseArgs({
@@ -148,6 +155,8 @@ async function main() {
       redo: { type: "string" },
       only: { type: "string" },
       encoder: { type: "string" },
+      dialogue: { type: "string" },
+      narration: { type: "string" },
       parallel: { type: "string" },
       note: { type: "string" },
       as: { type: "string" }
@@ -306,6 +315,8 @@ async function main() {
       narratorVoice: values["narrator-voice"],
       language: values.language,
       characterGenders: parseVoiceGenders(values["voice-gender"]),
+      dialogue: engineFlag(values.dialogue, "--dialogue"),
+      narration: engineFlag(values.narration, "--narration"),
       kokoroVoices: values["exclude-voices"] ? { exclude: values["exclude-voices"].split(",").map((v) => v.trim()).filter(Boolean) } : undefined,
       characterVoices: values["character-voice"] ? Object.fromEntries(values["character-voice"].split(",").map((p) => p.split("=").map((x) => x.trim())).filter((p) => p.length === 2 && p[0] && p[1])) : undefined,
       force: values.force
