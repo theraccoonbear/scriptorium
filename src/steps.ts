@@ -12,9 +12,11 @@ import type { ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
+import { needsTagging, sceneTags, tagRun } from "./tagging.ts";
+import { replay } from "./bible.ts";
 import { c } from "./colors.ts";
 import { Accountant, currentAccountant, LEDGER_FILE, setAccountant, usd } from "./usage.ts";
-import type { Bible, StoryConfig, StoryEvent } from "./types.ts";
+import type { Bible, SceneCommittedData, StoryConfig, StoryEvent } from "./types.ts";
 
 // The pipeline's steps — story, art, audiobook, video — as plain functions with
 // their console progress. Shared by the individual CLI commands and `make`.
@@ -202,11 +204,38 @@ export interface AudiobookStepOptions {
   config?: StoryConfig;  // for spend accounting (pricing, budget)
 }
 
+// Labels who speaks each paragraph (and how) for scenes written as plain prose,
+// so every story can be voiced. Uses the config's "tagger" role, else its
+// continuist's model (a cheap one). Without a config, untagged scenes are read
+// by the narrator alone.
+async function tagStep(runDir: string, events: StoryEvent[], config?: StoryConfig): Promise<StoryEvent[]> {
+  const bible = replay(events);
+  const known = new Set(Object.keys(bible.characters));
+  const tags = sceneTags(events);
+  const untagged = events.filter((e) => e.type === "scene_committed")
+    .map((e) => e.data as SceneCommittedData)
+    .filter((d) => !tags.has(d.index) && needsTagging(d.prose, known));
+  if (untagged.length === 0) return events;
+  const roles = config ? buildRoleProviders(config) : undefined;
+  const role = roles?.tagger ?? roles?.continuist;
+  if (!role) {
+    console.error(`[scriptorium] ${c.retry(`${untagged.length} scene${untagged.length === 1 ? "" : "s"} written without speaker tags — the narrator reads ${untagged.length === 1 ? "it" : "them"} alone (pass --config so they can be tagged)`)}`);
+    return events;
+  }
+  const log = new EventLog(runDir);
+  await log.load();
+  await tagRun(log, role, (index, speakers) => {
+    console.error(`[scriptorium] ${c.ok(`scene ${index + 1} tagged`)} ${c.dim(`(speakers: ${speakers.join(", ") || "narrator only"})`)}`);
+  });
+  return log.events;
+}
+
 export async function audiobookStep(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions = {}) {
   return accounted(runDir, opts.config, "audiobook", () => audiobookStepInner(runDir, events, opts));
 }
 
 async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions) {
+  events = await tagStep(runDir, events, opts.config);
   const result = await generateAudiobook(events, {
     runDir,
     narratorVoice: opts.narratorVoice,

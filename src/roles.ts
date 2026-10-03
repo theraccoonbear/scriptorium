@@ -727,6 +727,75 @@ export async function edit(role: Role, params: {
   return { result: String(raw).trim(), prompt, system: EDITOR_SYSTEM, raw };
 }
 
+export const TAGGER_SYSTEM = `You label who speaks in each paragraph of a story scene, for an audiobook. You never change or repeat the text.
+
+Output ONLY JSON:
+{"tags":[string],"delivery":[string],"newSpeakers":[{"id":string,"name":string,"gender":"female"|"male"|"","description":string}]}
+
+- tags: exactly one per numbered paragraph, in order: "narrator" for a paragraph with no spoken line, or the id of the character who speaks in it.
+- Use the ids in CAST. A paragraph that mixes narration with a character's spoken line gets that character's id; the attribution and action around the quote are handled automatically.
+- If two characters speak in one paragraph, use the one who says the most.
+- A speaking character who is not in CAST (a creature, a guard, a voice in the dark) gets a new snake_case id, listed once in newSpeakers with a name, a gender only if the text establishes it, and one sentence on who they are and how they sound.
+- Unspoken thoughts, sounds, and words read off a page are narrator.
+- delivery: one entry per paragraph, a few words directing how its speaker performs it, from what the scene makes clear — e.g. "low and furious, trying not to be overheard", "dry, unhurried", "hushed, dreading what comes next". "" when a plain read is right. Never add words to be spoken.`;
+
+export interface SpeakerTagging {
+  tags: string[];
+  delivery: string[];  // per paragraph; "" = a plain read
+  newSpeakers: { id: string; name: string; gender?: string; description?: string }[];
+}
+
+// Labels each paragraph with its speaker. The paragraphs are never sent back,
+// so the text cannot change; the result is checked before it is used.
+export async function tagSpeakers(role: Role, params: {
+  paragraphs: string[];
+  cast: { id: string; name: string; voice?: string }[];
+}): Promise<RoleOutput<SpeakerTagging>> {
+  const { paragraphs, cast } = params;
+  const castBlock = cast.map((c) => `- ${c.id}: ${c.name}${c.voice ? ` (${c.voice})` : ""}`).join("\n") || "(none)";
+  let prompt = [
+    `CAST:\n${castBlock}`,
+    `SCENE (${paragraphs.length} numbered paragraphs):\n${paragraphs.map((p, n) => `[${n + 1}] ${p}`).join("\n\n")}`
+  ].join("\n\n");
+  let lastProblem = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = await callJson(role, { role: "tagger", system: TAGGER_SYSTEM, prompt, ctx: { paragraphs, castIds: cast.map((c) => c.id) } });
+    const tagging = toTagging(out.result);
+    lastProblem = taggingProblem(tagging, paragraphs.length, cast.map((c) => c.id)) ?? "";
+    if (!lastProblem) return { ...out, result: tagging };
+    prompt = `${prompt}\n\nYour last reply was unusable: ${lastProblem}. Reply again with exactly ${paragraphs.length} tags.`;
+  }
+  throw new Error(`speaker tagging failed: ${lastProblem}`);
+}
+
+function toTagging(raw: unknown): SpeakerTagging {
+  const r = (raw ?? {}) as { tags?: unknown; newSpeakers?: unknown };
+  const tags = Array.isArray(r.tags) ? r.tags.map((t) => String(t).trim().toLowerCase()) : [];
+  const given = Array.isArray((raw as { delivery?: unknown })?.delivery) ? ((raw as { delivery: unknown[] }).delivery).map((d) => String(d ?? "").trim()) : [];
+  const delivery = tags.map((_, n) => given[n] ?? "");
+  const newSpeakers = (Array.isArray(r.newSpeakers) ? r.newSpeakers : [])
+    .map((x) => x as Record<string, unknown>)
+    .filter((x) => typeof x.id === "string")
+    .map((x) => ({
+      id: String(x.id).trim().toLowerCase(),
+      name: String(x.name ?? x.id),
+      ...(x.gender === "female" || x.gender === "male" ? { gender: x.gender } : {}),
+      ...(x.description ? { description: String(x.description) } : {})
+    }));
+  return { tags, delivery, newSpeakers };
+}
+
+// Why a tagging can't be used, or undefined when it's sound.
+export function taggingProblem(t: SpeakerTagging, paragraphCount: number, castIds: string[]): string | undefined {
+  if (t.tags.length !== paragraphCount) return `${t.tags.length} tags for ${paragraphCount} paragraphs`;
+  const valid = new Set(["narrator", ...castIds, ...t.newSpeakers.map((s) => s.id)]);
+  const bad = t.tags.find((tag) => !valid.has(tag));
+  if (bad) return `unknown speaker "${bad}" (not narrator, in CAST, or in newSpeakers)`;
+  const badId = t.newSpeakers.find((s) => !/^[a-z][a-z0-9_]*$/.test(s.id) || s.id === "narrator" || castIds.includes(s.id));
+  if (badId) return `newSpeakers id "${badId.id}" must be a new snake_case id`;
+  return undefined;
+}
+
 // Context shared by the two prose gates. Same inputs, different prompts.
 export interface ProseGateParams {
   bible: Bible;

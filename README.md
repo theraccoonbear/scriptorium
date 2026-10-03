@@ -163,7 +163,11 @@ This describes everyone, recording the descriptions in the run so the story reus
 
 `audiobook` narrates each scene with [Kokoro](https://github.com/hexgrad/kokoro), running locally, so it needs no API key and can run offline. The first run downloads the model.
 
-- **Multiple voices:** with `--speaker-tags` on `run`, the writer tags every paragraph with its speaker. Each character then gets their own voice, quoted dialogue is voiced by its speaker, and narration is read by the narrator.
+- **Multiple voices, automatically.** The writer writes plain prose. Before the audiobook, a **tagger** (the config's `tagger` role, else the continuist's model) labels who speaks each paragraph. Each character then gets their own voice, quoted dialogue is voiced by its speaker, and narration is read by the narrator.
+  - The labels are stored beside the story; the text itself is never changed, and the tagger never even sends it back.
+  - Speakers the bible doesn't have, such as a dragon or a guard, get voices too.
+  - The tagger also writes a short **delivery note** per line ("low and furious, trying not to be overheard"), which directs Gemini's performance. Kokoro can't act, so it ignores them.
+  - From the command line, pass `--config` to `audiobook` so untagged scenes can be tagged. Older runs written with `--speaker-tags` are used as they are.
 - **Gender-matched voices:** a character whose gender is known gets a voice of that gender. Use `--voice-gender` to set genders for older runs.
 - **Voice curation:** `"kokoroVoices": { "exclude": ["am_adam"] }` in a story file's `audiobook` block (or `--exclude-voices`) keeps weak or overused voices out. An `include` list instead limits the cast to exactly those voices.
 - **Chosen voices:** `"characterVoices": { "osmagus": "bm_george" }` in the `audiobook` block (or `--character-voice osmagus=bm_george`) gives a character the voice you pick, by bible id. Nobody else is assigned that voice.
@@ -228,7 +232,7 @@ Other config keys:
 | `maxRevisions` | 2 | Drafts per scene = this + 1 (or `--max-attempts`). |
 | `sceneWords` | `{min:1200,max:1800}` | The writer's word band. The critic blocks more than 2× overshoot. |
 | `overdueAfter` | 3 | Scenes before an open setup must be paid off. |
-| `speakerTags` | false | Tag paragraphs by speaker for multi-voice audio (or `--speaker-tags`). |
+| `speakerTags` | false | Have the writer tag paragraphs itself (or `--speaker-tags`). Not needed: the audiobook's tagger labels plain prose. |
 | `artWordsPerShot` | 110 | Narration words per art shot. |
 | `rngSeed` | 1 | Seeds the complication table. |
 | `artist` | Gemini | `image` and `inspector` backends (`gemini` or `mock`; `"inspector": null` skips review), `maxAttempts`, `maxReferences`, `referenceSize`, `inspectSize`. |

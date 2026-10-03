@@ -72,6 +72,11 @@ export class MockProvider {
         return JSON.stringify({ ok: true, issues: [], review: "Mock review: looks good." });
       case "editor":
         return ctx.prose ?? "";
+      case "tagger": {
+        // A paragraph with a quotation is the first cast member's; the rest is narration.
+        const castIds: string[] = ctx.castIds ?? [];
+        return JSON.stringify({ tags: (ctx.paragraphs ?? []).map((p: string) => (p.includes('"') && castIds[0] ? castIds[0] : "narrator")), newSpeakers: [] });
+      }
       case "archivist":
         return JSON.stringify(this.archive(ctx));
       case "beatgate":

@@ -9,6 +9,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { replay } from "./bible.ts";
+import { applyTags, sceneTags, taggedCharacters } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
 import type { Speak } from "./geminiTts.ts";
 import { isBudgetError } from "./usage.ts";
@@ -36,6 +37,8 @@ export interface Scene {
   index: number;
   tagged: boolean;
   segments: SpeakerSegment[];
+  // How a paragraph's speaker performs it (from the tagger), by paragraph index.
+  delivery?: Record<number, { speaker: string; note: string }>;
 }
 
 const TAG_LINE = /^([a-z][a-z0-9_]*):\s+([\s\S]+)$/;
@@ -281,15 +284,30 @@ export function filterVoicesByLanguage(
     .map(([id]) => id);
 }
 
+// The run's scenes as the audiobook reads them. A scene written without speaker
+// tags uses the tagger's labels (scene_tags) when it has them.
 export function buildScenes(events: StoryEvent[]): Scene[] {
-  const bible = replay(events);
+  const bible = voicedBible(events);
   const knownIds = new Set(Object.keys(bible.characters));
+  const tags = sceneTags(events);
   return events
     .filter((e) => e.type === "scene_committed")
     .map((e) => {
       const d = e.data as SceneCommittedData;
-      return parseScene(d.index, d.prose, knownIds);
+      const t = tags.get(d.index);
+      if (!t) return parseScene(d.index, d.prose, knownIds);
+      const scene = parseScene(d.index, applyTags(d.prose, t.tags), knownIds);
+      const delivery: Record<number, { speaker: string; note: string }> = {};
+      t.delivery.forEach((note, p) => { if (note) delivery[p] = { speaker: t.tags[p], note }; });
+      return Object.keys(delivery).length > 0 ? { ...scene, delivery } : scene;
     });
+}
+
+// The bible plus any speakers the tagger found that it doesn't have.
+export function voicedBible(events: StoryEvent[]): Bible {
+  const bible = replay(events);
+  const extra = taggedCharacters(events, new Set(Object.keys(bible.characters)));
+  return Object.keys(extra).length > 0 ? { ...bible, characters: { ...bible.characters, ...extra } } : bible;
 }
 
 export interface AudiobookOptions {
@@ -343,7 +361,7 @@ export interface AudioManifest {
 // Everything that determines a scene's audio: its speakers and text, and the
 // voice settings (narrator, language, character genders, model).
 export function sceneRenderKey(scene: Scene, settings: Record<string, unknown>): string {
-  return createHash("sha1").update(JSON.stringify({ segments: scene.segments.map((s) => [s.speaker, s.text]), settings })).digest("hex");
+  return createHash("sha1").update(JSON.stringify({ segments: scene.segments.map((s) => [s.speaker, s.text]), settings, ...(scene.delivery ? { delivery: scene.delivery } : {}) })).digest("hex");
 }
 
 export function sceneFile(index: number): string {
@@ -365,7 +383,7 @@ export type TtsEngine = "kokoro" | "gemini";
 
 // One TTS pass over `text`, yielding audio per sentence-ish chunk. `context` is
 // the text just before this piece (for engines that act the line).
-export type Synthesize = (text: string, voice: string, ctx?: { speaker: string; context: string }) => AsyncIterable<{ text: string; audio: Float32Array }>;
+export type Synthesize = (text: string, voice: string, ctx?: { speaker: string; context: string; delivery?: string }) => AsyncIterable<{ text: string; audio: Float32Array }>;
 
 // Linear resample for engines whose output rate differs from the audiobook's.
 export function resample(samples: Float32Array, from: number, to: number): Float32Array {
@@ -407,7 +425,9 @@ export async function synthesizeScene(
     for (const { text, paragraph } of work) {
       if (paragraph !== undefined && starts[paragraph] === undefined) starts[paragraph] = samples / SAMPLE_RATE;
       const context = recent.join(" ").slice(-500);
-      for await (const chunk of synth(text, voiceFor(seg.speaker), { speaker: seg.speaker, context })) {
+      const d = paragraph !== undefined ? scene.delivery?.[paragraph] : undefined;
+      const delivery = d && d.speaker === seg.speaker ? d.note : undefined;
+      for await (const chunk of synth(text, voiceFor(seg.speaker), { speaker: seg.speaker, context, ...(delivery ? { delivery } : {}) })) {
         chunks.push(chunk.audio);
         samples += chunk.audio.length;
         onChunk(s, seg.speaker, chunk.text);
@@ -482,8 +502,8 @@ export function hybridVoicing(p: {
     const ch = bible.characters[speaker];
     const scene = sceneContext(ctx?.context ?? "");
     const prompt = buildTtsPrompt(speaker === "narrator" || !ch
-      ? { name: "Narrator", profile: `The narrator of a story. Tone: ${bible.tone || "measured, warm storytelling"}.`, scene, notes: "Storytelling narration: clear, engaged, natural pace; let the drama of the moment color the read without over-acting.", line: text }
-      : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" "), scene, line: text });
+      ? { name: "Narrator", profile: `The narrator of a story. Tone: ${bible.tone || "measured, warm storytelling"}.`, scene, notes: ctx?.delivery ? `Storytelling narration, ${ctx.delivery}.` : "Storytelling narration: clear, engaged, natural pace; let the drama of the moment color the read without over-acting.", line: text }
+      : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" "), scene, ...(ctx?.delivery ? { notes: ctx.delivery } : {}), line: text });
     try {
       // A reply far longer than the line could take means the model spoke
       // something else too (direction, context): retry once, then fall back.
@@ -507,7 +527,7 @@ export function hybridVoicing(p: {
 // goes through tts.stream() — tts.generate() silently truncates anything past
 // ~509 tokens, which would drop the tail of a full-length scene.
 export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOptions): Promise<AudiobookResult> {
-  const bible = replay(events);
+  const bible = voicedBible(events);
   const scenes = buildScenes(events);
   const onProgress = opts.onProgress ?? (() => {});
   const outDir = `${opts.runDir}/audiobook`;
