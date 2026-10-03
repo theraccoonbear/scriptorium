@@ -528,3 +528,35 @@ test("an unknown critic mode is refused", async () => {
   const config = await loadConfig({ scenes: 1, critic: "polite" });
   await assert.rejects(runStory({ config, log: new EventLog(await tmp()), roles: buildRoleProviders(config) }), /critic must be one of blocking, advisory, off/);
 });
+
+// --- issue #66: the line editor ---
+test("a line editor polishes each draft before review; an edit that guts the scene is discarded", async () => {
+  const run = async (editFn: (prose: string) => string) => {
+    const config = await loadConfig({ scenes: 2 });
+    config.roles = { ...config.roles, editor: { provider: "mock" } };
+    const roles = buildRoleProviders(config);
+    const seen: string[] = [];
+    roles.editor = { ...roles.editor!, provider: { complete: async (req) => { const prose = (req.ctx as { prose: string }).prose; seen.push(req.role); return editFn(prose); } } };
+    const log = new EventLog(await tmp());
+    await runStory({ config, log, roles });
+    return { seen, scenes: log.events.filter((e) => e.type === "scene_committed").map((e) => (e.data as SceneCommittedData).prose) };
+  };
+  const polished = await run((prose) => `${prose} Edited.`);
+  assert.deepEqual(polished.seen, ["editor", "editor"]);
+  assert.ok(polished.scenes.every((p) => p.endsWith("Edited.")));
+  const gutted = await run((prose) => prose.split(/\s+/).slice(0, 5).join(" "));
+  assert.ok(gutted.scenes.every((p) => p.split(/\s+/).length > 5), "the unedited draft is kept");
+});
+
+test("editProblem: trims are fine; gutting, padding and lost speaker tags are not", async () => {
+  const { editProblem } = await import("../src/engine.ts");
+  const text = Array.from({ length: 100 }, (_, n) => `w${n}`).join(" ");
+  assert.equal(editProblem(text, text.split(" ").slice(0, 90).join(" ")), undefined);
+  assert.match(editProblem(text, text.split(" ").slice(0, 60).join(" "))!, /cut 40%/);
+  assert.match(editProblem(text, `${text} ${text}`)!, /grew the scene/);
+  assert.equal(editProblem(text, ""), "empty edit");
+  const tags = new Set(["osmagus"]);
+  const tagged = "narrator: The wind rose over the pass and kept rising.\n\nosmagus: \"Up we go,\" he said, and went.";
+  assert.equal(editProblem(tagged, tagged.replace("The wind", "Wind"), tags), undefined);
+  assert.equal(editProblem(tagged, tagged.replace("narrator: ", ""), tags), "edit lost speaker tags");
+});

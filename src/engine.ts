@@ -2,7 +2,7 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import { mulberry32, pick } from "./rng.ts";
 import type { ArtDirection } from "./roles.ts";
-import { shotCountFor, direct, createAndDirect, buildWorld, write, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
+import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
 import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
@@ -311,6 +311,21 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         prose = writeOut.result;
         attempt++;
 
+        // Line editor (optional): polishes the draft before review. An edit
+        // that cuts too much, pads, or loses speaker tags is discarded.
+        if (roles.editor) {
+          t0 = Date.now();
+          const editor = roles.editor;
+          const edited = await nonFatalValue(`scene ${i + 1} line edit`, () => edit(editor, { bible, prose, sceneIndex: i, previousScene: previousScenes.at(-1), sceneWords }));
+          recordTiming("editor", Date.now() - t0);
+          if (edited) {
+            if (runDir) await writeRoleOutput(runDir, ++seq, `editor-a${attempt - 1}`, edited);
+            const problem = editProblem(prose, edited.result, config.speakerTags ? new Set(Object.keys(bible.characters)) : undefined);
+            if (problem) console.error(`[scriptorium]   ${c.retry(`editor: ${problem} — keeping the unedited draft`)}`);
+            else prose = edited.result;
+          }
+        }
+
         // Non-blocking compliance check: parseScene already falls back an
         // untagged paragraph to narrator, so this can't break the run — it's
         // a quality signal (the writer skipped a tag) worth surfacing, not a
@@ -526,6 +541,19 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
 
   console.error(`[scriptorium] ${c.ok(`done — ${total} scenes`)}`);
   return bible;
+}
+
+// Why a line edit can't be used, or undefined when it's fine: the editor
+// trims, it doesn't gut or pad a scene, and it keeps the speaker tags.
+export function editProblem(original: string, edited: string, tagIds?: ReadonlySet<string>): string | undefined {
+  const words = (t: string) => t.split(/\s+/).filter(Boolean).length;
+  const before = words(original);
+  const after = words(edited);
+  if (after === 0) return "empty edit";
+  if (after < before * 0.75) return `edit cut ${Math.round(100 - (after / before) * 100)}% of the scene`;
+  if (after > before * 1.1) return `edit grew the scene by ${Math.round((after / before) * 100 - 100)}%`;
+  if (tagIds && findUntaggedParagraphs(edited, tagIds).length > findUntaggedParagraphs(original, tagIds).length) return "edit lost speaker tags";
+  return undefined;
 }
 
 // Up to `limit` paragraphs of committed prose that mention each character or
@@ -766,6 +794,13 @@ async function nonFatal(what: string, fn: () => Promise<void>): Promise<void> {
     if (isBudgetError(err)) throw err;  // a spent budget stops the run, never a warning
     console.error(`[scriptorium]   ${c.retry(`${what} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
   }
+}
+
+// The same, for work that returns a value: undefined when it failed.
+async function nonFatalValue<T>(what: string, fn: () => Promise<T>): Promise<T | undefined> {
+  let out: T | undefined;
+  await nonFatal(what, async () => { out = await fn(); });
+  return out;
 }
 
 export function renderStory(events: StoryEvent[]): string {

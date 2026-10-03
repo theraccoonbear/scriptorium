@@ -29,6 +29,15 @@ Names should feel like real people in this specific world — not generic, not c
 Location names should be evocative but grounded.
 setting_notes is one paragraph of world flavor that will guide the Creator.`;
 
+// How the Creator and Director write a beat: outcomes for a novelist, not a
+// choreography for a typist.
+const BEAT_CRAFT = `WRITE THE BEAT AS OUTCOMES, NOT CHOREOGRAPHY — the Writer is a novelist, not a typist:
+- constraints: what must be TRUE by the end of the scene (who wins, who lives, what is learned, where everyone ends up), plus at most THREE fixed moments the scene must contain. Never a step-by-step sequence of actions, and never the order of events unless the order is the point. Leave how and when to the Writer. Aim for 4-7 constraints.
+- Never write dialogue, or phrasings meant to be spoken, into the beat. State facts, not lines.
+- mustReveal: what the READER must come to understand by the end, stated as a fact for the Writer — never as something a character announces.
+- Physical canon (sizes, colors, materials) already lives in the bible; don't copy it into constraints.
+- Leave room for surprise: a beat whose every move is fixed reads as a checklist.`;
+
 const CREATOR_SYSTEM = `You are the Creator. You generate the foundation for a procedurally generated story.
 Output ONLY JSON with this shape:
 {
@@ -48,7 +57,8 @@ Give each character's gender as "female" or "male" when the story has one in min
 The beat is the first scene. Payoffs must be empty (no prior setups exist).
 Create the premise, setting, and cast that make the best story — one character, five, whatever serves it.
 You will be given character names and location names — use them exactly, do not invent new ones.
-Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.`;
+Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.
+${BEAT_CRAFT}`;
 
 export const DIRECTOR_SYSTEM = `You are the Director of a procedurally generated story. You never write prose.
 Plan the next scene as a beat spec. Output ONLY JSON with this shape:
@@ -56,21 +66,42 @@ Plan the next scene as a beat spec. Output ONLY JSON with this shape:
 Honor the tension target and the required complication. Every overdue setup must appear in payoffs.
 Never contradict the bible.
 Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.
-The bible lists RESOLVED DECISIONS — choices characters have already made and closed. Do not build a beat whose core is re-deciding one of them (having characters re-choose what is already chosen). A resolved decision may be referenced only if the beat adds genuinely NEW pressure on it: new stakes, new information, or a new cost. Each scene must turn the story somewhere it has not been.`;
+The bible lists RESOLVED DECISIONS — choices characters have already made and closed. Do not build a beat whose core is re-deciding one of them (having characters re-choose what is already chosen). A resolved decision may be referenced only if the beat adds genuinely NEW pressure on it: new stakes, new information, or a new cost. Each scene must turn the story somewhere it has not been.
+${BEAT_CRAFT}`;
 
-export const WRITER_SYSTEM = `You are the Writer. Render the beat spec as a single scene of prose.
-Stay strictly in the POV character's voice and knowledge. Obey every constraint.
-KEY OBJECTS in the bible have canon physical descriptions: depict and handle them exactly as described — never give an object a feature, size, or way of being held that its description rules out. A description binds that object only, not others of its kind.
-Do not resolve anything the beat does not resolve. Output only the scene text.
+// Machine-prose tics the Writer avoids and the Line Editor hunts.
+export const PROSE_TICS = `- Negation-then-correction ("Not pity, not exactly..."; "Not relief, not quite grief..."), and its cousins "He did not X. He Y." and "It was not X. It was Y." — say the true thing.
+- Stacks of sentence fragments (more than two in a row), and inventory lists of features ("Yellow eyes. Tails that twitched.").
+- A quip to an object, animal or nobody at every discovery; a character narrating their own realization aloud ("So that's it...").
+- Narration that explains what a moment already showed; stating the theme; a character announcing the subtext.
+- Stock fantasy phrasing (eyes like glacier ice, old as the mountains, a voice like grinding stone). If you have read it before, write something else.
+- Physical tells, images or phrases repeated from earlier scenes (hands shaking afterward, the same light, the same simile).
+- Abstract padding where a concrete detail belongs ("the specific weight", "the specific silence").`;
+
+export const WRITER_SYSTEM = `You are the Writer: a novelist writing one scene of a serialized story. The beat spec says where the scene must end up; how it gets there is yours. Write it the way the best writer of this kind of story would — vivid, surprising, alive — never as a list of events carried out in order.
+
+THE CONTRACT (non-negotiable):
+- Stay strictly in the POV character's voice and knowledge.
+- Every CONSTRAINT must hold by the end of the scene. The order and the means are yours unless a constraint fixes them.
+- MUST REVEAL is what the reader must come to understand. Let them understand it through what happens; a character voices part of it only if they truly would, and never as a summary.
+- KEY OBJECTS in the bible have canon physical descriptions: depict and handle them exactly as described — never give an object a feature, size, or way of being held that its description rules out. A description binds that object only, not others of its kind.
+- Do not resolve anything the beat does not resolve. Output only the scene text.
+
+CRAFT:
+- A scene turns. Someone wants something, meets resistance, and comes out changed — winning, losing, or learning at a cost. Find the turn and build to it. Make obstacles push back; let victory cost something.
+- Trust the reader. Subtext over statement: people rarely say exactly what they mean, and the narrator never explains what a moment has already shown.
+- Dialogue does two jobs at once: it reveals the speaker and moves the scene. Cut lines that only deliver information.
+- Specific over general: the one detail only this place, person or moment has — not an inventory.
+- Vary rhythm on purpose: long sentences for flow and awe, short ones for impact, and short ones only where the impact is earned.
+- Surprise inside the plan: an unexpected detail, a reversal, a character choosing what we didn't predict.
+- The bible and previous scenes are facts, not wording. Never reuse their phrases, images or descriptions; find fresh ones.
 
 LENGTH:
 - If a LENGTH TARGET is given, stay inside the band — end the scene when it is done.
 - Land the ending ONCE. Never restate the resolution, recap the scene's turn, or echo the final beat in new words. One closing image, then stop.
 
-STYLE:
-- No negation-then-correction ("Not pity, not exactly..."; "Not relief, not quite grief..."). Pick the true thing and commit to it.
-- No abstract padding where a concrete detail belongs ("the specific weight", "the specific silence"). Prefer the image, the sound, the physical fact.
-- Never state the theme outright when the scene has already dramatized it. If the reader has felt it, don't explain it.
+AVOID:
+${PROSE_TICS}
 
 REVISION RULES:
 - When given a previous draft and issues to fix, PRESERVE the existing prose.
@@ -224,7 +255,7 @@ Allowed types:
 - REHASH: the beat re-decides something already closed, or restates a turn the story already made
 
 CHECK SPECIFICALLY:
-- If the STORY CONTEXT lays out what happens in this scene (by scene number), check the spec against it FIRST. Every event the author lists for this scene must be in the spec; no event the author assigns to a later scene may be. A spec that goes somewhere else — however well-made — is OFF_PLAN. Bridging from where the last scene actually ended to the plan's events is fine.
+- If the STORY CONTEXT lays out what happens in this scene (by scene number), check the spec against it FIRST. Every event the author lists for this scene must be covered by the spec, as an outcome or a fixed moment (the spec need not fix their order); no event the author assigns to a later scene may be. A spec that goes somewhere else — however well-made — is OFF_PLAN. Bridging from where the last scene actually ended to the plan's events is fine.
 - Read mustReveal against every constraint. If the reveal would itself violate a constraint (e.g. the reveal says a problem is solved/compensated while a constraint says it must remain unresolved), flag UNSATISFIABLE_CONSTRAINT.
 - Read constraints against each other. Two constraints that cannot hold in the same scene = UNSATISFIABLE_CONSTRAINT.
 - Read the conflict and payoffs against the bible and prior scenes.
@@ -553,7 +584,7 @@ export async function direct(role: Role, params: {
     "YOUR PREVIOUS BEAT SPEC WAS REJECTED. ISSUES TO FIX:"
   );
   const plan = context
-    ? `THE AUTHOR'S PLAN COMES FIRST: if the STORY CONTEXT lays out what happens in scene ${sceneIndex + 1}, this beat must deliver exactly those events — draw the goal, conflict, location, mustReveal and constraints from them — and nothing the author assigns to a later scene. Where the last scene ended somewhere the plan didn't expect, bridge from where it actually ended to the plan's events.`
+    ? `THE AUTHOR'S PLAN COMES FIRST: if the STORY CONTEXT lays out what happens in scene ${sceneIndex + 1}, this beat must deliver those events — as outcomes the scene must reach and at most three fixed moments, never as a step-by-step sequence — and nothing the author assigns to a later scene. Where the last scene ended somewhere the plan didn't expect, bridge from where it actually ended to the plan's events.`
     : "";
   const prompt = [
     context ? `STORY CONTEXT (provided by author):\n${context}` : "",
@@ -626,8 +657,8 @@ export async function write(role: Role, params: {
   const prompt = [
     renderBible(bible),
     priorProse ? `PREVIOUS SCENES (established canon — do not contradict):\n\n${priorProse}` : "",
-    `GOAL: ${beat.goal}\nCONFLICT: ${beat.conflict}\nLOCATION: ${beat.location}\nMUST REVEAL: ${beat.mustReveal}`,
-    `CONSTRAINTS:\n${beat.constraints.map((c) => `- ${c}`).join("\n")}`,
+    `GOAL: ${beat.goal}\nCONFLICT: ${beat.conflict}\nLOCATION: ${beat.location}\nMUST REVEAL (what the reader must come to understand — show it; no one announces it): ${beat.mustReveal}`,
+    `CONSTRAINTS (must hold by the end of the scene; the order and the means are yours unless one fixes them):\n${beat.constraints.map((c) => `- ${c}`).join("\n")}`,
     `LENGTH TARGET: ${sceneWords.min}-${sceneWords.max} words. Land the ending once — do not restate the resolution or recap the scene.`,
     voice,
     speakerTagBlock,
@@ -653,6 +684,47 @@ export async function write(role: Role, params: {
     raw = err.partial;
   }
   return { result: raw, prompt, system: WRITER_SYSTEM, raw };
+}
+
+export const EDITOR_SYSTEM = `You are the Line Editor. You get one scene of a serialized story and return it edited: the same scene, better written. You are not the author. Never add, remove, reorder or change events, facts, who does what, what anyone learns, or how the scene ends; never change a proper name.
+
+EDIT FOR:
+${PROSE_TICS}
+- Flab: cut about 10% — throat-clearing, beats that repeat, a second image where one did the job, explanation after the moment has landed.
+- Dead phrasing: replace stock or repeated wording (including anything echoed from the END OF THE PREVIOUS SCENE) with something specific and fresh.
+- Rhythm: break up runs of same-shaped sentences and same paragraph openings ("He..." "He..." "He...").
+- Dialogue: trim lines that only deliver information; keep every line's meaning and the speaker's voice.
+
+Leave good writing alone — never edit for the sake of editing. Keep the author's voice and the POV character's register.
+
+FORMAT: return ONLY the full edited scene, nothing before or after it. Keep the paragraphing. If paragraphs begin with a speaker tag (narrator: or a character id followed by a colon), every paragraph you return must begin with one, and each tag must name who speaks in that paragraph.`;
+
+// One line edit of a draft. The caller guards the result (see the engine).
+export async function edit(role: Role, params: {
+  bible: Bible;
+  prose: string;
+  sceneIndex: number;
+  previousScene?: string;
+  sceneWords?: WordBudget;
+}): Promise<RoleOutput<string>> {
+  const { bible, prose, sceneIndex, previousScene, sceneWords } = params;
+  const voices = Object.values(bible.characters).filter((ch) => ch.voice).map((ch) => `- ${ch.name}: ${ch.voice}`).join("\n");
+  const prompt = [
+    bible.tone ? `TONE: ${bible.tone}` : "",
+    voices ? `VOICE SHEETS:\n${voices}` : "",
+    previousScene ? `END OF THE PREVIOUS SCENE (for repetition only — do not edit it):\n${previousScene.slice(-2500)}` : "",
+    sceneWords ? `LENGTH: the scene should land within ${sceneWords.min}-${sceneWords.max} words after editing.` : "",
+    `SCENE ${sceneIndex + 1} TO EDIT:\n${prose}`
+  ].filter(Boolean).join("\n\n");
+  const raw = await role.provider.complete({
+    role: "editor",
+    system: EDITOR_SYSTEM,
+    prompt,
+    temperature: role.temperature,
+    timeoutMs: role.timeoutMs,
+    ctx: { prose, sceneIndex }
+  });
+  return { result: String(raw).trim(), prompt, system: EDITOR_SYSTEM, raw };
 }
 
 // Context shared by the two prose gates. Same inputs, different prompts.

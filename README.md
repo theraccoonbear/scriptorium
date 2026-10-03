@@ -95,6 +95,7 @@ npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, 
 | **creator** | Builds the foundation: premise, tone, **art style**, cast (with gender), locations, **key objects**, threads, and scene 1's beat. Runs on the `director`'s provider. | — |
 | **director** | Plans each later scene as a JSON beat spec — never prose. | yes |
 | **writer** | Writes the scene in the POV character's voice, inside a word band. | yes |
+| **editor** | Line-edits each draft before review: hunts machine-prose tics, trims about 10%, and keeps every event, name and speaker tag. An edit that guts or pads the scene is discarded. | optional |
 | **continuist** | Blocks continuity and canon errors: POV, timeline, constraints, setups, key-object contradictions. | yes |
 | **critic** | Blocks craft problems: pacing, telling-not-showing, sensory detail, voice drift, recurring style tics. | optional |
 | **archivist** | The only role that changes the bible, via JSON patches. | yes |
