@@ -41,7 +41,7 @@ export interface Scene {
   index: number;
   tagged: boolean;
   segments: SpeakerSegment[];
-  // How a paragraph's speaker performs it (from the tagger), by paragraph index.
+  // How a paragraph's speaker performs it (from the voice director), by paragraph index.
   delivery?: Record<number, { speaker: string; note: string }>;
 }
 
@@ -289,7 +289,7 @@ export function filterVoicesByLanguage(
 }
 
 // The run's scenes as the audiobook reads them. A scene written without speaker
-// tags uses the tagger's labels (scene_tags) when it has them.
+// tags uses the voice director's labels (scene_tags) when it has them.
 export function buildScenes(events: StoryEvent[]): Scene[] {
   const bible = voicedBible(events);
   const knownIds = new Set(Object.keys(bible.characters));
@@ -309,7 +309,7 @@ export function buildScenes(events: StoryEvent[]): Scene[] {
     });
 }
 
-// The bible plus any speakers the tagger found that it doesn't have.
+// The bible plus any speakers the voice director found that it doesn't have.
 export function voicedBible(events: StoryEvent[]): Bible {
   const bible = replay(events);
   const extra = taggedCharacters(events, new Set(Object.keys(bible.characters)));

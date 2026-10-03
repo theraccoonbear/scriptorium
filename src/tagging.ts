@@ -5,7 +5,7 @@ import type { EventLog } from "./eventlog.ts";
 import type { Character, Role, SceneCommittedData, StoryEvent } from "./types.ts";
 
 // Speaker tagging, separate from writing: the writer writes plain prose, and
-// before the audiobook a tagger labels each paragraph with who speaks it (and
+// before the audiobook the voice director labels each paragraph with who speaks it (and
 // how). The labels live in "scene_tags" events beside the committed prose,
 // which is never changed — story.md stays exactly what the writer wrote.
 
@@ -103,7 +103,7 @@ export function attributedSpeaker(narration: string, cast: { id: string; name: s
 // The quote checks. Code detects, the model decides: the only label code sets
 // is the structural one (no spoken quote means narrator). Everything else —
 // dialogue tagged narrator, a tag that disagrees with an explicit "Nell said",
-// "she said" on a man's line — is a doubt, sent back to the tagger with the reason.
+// "she said" on a man's line — is a doubt, sent back to the voice director with the reason.
 export interface TagDoubt { paragraph: number; reason: string }
 
 export function checkTags(paragraphs: string[], tags: string[], cast: { id: string; name: string; gender?: string }[]): { tags: string[]; checks: string[]; doubts: TagDoubt[]; dialogue: number } {
@@ -204,7 +204,7 @@ export function applyTags(prose: string, tags: string[]): string {
   return proseParagraphs(prose).map((p, n) => `${tags[n] ?? "narrator"}: ${p}`).join("\n\n");
 }
 
-// Speakers the tagger found that the bible doesn't have, as characters for voicing.
+// Speakers the voice director found that the bible doesn't have, as characters for voicing.
 export function taggedCharacters(events: StoryEvent[], bibleIds: ReadonlySet<string>): Record<string, Character> {
   const out: Record<string, Character> = {};
   const aliases = speakerAliases(events);
@@ -244,11 +244,11 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
     const out = await tagSpeakers(role, { paragraphs, cast, ...(palettes ? { palettes } : {}) });
     const tones = out.result.tones ? [...out.result.tones] : undefined;
     const tonedFor = [...out.result.tags];  // the speaker each tone was chosen for
-    if (out.result.missing) console.error(`[scriptorium]   tagger skipped ${out.result.missing} paragraph${out.result.missing === 1 ? "" : "s"} of scene ${d.index + 1} — read by the narrator`);
+    if (out.result.missing) console.error(`[scriptorium]   voice director skipped ${out.result.missing} paragraph${out.result.missing === 1 ? "" : "s"} of scene ${d.index + 1} — read by the narrator`);
     const genders = new Map([...Object.values(bible.characters), ...Object.values(extra)].map((c) => [c.id, c.gender]));
     const checkCast = () => [...cast.map((c) => ({ ...c, gender: genders.get(c.id) })), ...out.result.newSpeakers];
     let checked = checkTags(paragraphs, out.result.tags, checkCast());
-    // Doubtful paragraphs go back to the tagger, each with the reason; it decides.
+    // Doubtful paragraphs go back to the voice director, each with the reason; it decides.
     if (checked.doubts.length > 0) {
       const ask = [...new Map(checked.doubts.map((x) => [x.paragraph, x])).values()];
       const again = await tagSpeakers(role, {

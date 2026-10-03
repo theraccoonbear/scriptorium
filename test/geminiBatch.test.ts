@@ -104,10 +104,12 @@ test("palettes are designed from the whole script; tagging picks each line's ton
   const cast = { characters: { nell: { id: "nell", name: "Nell", traits: "", goal: "", voice: "clipped", status: "active" }, corin: { id: "corin", name: "Corin", traits: "", goal: "", voice: "light", status: "active" } } };
   await log.append("scene_committed", { index: 0, prose: scene1, bible: cast });
   await log.append("scene_committed", { index: 1, prose: scene2 });
-  const prompts: Record<string, string[]> = { palette: [], tagger: [] };
+  const prompts: Record<string, string[]> = { palette: [], tag: [] };
   const role: Role = { provider: { complete: async (req) => {
-    prompts[req.role].push(req.prompt);
-    if (req.role === "palette") return JSON.stringify({ palettes: { nell: ["low, furious", "pleading"], corin: ["bright, deflecting"] } });
+    const task = (req.ctx as { task: string }).task;
+    assert.equal(req.role, "voicedirector");
+    prompts[task].push(req.prompt);
+    if (task === "palette") return JSON.stringify({ palettes: { nell: ["low, furious", "pleading"], corin: ["bright, deflecting"] } });
     const n = (req.ctx as { paragraphs: string[] }).paragraphs.length;
     // Scene 1: Corin (tone 0), Nell (tone 0), narration tagged nell by mistake (tone 1). Scene 2: Nell pleading.
     return JSON.stringify({ paragraphs: n === 3
@@ -121,7 +123,7 @@ test("palettes are designed from the whole script; tagging picks each line's ton
   assert.equal(prompts.palette.length, 1);
 
   await tagRun(log, role, () => {}, palette);
-  assert.match(prompts.tagger[0], /TONE PALETTES[\s\S]*- nell: 0 = low, furious; 1 = pleading/);
+  assert.match(prompts.tag[0], /TONE PALETTES[\s\S]*- nell: 0 = low, furious; 1 = pleading/);
   const tone = paletteToneFor(log.events, palette);
   assert.equal(tone(0, 0, "corin"), "bright, deflecting");
   assert.equal(tone(0, 1, "nell"), "low, furious");

@@ -210,7 +210,7 @@ export interface AudiobookStepOptions {
 }
 
 // Labels who speaks each paragraph (and how) for scenes written as plain prose,
-// so every story can be voiced. Uses the config's "tagger" role, else its
+// so every story can be voiced. Uses the config's "voicedirector" role, else its
 // continuist's model (a cheap one). Without a config, untagged scenes are read
 // by the narrator alone.
 async function tagStep(runDir: string, events: StoryEvent[], config?: StoryConfig, palette?: TonePaletteData): Promise<StoryEvent[]> {
@@ -222,7 +222,7 @@ async function tagStep(runDir: string, events: StoryEvent[], config?: StoryConfi
     .filter((d) => (!tags.has(d.index) || (palette && tags.get(d.index)!.palette !== palette.source)) && needsTagging(d.prose, known));
   if (untagged.length === 0) return events;
   const roles = config ? buildRoleProviders(config) : undefined;
-  const role = roles?.tagger ?? roles?.continuist;
+  const role = roles?.voicedirector ?? roles?.continuist;
   if (!role) {
     console.error(`[scriptorium] ${c.retry(`${untagged.length} scene${untagged.length === 1 ? "" : "s"} written without speaker tags — the narrator reads ${untagged.length === 1 ? "it" : "them"} alone (pass --config so they can be tagged)`)}`);
     return events;
@@ -245,8 +245,8 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
   let palette: TonePaletteData | undefined;
   if (opts.geminiMode === "palette") {
     const roles = opts.config ? buildRoleProviders(opts.config) : undefined;
-    const role = roles?.tagger ?? roles?.continuist;
-    if (!role) throw new Error('geminiMode "palette" needs a config (for the tagger\'s model) — pass --config');
+    const role = roles?.voicedirector ?? roles?.continuist;
+    if (!role) throw new Error('geminiMode "palette" needs a config (for the voice director\'s model) — pass --config');
     const log = new EventLog(runDir);
     await log.load();
     palette = await designRun(log, role, opts.paletteSize ?? 4);

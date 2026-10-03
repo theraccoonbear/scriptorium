@@ -72,12 +72,12 @@ export class MockProvider {
         return JSON.stringify({ ok: true, issues: [], review: "Mock review: looks good." });
       case "editor":
         return ctx.prose ?? "";
-      case "palette": {
-        // Two tones for every cast member.
-        const ids: string[] = ctx.castIds ?? [];
-        return JSON.stringify({ palettes: Object.fromEntries(ids.map((id) => [id, ["plain", "intense"].slice(0, ctx.size ?? 2)])) });
-      }
-      case "tagger": {
+      case "voicedirector": {
+        if (ctx.task === "palette") {
+          // Two tones for every cast member.
+          const ids: string[] = ctx.castIds ?? [];
+          return JSON.stringify({ palettes: Object.fromEntries(ids.map((id) => [id, ["plain", "intense"].slice(0, ctx.size ?? 2)])) });
+        }
         // A paragraph with a quotation is the first cast member's; the rest is narration.
         const castIds: string[] = ctx.castIds ?? [];
         return JSON.stringify({ paragraphs: (ctx.paragraphs ?? []).map((p: string, n: number) => ({ n: n + 1, speaker: p.includes('"') && castIds[0] ? castIds[0] : "narrator", delivery: "" })), newSpeakers: [] });
@@ -569,7 +569,7 @@ export function timeoutForRole(roleName: string): number {
 // "artist" is the image model, handled by the art step.
 export const DIRECTION_LAYERS = [
   "contextgate", "worldbuilder", "worldgate", "creator", "director", "beatgate",
-  "writer", "editor", "tagger", "continuist", "critic", "archivist", "patchgate", "artdirector", "artist"
+  "writer", "editor", "voicedirector", "continuist", "critic", "archivist", "patchgate", "artdirector", "artist"
 ] as const;
 
 export function checkDirection(direction: Record<string, string> | undefined): void {

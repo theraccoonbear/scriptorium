@@ -740,7 +740,7 @@ Output ONLY JSON:
 - delivery: a few words directing how the paragraph's speaker performs it, from what the scene makes clear — e.g. "low and furious, trying not to be overheard", "dry, unhurried", "hushed, dreading what comes next". "" when a plain read is right. Never add words to be spoken.`;
 
 export interface SpeakerTagging {
-  missing?: number;    // paragraphs the tagger skipped (now narrator)
+  missing?: number;    // paragraphs the voice director skipped (now narrator)
   tones?: (number | null)[];  // with palettes: per paragraph, an index into its speaker's palette
   tags: string[];
   delivery: string[];  // per paragraph; "" = a plain read
@@ -765,7 +765,7 @@ export async function tagSpeakers(role: Role, params: {
   ].filter(Boolean).join("\n\n");
   let lastProblem = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const out = await callJson(role, { role: "tagger", system: TAGGER_SYSTEM, prompt, ctx: { paragraphs, castIds: cast.map((c) => c.id) } });
+    const out = await callJson(role, { role: "voicedirector", system: TAGGER_SYSTEM, prompt, ctx: { task: "tag", paragraphs, castIds: cast.map((c) => c.id) } });
     const tagging = foldKnownSpeakers(toTagging(out.result, paragraphs.length, palettes), cast);
     lastProblem = taggingProblem(tagging, paragraphs.length, cast.map((c) => c.id)) ?? "";
     if (!lastProblem) return { ...out, result: tagging };
@@ -858,7 +858,7 @@ export async function designPalettes(role: Role, params: { script: string; cast:
   ].join("\n\n");
   let problem = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const out = await callJson(role, { role: "palette", system: PALETTE_SYSTEM, prompt, ctx: { castIds: cast.map((c) => c.id), size } });
+    const out = await callJson(role, { role: "voicedirector", system: PALETTE_SYSTEM, prompt, ctx: { task: "palette", castIds: cast.map((c) => c.id), size } });
     const raw = ((out.result ?? {}) as { palettes?: Record<string, unknown> }).palettes ?? {};
     const ids = new Set(cast.map((c) => c.id));
     const palettes: Record<string, string[]> = {};

@@ -38,7 +38,7 @@ const GOOD = {
   newSpeakers: [{ id: "old_one", name: "The Old One", description: "An ancient dragon; a voice like a file drawn across stone." }]
 };
 
-test("the tagger labels paragraphs without ever seeing them back, and is checked", async () => {
+test("the voice director labels paragraphs without ever seeing them back, and is checked", async () => {
   assert.ok(TAGGER_SYSTEM.includes("You never change or repeat the text"));
   assert.equal(taggingProblem({ tags: ["narrator"], delivery: [""], newSpeakers: [] }, 2, []), "1 tags for 2 paragraphs");
   assert.match(taggingProblem({ tags: ["narrator", "bob"], delivery: [], newSpeakers: [] }, 2, ["corin"])!, /unknown speaker "bob"/);
@@ -178,7 +178,7 @@ test("regression: the narrator never reads a spoken line, and characters only re
   const log = new EventLog(await mkdtemp(join(tmpdir(), "scriptorium-tag-")));
   await log.load();
   await log.append("scene_committed", { index: 0, prose: GALLOWS.join("\n\n"), bible: GALLOWS_CAST });
-  // The mistakes the tagger actually made: Hesketh's "Door" and two of Nell's lines tagged narrator,
+  // The mistakes the voice director actually made: Hesketh's "Door" and two of Nell's lines tagged narrator,
   // a no-quote paragraph tagged nell. The targeted retry names the speakers.
   const role = fakeRole(
     { paragraphs: [
@@ -240,7 +240,7 @@ test("regression: a 52-paragraph scene tagged with one entry missing keeps every
   assert.equal(out.result.tags[31], "nell", "labels after the gap are not shifted");
 });
 
-test("tags made by an older tagger are redone", async () => {
+test("tags made by older tagging logic are redone", async () => {
   const log = new EventLog(await mkdtemp(join(tmpdir(), "scriptorium-tag-")));
   await log.load();
   await log.append("scene_committed", { index: 0, prose: PROSE, bible: bibleWith });
