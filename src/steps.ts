@@ -192,6 +192,10 @@ export interface AudiobookStepOptions {
   narratorVoice?: string;
   language?: string;
   characterGenders?: Record<string, string>;
+  narration?: "kokoro" | "gemini";
+  dialogue?: "kokoro" | "gemini";
+  geminiModel?: string;
+  geminiVoices?: Record<string, string>;
   kokoroVoices?: { include?: string[]; exclude?: string[] };
   characterVoices?: Record<string, string>;
   force?: boolean;
@@ -208,12 +212,17 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     narratorVoice: opts.narratorVoice,
     language: opts.language,
     characterGenders: opts.characterGenders,
+    narration: opts.narration,
+    dialogue: opts.dialogue,
+    geminiModel: opts.geminiModel,
+    geminiVoices: opts.geminiVoices,
     kokoroVoices: opts.kokoroVoices,
     characterVoices: opts.characterVoices,
     force: opts.force,
     onProgress: (event) => {
       if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);
       else if (event.type === "model_ready") console.error(`[scriptorium] ${c.ok("model ready")}`);
+      else if (event.type === "line_fallback") console.error(`[scriptorium]   ${c.retry(`Gemini TTS failed for ${event.speaker}, used Kokoro for that line: ${event.error.slice(0, 120)}`)}`);
       else if (event.type === "scene_skipped") console.error(`[scriptorium] ${c.dim(`scene ${event.index + 1} unchanged — skipping (${event.path})`)}`);
       else if (event.type === "scene_start") console.error(`[scriptorium] ${c.blue(c.bold(`scene ${event.index + 1}/${event.total}`))} ${c.dim(`(${event.segments} segment${event.segments === 1 ? "" : "s"})`)}`);
       else if (event.type === "chunk_done") console.error(`[scriptorium]   ${c.dim(`[${event.speaker}] ${event.text.slice(0, 60)}${event.text.length > 60 ? "..." : ""}`)}`);
