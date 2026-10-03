@@ -2,6 +2,7 @@
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { EventLog } from "./eventlog.ts";
+import { loadRepoEnv } from "./env.ts";
 import { buildRoleProviders, listModels } from "./providers.ts";
 import { renderStory, redirectArt } from "./engine.ts";
 import { replay } from "./bible.ts";
@@ -138,6 +139,8 @@ function engineFlag(value: string | undefined, flag: string): "kokoro" | "gemini
 }
 
 async function main() {
+  // The repo's .env wins over the shell (see env.ts).
+  loadRepoEnv(new URL("../.env", import.meta.url).pathname);
   const [command, ...rest] = process.argv.slice(2);
   const { values, positionals } = parseArgs({
     args: rest,
