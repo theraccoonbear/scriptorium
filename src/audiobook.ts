@@ -337,6 +337,7 @@ export interface AudiobookOptions {
   geminiMode?: GeminiMode;
   palette?: TonePaletteData;  // palette mode: the story's tone palettes (made by the audiobook step)
   geminiRpm?: number;          // Gemini TTS requests per minute (default 9; Tier 1 allows 10)
+  geminiFallback?: "kokoro" | "gemini";  // see hybridVoicing
   characterVoices?: Record<string, string>;  // character id -> Kokoro voice, chosen by the author
   // Kokoro voices to use or avoid (e.g. weak or overused ones), by id.
   kokoroVoices?: { include?: string[]; exclude?: string[] };
@@ -350,8 +351,9 @@ export type AudiobookProgress =
   | { type: "model_ready" }
   | { type: "scene_skipped"; index: number; path: string }
   | { type: "line_fallback"; speaker: string; error: string }
+  | { type: "line_kept_long"; speaker: string; seconds: number }
   | { type: "batch_done"; sceneIndex: number; batch: number; batches: number; speaker: string; lines: number; tone?: string }
-  | { type: "batch_failed"; sceneIndex: number; speaker: string; lines: number; error: string }
+  | { type: "batch_failed"; sceneIndex: number; speaker: string; lines: number; error: string; split: boolean }
   | { type: "scene_start"; index: number; total: number; segments: number }
   | { type: "chunk_done"; sceneIndex: number; segmentIndex: number; segments: number; speaker: string; text: string }
   | { type: "segment_done"; sceneIndex: number; segmentIndex: number; segments: number; speaker: string }
@@ -507,8 +509,14 @@ export function hybridVoicing(p: {
   kokoroSynth: Synthesize;
   speak: Speak;
   onFallback?: (speaker: string, error: string) => void;
+  // A Gemini line that keeps failing: "kokoro" reads it with Kokoro; "gemini"
+  // keeps it in Gemini (a bare retry, then the best take). Default: kokoro when
+  // the story uses Kokoro anyway, gemini for an all-Gemini story.
+  fallback?: "kokoro" | "gemini";
+  onKeptLong?: (speaker: string, seconds: number) => void;
 }): { voiceFor: (speaker: string) => string; synth: Synthesize } {
   const { bible, assignment, narration, dialogue, kokoroSynth, speak } = p;
+  const fallback = p.fallback ?? (narration === "kokoro" || dialogue === "kokoro" ? "kokoro" : "gemini");
   const kokoroVoiceFor = (speaker: string) => speaker === "narrator"
     ? assignment.narrator
     : (assignment.characters[speaker] ?? assignment.narrator);
@@ -529,18 +537,30 @@ export function hybridVoicing(p: {
     const prompt = buildTtsPrompt(speaker === "narrator" || !ch
       ? { name: "Narrator", profile: `The narrator of a story. Tone: ${bible.tone || "measured, warm storytelling"}.`, scene, notes: ctx?.delivery ? `Storytelling narration, ${ctx.delivery}.` : "Storytelling narration: clear, engaged, natural pace; let the drama of the moment color the read without over-acting.", line: text }
       : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" "), scene, ...(ctx?.delivery ? { notes: ctx.delivery } : {}), line: text });
+    // A reply far longer than the line could take means the model spoke
+    // something else too (direction, context): retry, then fall back.
+    const geminiVoice = voice.slice("gemini:".length);
+    let best: Float32Array | undefined;
+    const take = async (pr: string): Promise<Float32Array | undefined> => {
+      const { samples, sampleRate } = await speak(pr, geminiVoice);
+      const audio = resample(samples, sampleRate, SAMPLE_RATE);
+      if (!best || audio.length < best.length) best = audio;
+      return samples.length / sampleRate <= maxLineSeconds(text) ? audio : undefined;
+    };
     try {
-      // A reply far longer than the line could take means the model spoke
-      // something else too (direction, context): retry once, then fall back.
       let audio: Float32Array | undefined;
-      for (let attempt = 0; attempt < 2 && !audio; attempt++) {
-        const { samples, sampleRate } = await speak(prompt, voice.slice("gemini:".length));
-        if (samples.length / sampleRate <= maxLineSeconds(text)) audio = resample(samples, sampleRate, SAMPLE_RATE);
+      for (let attempt = 0; attempt < 2 && !audio; attempt++) audio = await take(prompt);
+      // Staying in Gemini: a bare prompt (just the line) rarely reads anything else aloud.
+      if (!audio && fallback === "gemini") for (let attempt = 0; attempt < 2 && !audio; attempt++) audio = await take(text);
+      if (!audio && fallback === "gemini" && best) {
+        p.onKeptLong?.(speaker, best.length / SAMPLE_RATE);
+        audio = best;
       }
       if (!audio) throw new Error(`audio far longer than the line (over ${maxLineSeconds(text)}s) on both attempts`);
       yield { text, audio };
     } catch (err) {
       if (isBudgetError(err)) throw err;  // a spent budget stops the audiobook; it never quietly switches engines
+      if (fallback === "gemini") throw err;
       p.onFallback?.(speaker, err instanceof Error ? err.message : String(err));
       yield* kokoroSynth(text, kokoroVoiceFor(speaker));
     }
@@ -564,8 +584,14 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
     return [{ order, speaker: x.speaker, text: x.text, ...(tone ? { tone } : {}) }];
   });
   const out = new Map<number, Float32Array>();
-  const batches = planBatches(pieces);
-  for (const [i, batch] of batches.entries()) {
+  const queue = planBatches(pieces);
+  let done = 0;
+  // A batch that won't cut cleanly is halved and each half tried again (two
+  // requests, not one per line); a single line that still fails is voiced in line mode.
+  while (queue.length > 0) {
+    const batch = queue.shift()!;
+    const i = done++;
+    const batches = done + queue.length;
     const ch = p.bible.characters[batch.speaker];
     const who = batch.speaker === "narrator" || !ch
       ? { name: "Narrator", profile: `The narrator of a story. Tone: ${p.bible.tone || "measured, warm storytelling"}.` }
@@ -573,10 +599,14 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
     try {
       const audio = await voiceBatch(p.speak, batch, p.voiceFor(batch.speaker).slice("gemini:".length), who, SAMPLE_RATE);
       batch.pieces.forEach((piece, k) => out.set(piece.order, audio[k]));
-      p.onProgress({ type: "batch_done", sceneIndex: scene.index, batch: i + 1, batches: batches.length, speaker: batch.speaker, lines: batch.pieces.length, ...(batch.tone ? { tone: batch.tone } : {}) });
+      p.onProgress({ type: "batch_done", sceneIndex: scene.index, batch: i + 1, batches, speaker: batch.speaker, lines: batch.pieces.length, ...(batch.tone ? { tone: batch.tone } : {}) });
     } catch (err) {
       if (isBudgetError(err)) throw err;
-      p.onProgress({ type: "batch_failed", sceneIndex: scene.index, speaker: batch.speaker, lines: batch.pieces.length, error: err instanceof Error ? err.message : String(err) });
+      const halves = batch.pieces.length > 1
+        ? [batch.pieces.slice(0, Math.ceil(batch.pieces.length / 2)), batch.pieces.slice(Math.ceil(batch.pieces.length / 2))].map((ps) => ({ ...batch, pieces: ps }))
+        : [];
+      queue.unshift(...halves);
+      p.onProgress({ type: "batch_failed", sceneIndex: scene.index, speaker: batch.speaker, lines: batch.pieces.length, error: err instanceof Error ? err.message : String(err), split: halves.length > 0 });
     }
   }
   return out;
@@ -704,8 +734,9 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   };
   const speak = opts.speak ?? geminiSpeaker({ model: opts.geminiModel, minIntervalMs: Math.ceil(60000 / (opts.geminiRpm ?? 9)) });
   const { voiceFor, synth: lineSynth } = hybridVoicing({
-    bible, assignment, narration, dialogue, kokoroSynth, speak,
-    onFallback: (speaker, error) => onProgress({ type: "line_fallback", speaker, error })
+    bible, assignment, narration, dialogue, kokoroSynth, speak, fallback: opts.geminiFallback,
+    onFallback: (speaker, error) => onProgress({ type: "line_fallback", speaker, error }),
+    onKeptLong: (speaker, seconds) => onProgress({ type: "line_kept_long", speaker, seconds })
   });
   const mode: GeminiMode = usesGemini ? opts.geminiMode ?? "line" : "line";
   const toneOf = mode === "palette" && opts.palette ? paletteToneFor(events, opts.palette) : undefined;

@@ -205,6 +205,7 @@ export interface AudiobookStepOptions {
   geminiMode?: GeminiMode;
   paletteSize?: number;  // palette mode: tones per speaker (default 4)
   geminiRpm?: number;
+  geminiFallback?: "kokoro" | "gemini";
   force?: boolean;
   config?: StoryConfig;  // for spend accounting (pricing, budget)
 }
@@ -268,6 +269,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     geminiMode: opts.geminiMode,
     palette,
     geminiRpm: opts.geminiRpm,
+    geminiFallback: opts.geminiFallback,
     force: opts.force,
     onProgress: (event) => {
       if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);
@@ -279,7 +281,8 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
       else if (event.type === "segment_done") console.error(`[scriptorium]   ${c.dim(`segment ${event.segmentIndex + 1}/${event.segments} (${event.speaker}) done`)}`);
       else if (event.type === "scene_done") console.error(`[scriptorium] ${c.ok(`scene ${event.index + 1} written`)} ${c.dim(event.path)}`);
       else if (event.type === "batch_done") console.error(`[scriptorium]   ${c.dim(`batch ${event.batch}/${event.batches}: ${event.speaker}${event.tone ? ` (${event.tone})` : ""}, ${event.lines} line${event.lines === 1 ? "" : "s"}`)}`);
-      else if (event.type === "batch_failed") console.error(`[scriptorium]   ${c.retry(`batch for ${event.speaker} (${event.lines} lines) failed — voicing them one by one: ${event.error.slice(0, 120)}`)}`);
+      else if (event.type === "batch_failed") console.error(`[scriptorium]   ${c.retry(`batch for ${event.speaker} (${event.lines} line${event.lines === 1 ? "" : "s"}) didn't cut cleanly — ${event.split ? "trying it in two halves" : "voicing the line on its own"}: ${event.error.slice(0, 120)}`)}`);
+      else if (event.type === "line_kept_long") console.error(`[scriptorium]   ${c.retry(`${event.speaker}: every Gemini take ran long — kept the shortest (${event.seconds.toFixed(1)}s); check this line`)}`);
     }
   });
   await writeVoiceMap(result.outDir, result.voices);

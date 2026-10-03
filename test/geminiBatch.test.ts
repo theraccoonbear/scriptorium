@@ -138,3 +138,69 @@ test("palettes are designed from the whole script; tagging picks each line's ton
   await tagRun(log, role, () => {}, palette);
   assert.equal(paletteToneFor(log.events, palette)(1, 0, "nell"), "pleading");
 });
+
+// --- regressions from the first real batched sample ---
+test("regression: a short line Gemini barely paused after isn't swallowed by the next (cuts fit expected lengths)", () => {
+  // Line 1 is long with a long dramatic pause inside; line 2 is two words with only a short pause after it.
+  // The longest-silence rule would cut inside line 1 and give line 2 most of line 3.
+  const texts = ["He kept his hands moving along the rope. And then, slowly, he looked up at her for the first time.", "Edrick said.", "She did not sit. Her boots were black to the shin with road mud, and her cloak had been mended."];
+  const a = audio([{ sound: 2.6 }, { silence: 1.3 }, { sound: 2.4 }, { silence: 1.8 }, { sound: 0.7 }, { silence: 0.45 }, { sound: 4.8 }]);
+  const pieces = splitOnSilences(a, RATE, 3, texts)!;
+  assert.ok(Math.abs(secs(pieces[0]) - 6.46) < 0.2, `line 1 keeps its inner pause: ${secs(pieces[0])}`);
+  assert.ok(Math.abs(secs(pieces[1]) - 0.86) < 0.2, `"Edrick said." is short: ${secs(pieces[1])}`);
+  assert.ok(Math.abs(secs(pieces[2]) - 4.96) < 0.2, `line 3: ${secs(pieces[2])}`);
+  assert.equal(splitProblem(pieces, texts, RATE), undefined);
+});
+
+test("a batch that won't cut is halved (two requests), not voiced line by line", async () => {
+  const prose = ["narrator: One.", "narrator: Two.", "narrator: Three.", "narrator: Four."].join("\n\n");
+  const scene = parseScene(0, prose, new Set());
+  const bible = emptyBible();
+  const sizes: number[] = [];
+  // Gemini runs batches of more than two lines together (no pauses); two or fewer come out clean.
+  const speak = async (prompt: string) => {
+    const lines = prompt.split("#### TRANSCRIPT\n")[1].split("\n\n");
+    sizes.push(lines.length);
+    const parts = lines.length > 2 ? [{ sound: lines.length }] : lines.flatMap((_, i) => (i ? [{ silence: 2 }, { sound: 1 }] : [{ sound: 1 }]));
+    return { samples: audio(parts), sampleRate: RATE };
+  };
+  const failures: boolean[] = [];
+  const out = await voiceSceneBatches(scene, "speaker", { bible, voiceFor: () => "gemini:Charon", speak, onProgress: (e) => { if (e.type === "batch_failed") failures.push(e.split); } });
+  assert.equal(out.size, 4, "every line voiced from a batch");
+  assert.deepEqual(sizes, [4, 4, 4, 2, 2], "three tries at four lines, then one request per half");
+  assert.deepEqual(failures, [true]);
+});
+
+test("narrator batches are smaller than character batches", () => {
+  const many = (speaker: string) => Array.from({ length: 20 }, (_, i) => ({ order: i, speaker, text: "Short line." }));
+  assert.deepEqual(planBatches(many("narrator")).map((b) => b.pieces.length), [8, 8, 4]);
+  assert.deepEqual(planBatches(many("nell")).map((b) => b.pieces.length), [12, 8]);
+});
+
+test("an all-Gemini story never falls back to Kokoro: a bare retry, then the shortest take", async () => {
+  const { hybridVoicing, synthesizeScene } = await import("../src/audiobook.ts");
+  const bible = emptyBible();
+  bible.characters.nell = { id: "nell", name: "Nell", traits: "", goal: "", voice: "", status: "active" };
+  const assignment = { narrator: "af_heart", characters: { nell: "af_bella" }, genders: {}, gemini: { narrator: "Charon", characters: { nell: "Kore" } } };
+  const kokoro: string[] = [];
+  const kokoroSynth = async function* (text: string, voice: string) { kokoro.push(voice); yield { text, audio: new Float32Array(10) }; };
+  const scene = parseScene(0, 'nell: "Go home."', new Set(["nell"]));
+  const run = async (bareWorks: boolean, fallback?: "kokoro" | "gemini") => {
+    const prompts: string[] = [];
+    const kept: number[] = [];
+    // The full prompt is always read aloud (too long); the bare line works only if bareWorks.
+    const speak = async (prompt: string) => { prompts.push(prompt); const long = prompt.includes("#") || !bareWorks; return { samples: audio([{ sound: long ? 20 : 1 }]), sampleRate: RATE }; };
+    const { voiceFor, synth } = hybridVoicing({ bible, assignment, narration: "gemini", dialogue: "gemini", kokoroSynth, speak, ...(fallback ? { fallback } : {}), onKeptLong: (_s, sec) => kept.push(sec) });
+    await synthesizeScene(scene, voiceFor, synth);
+    return { prompts, kept };
+  };
+  const bare = await run(true);
+  assert.equal(bare.prompts.length, 3, "two full prompts, then the bare line");
+  assert.equal(bare.prompts[2], '"Go home."');
+  assert.deepEqual(kokoro, []);
+  const long = await run(false);
+  assert.equal(long.kept.length, 1, "kept the shortest Gemini take, and said so");
+  assert.deepEqual(kokoro, []);
+  await run(false, "kokoro");
+  assert.deepEqual(kokoro, ["af_bella"], "Kokoro only when asked for");
+});

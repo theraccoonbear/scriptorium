@@ -27,7 +27,7 @@ export interface Batch {
 
 // Groups pieces by speaker (and tone), in story order, capped so one request's
 // audio stays a few minutes long and a failed batch is cheap to redo.
-export function planBatches(pieces: BatchPiece[], maxChars = 1400, maxLines = 16): Batch[] {
+export function planBatches(pieces: BatchPiece[], maxChars = 1400, maxLines = 12, maxNarratorLines = 8): Batch[] {
   const groups = new Map<string, Batch[]>();
   const out: Batch[] = [];
   for (const p of pieces) {
@@ -35,7 +35,8 @@ export function planBatches(pieces: BatchPiece[], maxChars = 1400, maxLines = 16
     const list = groups.get(key) ?? groups.set(key, []).get(key)!;
     let current = list.at(-1);
     const size = current ? current.pieces.reduce((n, x) => n + x.text.length, 0) : 0;
-    if (!current || current.pieces.length >= maxLines || size + p.text.length > maxChars) {
+    const cap = p.speaker === "narrator" ? Math.min(maxLines, maxNarratorLines) : maxLines;
+    if (!current || current.pieces.length >= cap || size + p.text.length > maxChars) {
       current = { speaker: p.speaker, ...(p.tone ? { tone: p.tone } : {}), pieces: [] };
       list.push(current);
       out.push(current);
@@ -56,12 +57,8 @@ export function batchPrompt(batch: Batch, who: { name: string; profile: string }
   });
 }
 
-// Cuts audio into `count` pieces at the count-1 longest silences, each piece
-// trimmed of leading and trailing silence (keeping a short pad). A dramatic
-// pause inside a line is shorter than the requested two-second gap, so it is
-// never chosen over a real boundary. Undefined when there aren't enough silences.
-export function splitOnSilences(samples: Float32Array, rate: number, count: number): Float32Array[] | undefined {
-  if (count <= 1) return [trimSilence(samples, rate)];
+// Frame loudness and the silences inside the speech (not the padding at either end).
+function silences(samples: Float32Array, rate: number): { frame: number; first: number; last: number; runs: { start: number; end: number }[] } {
   const frame = Math.max(1, Math.round(rate * 0.02));
   const rms: number[] = [];
   for (let i = 0; i < samples.length; i += frame) {
@@ -72,20 +69,67 @@ export function splitOnSilences(samples: Float32Array, rate: number, count: numb
   }
   const peak = Math.max(...rms, 1e-9);
   const quiet = (v: number) => v < Math.max(1e-4, peak * 0.03);
+  const first = rms.findIndex((v) => !quiet(v));
+  const last = rms.length - 1 - [...rms].reverse().findIndex((v) => !quiet(v));
   const runs: { start: number; end: number }[] = [];
   let runStart = -1;
   rms.forEach((v, f) => {
     if (quiet(v)) { if (runStart < 0) runStart = f; }
     else if (runStart >= 0) { runs.push({ start: runStart, end: f }); runStart = -1; }
   });
-  // Silences at the very start and end are padding, not boundaries.
-  const firstSound = rms.findIndex((v) => !quiet(v));
-  const lastSound = rms.length - 1 - [...rms].reverse().findIndex((v) => !quiet(v));
-  const inner = runs.filter((r) => r.start > firstSound && r.end <= lastSound && (r.end - r.start) * frame >= rate * 0.25);
-  if (inner.length < count - 1) return undefined;
-  const cuts = [...inner].sort((a, b) => (b.end - b.start) - (a.end - a.start)).slice(0, count - 1)
-    .sort((a, b) => a.start - b.start)
-    .map((r) => Math.round(((r.start + r.end) / 2) * frame));
+  return { frame, first, last, runs: runs.filter((r) => r.start > first && r.end <= last && (r.end - r.start) * frame >= rate * 0.12) };
+}
+
+// How long a line takes to say is roughly proportional to its letters.
+const sayable = (t: string) => Math.max(1, t.replace(/[^\p{L}\p{N}]/gu, "").length);
+
+// Cuts a batch's audio into its lines. Each candidate cut is a silence inside the
+// speech; the chosen cuts are the ones whose pieces best match each line's
+// expected length (from its letters and the take's own pace), with a bonus for
+// longer silences. So a short line can't swallow a long one, and a long dramatic
+// pause inside a line isn't mistaken for a boundary. Undefined when there are
+// fewer silences than boundaries.
+export function splitOnSilences(samples: Float32Array, rate: number, count: number, texts?: string[]): Float32Array[] | undefined {
+  if (count <= 1) return [trimSilence(samples, rate)];
+  const { frame, first, last, runs } = silences(samples, rate);
+  if (runs.length < count - 1 || first < 0) return undefined;
+  const sec = (frames: number) => (frames * frame) / rate;
+  const total = sec(last + 1 - first);
+  const lens = runs.map((r) => sec(r.end - r.start));
+  // Pause estimate: the typical length of the count-1 longest silences.
+  const gap = [...lens].sort((a, b) => b - a).slice(0, count - 1).reduce((a, b) => a + b, 0) / (count - 1);
+  const weights = (texts ?? Array(count).fill("x")).map(sayable);
+  const pace = Math.max(0.01, (total - gap * (count - 1)) / weights.reduce((a, b) => a + b, 0));
+  const expected = weights.map((w, i) => w * pace + gap * ((i === 0 || i === count - 1) ? 0.5 : 1));
+  const mids = runs.map((r) => sec((r.start + r.end) / 2 - first));
+  // cost[k][j]: best cost of the first k+1 pieces, with cut k at silence j.
+  const pieceCost = (d: number, i: number) => ((d - expected[i]) / Math.max(expected[i], 0.6)) ** 2;
+  const bonus = (j: number) => 0.15 * Math.min(lens[j], 2.5);
+  const M = runs.length;
+  const cost: number[][] = [];
+  const from: number[][] = [];
+  for (let k = 0; k < count - 1; k++) {
+    cost.push(Array(M).fill(Infinity));
+    from.push(Array(M).fill(-1));
+    for (let j = k; j < M - (count - 2 - k); j++) {
+      if (k === 0) { cost[k][j] = pieceCost(mids[j], 0) - bonus(j); continue; }
+      for (let i = k - 1; i < j; i++) {
+        if (cost[k - 1][i] === Infinity) continue;
+        const c = cost[k - 1][i] + pieceCost(mids[j] - mids[i], k) - bonus(j);
+        if (c < cost[k][j]) { cost[k][j] = c; from[k][j] = i; }
+      }
+    }
+  }
+  let best = -1;
+  let bestCost = Infinity;
+  for (let j = count - 2; j < M; j++) {
+    const c = cost[count - 2][j] + pieceCost(total - mids[j], count - 1);
+    if (c < bestCost) { bestCost = c; best = j; }
+  }
+  if (best < 0) return undefined;
+  const chosen: number[] = [];
+  for (let k = count - 2, j = best; k >= 0; j = from[k][j], k--) chosen.unshift(j);
+  const cuts = chosen.map((j) => Math.round(((runs[j].start + runs[j].end) / 2) * frame));
   const bounds = [0, ...cuts, samples.length];
   return bounds.slice(1).map((end, i) => trimSilence(samples.subarray(bounds[i], end), rate));
 }
@@ -124,7 +168,7 @@ export async function voiceBatch(speak: Speak, batch: Batch, voice: string, who:
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const r = await speak(prompt, voice);
     const samples = resample(r.samples, r.sampleRate, rate);
-    const pieces = splitOnSilences(samples, rate, texts.length);
+    const pieces = splitOnSilences(samples, rate, texts.length, texts);
     if (!pieces) { problem = `found fewer than ${texts.length - 1} pauses between ${texts.length} lines`; continue; }
     problem = splitProblem(pieces, texts, rate) ?? "";
     if (!problem) return pieces;
