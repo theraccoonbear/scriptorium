@@ -88,6 +88,20 @@ export interface GeminiTtsSpec {
 
 export type Speak = (prompt: string, voice: string) => Promise<{ samples: Float32Array; sampleRate: number }>;
 
+// Gemini TTS rate limits ran out after waiting: the per-minute or (more often)
+// the per-day cap. It stops the audiobook — never a reason to retake, re-cut,
+// or fall back to another engine. Finished scenes are kept; re-run later.
+export class TtsRateLimitError extends Error {
+  constructor(detail: string) {
+    super(`Gemini TTS rate limit reached (on Tier 1: 10 requests a minute, 100 a day) — finished scenes are kept; re-run later to continue. ${detail}`);
+    this.name = "TtsRateLimitError";
+  }
+}
+
+export function isTtsRateLimit(err: unknown): boolean {
+  return err instanceof TtsRateLimitError;
+}
+
 // Gemini TTS has a low requests-per-minute cap. A rate-limited line waits and
 // tries again (up to about two minutes) instead of falling back to Kokoro.
 const RATE_LIMIT_WAITS_MS = [15000, 20000, 30000, 30000, 30000];
@@ -105,7 +119,8 @@ export function geminiSpeaker(spec: GeminiTtsSpec = {}, sleep: (ms: number) => P
         return await call(prompt, voice);
       } catch (err) {
         const limited = /\b429\b|RESOURCE_EXHAUSTED/.test(err instanceof Error ? err.message : String(err));
-        if (!limited || wait >= RATE_LIMIT_WAITS_MS.length) throw err;
+        if (!limited) throw err;
+        if (wait >= RATE_LIMIT_WAITS_MS.length) throw new TtsRateLimitError((err instanceof Error ? err.message : String(err)).slice(0, 160));
         console.error(`[scriptorium]   Gemini TTS rate limit — waiting ${RATE_LIMIT_WAITS_MS[wait] / 1000}s`);
         await sleep(RATE_LIMIT_WAITS_MS[wait]);
       }

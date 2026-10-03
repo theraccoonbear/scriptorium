@@ -16,6 +16,7 @@ import type { TonePaletteData } from "./tagging.ts";
 import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
 import type { Speak } from "./geminiTts.ts";
+import { isTtsRateLimit } from "./geminiTts.ts";
 import { isBudgetError } from "./usage.ts";
 import type { Bible, SceneCommittedData, StoryEvent } from "./types.ts";
 
@@ -559,7 +560,7 @@ export function hybridVoicing(p: {
       if (!audio) throw new Error(`audio far longer than the line (over ${maxLineSeconds(text)}s) on both attempts`);
       yield { text, audio };
     } catch (err) {
-      if (isBudgetError(err)) throw err;  // a spent budget stops the audiobook; it never quietly switches engines
+      if (isBudgetError(err) || isTtsRateLimit(err)) throw err;  // a spent budget or quota stops the audiobook; it never quietly switches engines
       if (fallback === "gemini") throw err;
       p.onFallback?.(speaker, err instanceof Error ? err.message : String(err));
       yield* kokoroSynth(text, kokoroVoiceFor(speaker));
@@ -601,7 +602,7 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
       batch.pieces.forEach((piece, k) => out.set(piece.order, audio[k]));
       p.onProgress({ type: "batch_done", sceneIndex: scene.index, batch: i + 1, batches, speaker: batch.speaker, lines: batch.pieces.length, ...(batch.tone ? { tone: batch.tone } : {}) });
     } catch (err) {
-      if (isBudgetError(err)) throw err;
+      if (isBudgetError(err) || isTtsRateLimit(err)) throw err;
       const halves = batch.pieces.length > 1
         ? [batch.pieces.slice(0, Math.ceil(batch.pieces.length / 2)), batch.pieces.slice(Math.ceil(batch.pieces.length / 2))].map((ps) => ({ ...batch, pieces: ps }))
         : [];

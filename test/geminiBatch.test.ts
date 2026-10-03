@@ -204,3 +204,20 @@ test("an all-Gemini story never falls back to Kokoro: a bare retry, then the sho
   await run(false, "kokoro");
   assert.deepEqual(kokoro, ["af_bella"], "Kokoro only when asked for");
 });
+
+test("regression: running out of Gemini quota stops the audiobook — no halving, no Kokoro", async () => {
+  const { TtsRateLimitError } = await import("../src/geminiTts.ts");
+  const { hybridVoicing, synthesizeScene } = await import("../src/audiobook.ts");
+  const scene = parseScene(0, ["narrator: One.", "narrator: Two.", "narrator: Three."].join("\n\n"), new Set());
+  let calls = 0;
+  const limited = async () => { calls++; throw new TtsRateLimitError("HTTP 429"); };
+  await assert.rejects(voiceSceneBatches(scene, "speaker", { bible: emptyBible(), voiceFor: () => "gemini:Charon", speak: limited, onProgress: () => {} }), /rate limit reached/);
+  assert.equal(calls, 1, "one refused request, then stop — not three retakes and two halves");
+
+  const kokoro: string[] = [];
+  const kokoroSynth = async function* (text: string, voice: string) { kokoro.push(voice); yield { text, audio: new Float32Array(10) }; };
+  const assignment = { narrator: "af_heart", characters: {}, genders: {}, gemini: { narrator: "Charon", characters: {} } };
+  const { voiceFor, synth } = hybridVoicing({ bible: emptyBible(), assignment, narration: "gemini", dialogue: "kokoro", kokoroSynth, speak: limited, fallback: "kokoro" });
+  await assert.rejects(synthesizeScene(scene, voiceFor, synth), /rate limit reached/);
+  assert.deepEqual(kokoro, [], "even with Kokoro as the fallback, a quota stop isn't a fallback");
+});
