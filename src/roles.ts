@@ -839,19 +839,26 @@ Output ONLY JSON:
 - tones: at most the PALETTE SIZE given, each 2-6 words of performance direction ("low, suppressed fury", "bright, deflecting charm"). Cover the speaker's real range; merge near-duplicates.
 - assign: exactly one entry per numbered note, in order: the 0-based index of the tone closest to that note.`;
 
-export async function buildPalette(role: Role, params: { speaker: string; notes: string[]; size: number }): Promise<RoleOutput<{ tones: string[]; assign: number[] }>> {
-  const { speaker, notes, size } = params;
-  let prompt = `SPEAKER: ${speaker}\nPALETTE SIZE: ${size}\n\nNOTES (${notes.length}):\n${notes.map((n, i) => `[${i + 1}] ${n}`).join("\n")}`;
+export async function buildPalette(role: Role, params: { speaker: string; notes: string[]; size: number; fixedTones?: string[] }): Promise<RoleOutput<{ tones: string[]; assign: number[] }>> {
+  const { speaker, notes, fixedTones } = params;
+  const size = fixedTones ? fixedTones.length : params.size;
+  let prompt = [
+    `SPEAKER: ${speaker}`,
+    fixedTones
+      ? `THE PALETTE IS FIXED — return exactly these tones, in this order, and only choose the assignments:\n${fixedTones.map((t, i) => `${i}: ${t}`).join("\n")}`
+      : `PALETTE SIZE: ${size}`,
+    `NOTES (${notes.length}):\n${notes.map((n, i) => `[${i + 1}] ${n}`).join("\n")}`
+  ].join("\n\n");
   let problem = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await callJson(role, { role: "palette", system: PALETTE_SYSTEM, prompt, ctx: { notes, size } });
     const r = (out.result ?? {}) as { tones?: unknown; assign?: unknown };
-    const tones = Array.isArray(r.tones) ? r.tones.map((t) => String(t).trim()).filter(Boolean) : [];
+    const tones = fixedTones ?? (Array.isArray(r.tones) ? r.tones.map((t) => String(t).trim()).filter(Boolean) : []);
     const assign = Array.isArray(r.assign) ? r.assign.map(Number) : [];
     if (tones.length === 0 || tones.length > size) problem = `${tones.length} tones (want 1-${size})`;
     else if (assign.length !== notes.length) problem = `${assign.length} assignments for ${notes.length} notes`;
     else if (assign.some((i) => !Number.isInteger(i) || i < 0 || i >= tones.length)) problem = "an assignment points at no tone";
-    else return { ...out, result: { tones, assign } };
+    else return { ...out, result: { tones: fixedTones ?? tones, assign } };
     prompt = `${prompt}\n\nYour last reply was unusable: ${problem}. Reply again.`;
   }
   throw new Error(`tone palette for ${speaker} failed: ${problem}`);

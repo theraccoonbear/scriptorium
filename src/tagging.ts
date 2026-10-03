@@ -273,6 +273,18 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
 
 // ---- tone palettes (geminiMode "palette") ----
 
+// The narrator reads in one of a few fixed registers; its delivery notes
+// ("silence, which is answer enough") describe the scene, not a reading.
+export const NARRATOR_TONES = [
+  "neutral, measured storytelling",
+  "tense and quickening",
+  "hushed and intimate",
+  "grave and heavy"
+];
+
+// Bumped when palette logic changes, so palettes made by older logic are remade.
+const PALETTE_VERSION = 2;
+
 export interface TonePaletteData {
   size: number;
   source: string;  // hash of the notes the palette was made from
@@ -294,7 +306,7 @@ function deliveryNotes(events: StoryEvent[]): { speaker: string; key: string; no
 }
 
 export function latestPalette(events: StoryEvent[], size: number): TonePaletteData | undefined {
-  const source = proseHash(JSON.stringify({ size, notes: deliveryNotes(events) }));
+  const source = proseHash(JSON.stringify({ version: PALETTE_VERSION, size, notes: deliveryNotes(events) }));
   const e = [...events].reverse().find((x) => x.type === "tone_palette" && (x.data as TonePaletteData).source === source);
   return e?.data as TonePaletteData | undefined;
 }
@@ -305,13 +317,17 @@ export async function paletteRun(log: EventLog, role: Role, size: number): Promi
   const existing = latestPalette(log.events, size);
   if (existing) return existing;
   const notes = deliveryNotes(log.events);
-  const data: TonePaletteData = { size, source: proseHash(JSON.stringify({ size, notes })), speakers: {}, assign: {} };
+  const data: TonePaletteData = { size, source: proseHash(JSON.stringify({ version: PALETTE_VERSION, size, notes })), speakers: {}, assign: {} };
   for (const speaker of [...new Set(notes.map((n) => n.speaker))]) {
     const mine = notes.filter((n) => n.speaker === speaker);
     const distinct = [...new Set(mine.map((n) => n.note))];
     let tones: string[];
     let index: (note: string, i: number) => number;
-    if (distinct.length <= size) {
+    if (speaker === "narrator") {
+      const out = await buildPalette(role, { speaker, notes: distinct, size, fixedTones: NARRATOR_TONES });
+      tones = NARRATOR_TONES;
+      index = (note) => out.result.assign[distinct.indexOf(note)];
+    } else if (distinct.length <= size) {
       tones = distinct;
       index = (note) => distinct.indexOf(note);
     } else {

@@ -112,3 +112,21 @@ test("tone palettes: few notes are kept as they are; many are reduced by the mod
   await paletteRun(log, role, 2);
   assert.equal(calls.length, 1, "made once per set of notes");
 });
+
+test("the narrator's palette is a fixed list; its notes are only assigned to it", async () => {
+  const { NARRATOR_TONES } = await import("../src/tagging.ts");
+  const log = new EventLog(await mkdtemp(join(tmpdir(), "scriptorium-pal-")));
+  await log.load();
+  const prose = ["The room went still.", "Nobody answered."].join("\n\n");
+  const { proseHash } = await import("../src/tagging.ts");
+  await log.append("scene_committed", { index: 0, prose, bible: { characters: {} } });
+  await log.append("scene_tags", { version: 2, index: 0, source: proseHash(prose), tags: ["narrator", "narrator"], delivery: ["tense", "silence, which is answer enough"], speakers: [] });
+  const prompts: string[] = [];
+  // The model tries to invent tones anyway; only its assignments are used.
+  const role: Role = { provider: { complete: async (req) => { prompts.push(req.prompt); return JSON.stringify({ tones: ["made up"], assign: [1, 0] }); } } };
+  const pal = await paletteRun(log, role, 4);
+  assert.deepEqual(pal.speakers.narrator.tones, NARRATOR_TONES);
+  assert.match(prompts[0], /THE PALETTE IS FIXED/);
+  assert.equal(paletteTone(pal, 0, 0, "narrator"), "tense and quickening");
+  assert.equal(paletteTone(pal, 0, 1, "narrator"), "neutral, measured storytelling");
+});
