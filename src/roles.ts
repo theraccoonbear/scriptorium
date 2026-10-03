@@ -733,7 +733,7 @@ Output ONLY JSON:
 {"paragraphs":[{"n":number,"speaker":string,"delivery":string}],"newSpeakers":[{"id":string,"name":string,"gender":"female"|"male"|"","description":string}]}
 
 - paragraphs: one entry for EVERY numbered paragraph, with n its number: speaker is "narrator" for a paragraph with no spoken line, or the id of the character who speaks in it.
-- Use the ids in CAST. A paragraph that mixes narration with a character's spoken line gets that character's id; the attribution and action around the quote are handled automatically.
+- Use the ids in CAST. Anyone in CAST is ALWAYS tagged with their CAST id, however the text refers to them (by name, title or job) — never create a new id for someone already in CAST. A paragraph that mixes narration with a character's spoken line gets that character's id; the attribution and action around the quote are handled automatically.
 - If two characters speak in one paragraph, use the one who says the most.
 - A speaking character who is not in CAST (a creature, a guard, a voice in the dark) gets a new snake_case id, listed once in newSpeakers with a name, a gender only if the text establishes it, and one sentence on who they are and how they sound.
 - Unspoken thoughts, sounds, and words read off a page are narrator.
@@ -761,7 +761,7 @@ export async function tagSpeakers(role: Role, params: {
   let lastProblem = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await callJson(role, { role: "tagger", system: TAGGER_SYSTEM, prompt, ctx: { paragraphs, castIds: cast.map((c) => c.id) } });
-    const tagging = toTagging(out.result, paragraphs.length);
+    const tagging = foldKnownSpeakers(toTagging(out.result, paragraphs.length), cast);
     lastProblem = taggingProblem(tagging, paragraphs.length, cast.map((c) => c.id)) ?? "";
     if (!lastProblem) return { ...out, result: tagging };
     prompt = `${prompt}\n\nYour last reply was unusable: ${lastProblem}. Reply again, with one entry for each of the ${paragraphs.length} paragraphs.`;
@@ -795,6 +795,26 @@ function toTagging(raw: unknown, paragraphCount: number): SpeakerTagging {
       ...(x.description ? { description: String(x.description) } : {})
     }));
   return { tags, delivery, newSpeakers, missing };
+}
+
+// A "new" speaker who is someone already in the cast (same name, or the name a
+// cast member goes by) is folded into that cast id, so one person never gets two voices.
+// "Hesketh" and "Hesketh the barkeep" are the same person: every word of one is in the other.
+export function sameSpeaker(a: { id: string; name: string }, b: { id: string; name: string }): boolean {
+  const words = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter((w) => w && !["the", "a", "an", "of"].includes(w));
+  const [x, y] = [words(a.name), words(b.name)];
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  return (short.length > 0 && short.every((w) => long.includes(w))) || a.id.replace(/_.*$/, "") === b.id || b.id.replace(/_.*$/, "") === a.id;
+}
+
+export function foldKnownSpeakers(t: SpeakerTagging, cast: { id: string; name: string }[]): SpeakerTagging {
+  const remap = new Map<string, string>();
+  for (const s of t.newSpeakers) {
+    const match = cast.find((c) => sameSpeaker(c, s));
+    if (match) remap.set(s.id, match.id);
+  }
+  if (remap.size === 0) return t;
+  return { ...t, tags: t.tags.map((tag) => remap.get(tag) ?? tag), newSpeakers: t.newSpeakers.filter((s) => !remap.has(s.id)) };
 }
 
 // Why a tagging can't be used, or undefined when it's sound.

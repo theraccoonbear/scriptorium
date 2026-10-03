@@ -113,3 +113,39 @@ test("a line's delivery reaches its speaker's Gemini direction, and only its spe
   assert.ok(prompts.some((p) => p.includes("# AUDIO PROFILE: Nell Ashby") && p.includes("low and furious")));
   assert.ok(prompts.some((p) => p.includes("# AUDIO PROFILE: The Old One") && p.includes("slow, vast, amused")));
 });
+
+test("quote checks: no quotes means narrator, explicit attribution wins, pronouns are flagged", async () => {
+  const { checkTags, splitSpeech, attributedSpeaker, renderScript } = await import("../src/tagging.ts");
+  const { foldKnownSpeakers } = await import("../src/roles.ts");
+  const cast = [
+    { id: "corin", name: "Corin Ashby", gender: "male" },
+    { id: "nell", name: "Nell Ashby", gender: "female" },
+    { id: "edrick", name: "Edrick Vell", gender: "male" }
+  ];
+  assert.deepEqual(splitSpeech('"Nell Ashby." She did not sit. “Corin\'s sister.”'), { lines: ["Nell Ashby.", "Corin's sister."], narration: "  She did not sit.  " });
+  assert.deepEqual(splitSpeech("He was 4'8\" tall.").lines, [], "an inch mark is not a quote");
+  assert.equal(attributedSpeaker(" Edrick said quietly.", cast), "edrick");
+  assert.equal(attributedSpeaker(" said Nell.", cast), "nell");
+  assert.equal(attributedSpeaker(" Ashby said.", cast), undefined, "a surname two people share decides nothing");
+  const paragraphs = [
+    "Nell looked at her cup and did not lift it.",
+    '"Go home," Corin said.',
+    '"Not without you."',
+    '"Fine," she said.'
+  ];
+  const r = checkTags(paragraphs, ["nell", "nell", "narrator", "edrick"], cast);
+  assert.deepEqual(r.tags, ["narrator", "corin", "narrator", "edrick"]);
+  assert.equal(r.dialogue, 3);
+  assert.equal(r.unresolved, 1);
+  assert.deepEqual(r.checks, ["¶1: nell → narrator (no dialogue)", "¶2: nell → corin (attributed)", '¶4: "she said" but tagged edrick (male) — check']);
+
+  // One person, one voice: a "new" speaker who is already in the cast folds into their id.
+  const folded = foldKnownSpeakers({ tags: ["hesketh_barkeep", "old_one"], delivery: ["", ""], newSpeakers: [{ id: "hesketh_barkeep", name: "Hesketh the barkeep" }, { id: "old_one", name: "The Old One" }] }, [{ id: "hesketh", name: "Hesketh" }]);
+  assert.deepEqual(folded.tags, ["hesketh", "old_one"]);
+  assert.deepEqual(folded.newSpeakers.map((s) => s.id), ["old_one"]);
+
+  const script = renderScript([{ index: 0, segments: [
+    { speaker: "nell", text: '"Nell Ashby."', paragraphs: [0] }, { speaker: "narrator", text: "She did not sit.", paragraphs: [0] }
+  ], delivery: { 0: { speaker: "nell", note: "direct, clipped" } } }]);
+  assert.match(script, /\*\*nell\*\* _\(direct, clipped\)_: "Nell Ashby\."\n\n\*\*narrator\*\*: She did not sit\./);
+});

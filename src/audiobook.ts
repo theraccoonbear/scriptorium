@@ -9,7 +9,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { replay } from "./bible.ts";
-import { applyTags, sceneTags, taggedCharacters } from "./tagging.ts";
+import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
 import type { Speak } from "./geminiTts.ts";
 import { isBudgetError } from "./usage.ts";
@@ -290,15 +290,17 @@ export function buildScenes(events: StoryEvent[]): Scene[] {
   const bible = voicedBible(events);
   const knownIds = new Set(Object.keys(bible.characters));
   const tags = sceneTags(events);
+  const aliases = speakerAliases(events);
   return events
     .filter((e) => e.type === "scene_committed")
     .map((e) => {
       const d = e.data as SceneCommittedData;
       const t = tags.get(d.index);
       if (!t) return parseScene(d.index, d.prose, knownIds);
-      const scene = parseScene(d.index, applyTags(d.prose, t.tags), knownIds);
+      const speakers = t.tags.map((tag) => aliases.get(tag) ?? tag);
+      const scene = parseScene(d.index, applyTags(d.prose, speakers), knownIds);
       const delivery: Record<number, { speaker: string; note: string }> = {};
-      t.delivery.forEach((note, p) => { if (note) delivery[p] = { speaker: t.tags[p], note }; });
+      t.delivery.forEach((note, p) => { if (note) delivery[p] = { speaker: speakers[p], note }; });
       return Object.keys(delivery).length > 0 ? { ...scene, delivery } : scene;
     });
 }
@@ -532,6 +534,8 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   const onProgress = opts.onProgress ?? (() => {});
   const outDir = `${opts.runDir}/audiobook`;
   await mkdir(outDir, { recursive: true });
+  // What will be voiced, readable: who reads each piece, and how.
+  await writeFile(`${outDir}/script.md`, renderScript(scenes), "utf8");
 
   const genders: Record<string, string | undefined> = {};
   for (const ch of Object.values(bible.characters)) genders[ch.id] = ch.gender;
