@@ -221,3 +221,51 @@ test("regression: running out of Gemini quota stops the audiobook — no halving
   await assert.rejects(synthesizeScene(scene, voiceFor, synth), /rate limit reached/);
   assert.deepEqual(kokoro, [], "even with Kokoro as the fallback, a quota stop isn't a fallback");
 });
+
+test("batch cache: a take is paid for once — a re-run after a quota stop only asks for what's missing", async () => {
+  const { fileBatchCache } = await import("../src/geminiBatch.ts");
+  const { TtsRateLimitError } = await import("../src/geminiTts.ts");
+  const dir = await mkdtemp(join(tmpdir(), "scriptorium-cache-"));
+  const cache = fileBatchCache(dir, RATE);
+  const prose = ["narrator: The inn was quiet.", 'nell: "You\'re him."', 'edrick: "Edrick Vell."', "narrator: She did not sit."].join("\n\n");
+  const scene = parseScene(0, prose, new Set(["nell", "edrick"]));
+  const bible = emptyBible();
+  const voiceFor = (s: string) => `gemini:${s}`;
+  const transcriptOf = (prompt: string) => prompt.split("#### TRANSCRIPT\n")[1].split("\n\n");
+  const answer = (prompt: string) => ({ samples: audio(transcriptOf(prompt).flatMap((_, i) => (i ? [{ silence: 2 }, { sound: 1 }] : [{ sound: 1 }]))), sampleRate: RATE });
+
+  // Run 1: the third request hits the daily cap.
+  const asked1: string[] = [];
+  const speak1 = async (prompt: string) => { asked1.push(transcriptOf(prompt)[0]); if (asked1.length === 3) throw new TtsRateLimitError("HTTP 429"); return answer(prompt); };
+  await assert.rejects(voiceSceneBatches(scene, "speaker", { bible, voiceFor, speak: speak1, cache, model: "m", onProgress: () => {} }), /rate limit/);
+  assert.equal(asked1.length, 3);
+
+  // Run 2: the two finished takes come from the cache; only the missing batch is asked for.
+  const asked2: string[] = [];
+  const cached: boolean[] = [];
+  const out = await voiceSceneBatches(scene, "speaker", {
+    bible, voiceFor, cache, model: "m",
+    speak: async (prompt) => { asked2.push(transcriptOf(prompt)[0]); return answer(prompt); },
+    onProgress: (e) => { if (e.type === "batch_done") cached.push(e.cached); }
+  });
+  assert.equal(out.size, scenePieces(scene).length);
+  assert.deepEqual(asked2, ['"Edrick Vell."'], "only the batch that never came back");
+  assert.deepEqual(cached, [true, true, false]);
+
+  // Run 3: everything is cached; a different model (or prompt, or voice) is a new take.
+  let asked3 = 0;
+  await voiceSceneBatches(scene, "speaker", { bible, voiceFor, cache, model: "m", speak: async (p) => { asked3++; return answer(p); }, onProgress: () => {} });
+  assert.equal(asked3, 0);
+  await voiceSceneBatches(scene, "speaker", { bible, voiceFor, cache, model: "other", speak: async (p) => { asked3++; return answer(p); }, onProgress: () => {} });
+  assert.equal(asked3, 3);
+});
+
+test("a take that didn't cut cleanly is never kept", async () => {
+  const { fileBatchCache, batchKey, batchPrompt } = await import("../src/geminiBatch.ts");
+  const dir = await mkdtemp(join(tmpdir(), "scriptorium-cache-"));
+  const cache = fileBatchCache(dir, RATE);
+  const batch = { speaker: "nell", pieces: [{ order: 0, speaker: "nell", text: '"A."' }, { order: 1, speaker: "nell", text: '"B."' }] };
+  const who = { name: "Nell", profile: "" };
+  await assert.rejects(voiceBatch(async () => ({ samples: audio([{ sound: 30 }]), sampleRate: RATE }), batch, "Kore", who, RATE, 3, { cache, model: "m" }));
+  assert.equal(await cache.get(batchKey(batchPrompt(batch, who), "Kore", "m")), undefined);
+});

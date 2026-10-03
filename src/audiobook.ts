@@ -9,8 +9,8 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { replay } from "./bible.ts";
-import { planBatches, voiceBatch } from "./geminiBatch.ts";
-import type { BatchPiece, GeminiMode } from "./geminiBatch.ts";
+import { fileBatchCache, planBatches, voiceBatch } from "./geminiBatch.ts";
+import type { BatchCache, BatchPiece, GeminiMode } from "./geminiBatch.ts";
 import { paletteToneFor } from "./tagging.ts";
 import type { TonePaletteData } from "./tagging.ts";
 import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
@@ -353,7 +353,7 @@ export type AudiobookProgress =
   | { type: "scene_skipped"; index: number; path: string }
   | { type: "line_fallback"; speaker: string; error: string }
   | { type: "line_kept_long"; speaker: string; seconds: number }
-  | { type: "batch_done"; sceneIndex: number; batch: number; batches: number; speaker: string; lines: number; tone?: string }
+  | { type: "batch_done"; sceneIndex: number; batch: number; batches: number; speaker: string; lines: number; tone?: string; cached: boolean }
   | { type: "batch_failed"; sceneIndex: number; speaker: string; lines: number; error: string; split: boolean }
   | { type: "scene_start"; index: number; total: number; segments: number }
   | { type: "chunk_done"; sceneIndex: number; segmentIndex: number; segments: number; speaker: string; text: string }
@@ -577,6 +577,8 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
   voiceFor: (speaker: string) => string;
   speak: Speak;
   toneOf?: (scene: number, paragraph: number, speaker: string) => string | undefined;
+  cache?: BatchCache;   // takes already paid for (see geminiBatch.ts)
+  model?: string;
   onProgress: (event: AudiobookProgress) => void;
 }): Promise<Map<number, Float32Array>> {
   const pieces: BatchPiece[] = scenePieces(scene).flatMap((x, order) => {
@@ -598,9 +600,10 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
       ? { name: "Narrator", profile: `The narrator of a story. Tone: ${p.bible.tone || "measured, warm storytelling"}.` }
       : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" ") };
     try {
-      const audio = await voiceBatch(p.speak, batch, p.voiceFor(batch.speaker).slice("gemini:".length), who, SAMPLE_RATE);
+      let cached = false;
+      const audio = await voiceBatch(p.speak, batch, p.voiceFor(batch.speaker).slice("gemini:".length), who, SAMPLE_RATE, 3, { cache: p.cache, model: p.model, onCached: () => { cached = true; } });
       batch.pieces.forEach((piece, k) => out.set(piece.order, audio[k]));
-      p.onProgress({ type: "batch_done", sceneIndex: scene.index, batch: i + 1, batches, speaker: batch.speaker, lines: batch.pieces.length, ...(batch.tone ? { tone: batch.tone } : {}) });
+      p.onProgress({ type: "batch_done", sceneIndex: scene.index, batch: i + 1, batches, speaker: batch.speaker, lines: batch.pieces.length, cached, ...(batch.tone ? { tone: batch.tone } : {}) });
     } catch (err) {
       if (isBudgetError(err) || isTtsRateLimit(err)) throw err;
       const halves = batch.pieces.length > 1
@@ -753,7 +756,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   for (const scene of todo) {
     const segments = scene.segments.length;
     onProgress({ type: "scene_start", index: scene.index, total: scenes.length, segments });
-    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak, toneOf, onProgress });
+    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak, toneOf, onProgress, cache: fileBatchCache(`${outDir}/batches`, SAMPLE_RATE), model: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL });
     const { audio, paragraphStarts } = await synthesizeScene(
       scene,
       voiceFor,

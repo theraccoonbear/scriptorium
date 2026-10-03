@@ -1,4 +1,7 @@
-import { buildTtsPrompt } from "./geminiTts.ts";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { buildTtsPrompt, decodeWav } from "./geminiTts.ts";
 import type { Speak } from "./geminiTts.ts";
 import { maxLineSeconds, resample } from "./audiobook.ts";
 
@@ -158,20 +161,76 @@ export function splitProblem(pieces: Float32Array[], texts: string[], rate: numb
   return undefined;
 }
 
+// ---- batch cache: a take is paid for once ----
+// Each take that cuts cleanly is kept, keyed by exactly what was asked (prompt,
+// voice, model). A re-run — after a quota stop, a crash, or a change elsewhere in
+// the story — cuts the kept take again instead of asking Gemini again.
+export interface BatchCache {
+  get(key: string): Promise<Float32Array | undefined>;
+  put(key: string, samples: Float32Array): Promise<void>;
+}
+
+export function batchKey(prompt: string, voice: string, model: string): string {
+  return createHash("sha1").update(JSON.stringify({ prompt, voice, model })).digest("hex");
+}
+
+// Takes as 16-bit WAV files (playable) under `dir`.
+export function fileBatchCache(dir: string, rate: number): BatchCache {
+  return {
+    async get(key) {
+      try {
+        const { samples, sampleRate } = decodeWav(await readFile(join(dir, `${key}.wav`)));
+        return resample(samples, sampleRate, rate);
+      } catch { return undefined; }
+    },
+    async put(key, samples) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, `${key}.wav`), encodeWav(samples, rate));
+    }
+  };
+}
+
+export function encodeWav(samples: Float32Array, rate: number): Buffer {
+  const pcm = Buffer.alloc(samples.length * 2);
+  samples.forEach((v, i) => pcm.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v * 32767))), i * 2));
+  const h = Buffer.alloc(44);
+  h.write("RIFF", 0); h.writeUInt32LE(36 + pcm.length, 4); h.write("WAVEfmt ", 8); h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28);
+  h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write("data", 36); h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
+}
+
 // Voices a batch and cuts it into its lines (at `rate`), redoing the request
 // when the cut doesn't hold up. Throws after `attempts` tries; the caller then
 // voices those lines one by one.
-export async function voiceBatch(speak: Speak, batch: Batch, voice: string, who: { name: string; profile: string }, rate: number, attempts = 3): Promise<Float32Array[]> {
+export async function voiceBatch(
+  speak: Speak, batch: Batch, voice: string, who: { name: string; profile: string }, rate: number, attempts = 3,
+  opts: { cache?: BatchCache; model?: string; onCached?: () => void } = {}
+): Promise<Float32Array[]> {
   const prompt = batchPrompt(batch, who);
   const texts = batch.pieces.map((p) => p.text);
+  const key = batchKey(prompt, voice, opts.model ?? "");
+  const cut = (samples: Float32Array): { pieces?: Float32Array[]; problem: string } => {
+    const pieces = splitOnSilences(samples, rate, texts.length, texts);
+    if (!pieces) return { problem: `found fewer than ${texts.length - 1} pauses between ${texts.length} lines` };
+    const problem = splitProblem(pieces, texts, rate) ?? "";
+    return problem ? { problem } : { pieces, problem };
+  };
+  const kept = opts.cache ? await opts.cache.get(key) : undefined;
+  if (kept) {
+    const { pieces } = cut(kept);
+    if (pieces) { opts.onCached?.(); return pieces; }
+  }
   let problem = "";
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const r = await speak(prompt, voice);
     const samples = resample(r.samples, r.sampleRate, rate);
-    const pieces = splitOnSilences(samples, rate, texts.length, texts);
-    if (!pieces) { problem = `found fewer than ${texts.length - 1} pauses between ${texts.length} lines`; continue; }
-    problem = splitProblem(pieces, texts, rate) ?? "";
-    if (!problem) return pieces;
+    const result = cut(samples);
+    problem = result.problem;
+    if (result.pieces) {
+      await opts.cache?.put(key, samples);
+      return result.pieces;
+    }
   }
   throw new Error(`batch of ${texts.length} lines for ${batch.speaker}${batch.tone ? ` (${batch.tone})` : ""}: ${problem}`);
 }
