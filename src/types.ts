@@ -318,6 +318,9 @@ export interface ArtistConfig {
   // (0.5 = half a retake each), worst-scored first. Unset = retake each image on
   // the spot up to maxAttempts.
   retakes?: number;
+  // Triage only retakes images scored at least this severity (0-10; default 5,
+  // a clear mistake): below it a retake rarely does better, so the money is kept.
+  retakeAbove?: number;
   // Gemini Batch Mode: each stage's images go out as one batch job at half the
   // price; results take minutes (up to 24h). Inspections stay live.
   batch?: boolean;

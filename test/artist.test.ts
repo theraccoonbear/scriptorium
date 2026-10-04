@@ -395,3 +395,31 @@ test("triage respects a hard cap (what the budget can buy), and skips images tha
   await renderArt(events, { runDir, backend, inspector, retakes: 1, maxRetakes: 1, shrink: async (img) => img, onProgress: (e) => { if (e.type === "triage") retakes = e.retakes; } });
   assert.equal(retakes, 1, "one retake allowed by the cap, though 1 per shot was asked for");
 });
+
+test("the triage cap can be worked out when triage starts (after the first pass)", async () => {
+  const runDir = await tmp();
+  const events = [ev(0, "scene_art", { sceneIndex: 0, prompt: "a", shots: ["a", "b", "c"].map((p, k) => ({ startParagraph: k, prompt: p })) })];
+  const inspector = { async inspect() { return { ok: false, severity: 8, issues: ["x"] }; } };
+  const backend = new MockImageBackend();
+  let asked = -1;
+  let firstPassDone = 0;
+  await renderArt(events, { runDir, backend, inspector, retakes: 1, shrink: async (img) => img,
+    maxRetakes: () => { firstPassDone = backend.calls.length; return 2; },
+    onProgress: (e) => { if (e.type === "triage") asked = e.retakes; } });
+  assert.equal(firstPassDone, 3, "asked after all three first takes");
+  assert.equal(asked, 2);
+});
+
+// Gallows Inn: most images scored 3 ("usable"), and 16 of 20 retakes came back no better.
+test("triage only retakes images with a clear mistake (severity 5 by default, configurable)", async () => {
+  const events = [ev(0, "scene_art", { sceneIndex: 0, prompt: "a", shots: [{ startParagraph: 0, prompt: "a" }, { startParagraph: 1, prompt: "b" }, { startParagraph: 2, prompt: "c" }] })];
+  const scores: Record<string, number> = { a: 3, b: 4, c: 6 };
+  const inspector = { async inspect(req: { prompt: string }) { const s = scores[req.prompt.split("\n")[0]] ?? 0; return { ok: s < 3, severity: s, issues: [] }; } };
+  const triaged = async (opts: { retakeAbove?: number }) => {
+    let n = -1;
+    await renderArt(events, { runDir: await tmp(), backend: new MockImageBackend(), inspector, retakes: 1, shrink: async (img) => img, ...opts, onProgress: (e) => { if (e.type === "triage") n = e.retakes; } });
+    return n;
+  };
+  assert.equal(await triaged({}), 1, "only the 6: a 3 and a 4 are usable");
+  assert.equal(await triaged({ retakeAbove: 3 }), 3);
+});
