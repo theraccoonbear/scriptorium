@@ -568,3 +568,15 @@ test("with an author's plan, open setups are never overdue, even in the final sc
   const bible = await runStory({ config, log, roles: buildRoleProviders(config) });
   assert.ok(bible.ledger.length > 0, "setups the plan doesn't pay off stay open");
 });
+
+test("role transcripts go in the run's threads/ folder, numbered, leaving story.md at the top", async () => {
+  const config = await loadConfig({ scenes: 2 });
+  const log = new EventLog(await tmp());
+  await runStory({ config, log, roles: buildRoleProviders(config), runDir: log.dir });
+  const { readdir } = await import("node:fs/promises");
+  const top = await readdir(log.dir);
+  assert.ok(top.includes("story.md") && top.includes("threads"));
+  assert.ok(!top.some((f) => /^\d{3}-/.test(f)), "no transcripts at the top level");
+  const threads = (await readdir(join(log.dir, "threads"))).sort();
+  assert.ok(threads[0].startsWith("001-") && threads.every((f) => /^\d{3}-.+\.md$/.test(f)));
+});

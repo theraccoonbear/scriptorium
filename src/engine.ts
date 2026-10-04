@@ -50,6 +50,18 @@ export function tensionAt(index: number, total: number): number {
   return Math.max(1, Math.round(1 + level * 9));
 }
 
+// Each role's prompt and response, numbered in order, go in the run's threads/
+// folder, so story.md and the other outputs stay easy to find.
+export const THREADS_DIR = "threads";
+
+async function nextThreadSeq(runDir: string): Promise<number> {
+  try {
+    return (await readdir(`${runDir}/${THREADS_DIR}`)).filter((f) => f.endsWith(".md")).length;
+  } catch {
+    return 0;  // no threads yet
+  }
+}
+
 async function writeRoleOutput(runDir: string, seq: number, role: string, { prompt, system, raw }: { prompt: string; system: string; raw: string }): Promise<void> {
   const label = `${String(seq).padStart(3, "0")}-${role}`;
   const out = [
@@ -67,7 +79,8 @@ async function writeRoleOutput(runDir: string, seq: number, role: string, { prom
     ``,
     raw
   ].join("\n");
-  await writeFile(`${runDir}/${label}.md`, out, "utf8");
+  await mkdir(`${runDir}/${THREADS_DIR}`, { recursive: true });
+  await writeFile(`${runDir}/${THREADS_DIR}/${label}.md`, out, "utf8");
 }
 
 async function writeStoryIncremental(runDir: string, events: StoryEvent[]): Promise<void> {
@@ -125,13 +138,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
 
   console.error(`[scriptorium] ${c.dim(`starting: ${total} scenes, resuming from scene ${bible.sceneCount + 1}`)}`);
 
-  let seq = 0;
-  if (runDir) {
-    try {
-      const files = await readdir(runDir);
-      seq = files.filter((f) => f.endsWith(".md")).length;
-    } catch { /* empty dir */ }
-  }
+  let seq = runDir ? await nextThreadSeq(runDir) : 0;
 
   // Author context: what this run was given, or — resuming without --context —
   // what it was started with.
@@ -727,12 +734,7 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
   if (!artRole) throw new Error("config has no artdirector role");
   await log.load();
   await applyAuthorArtStyle(config, log);
-  let seq = 0;
-  if (runDir) {
-    try {
-      seq = (await readdir(runDir)).filter((f) => f.endsWith(".md")).length;
-    } catch { /* empty dir */ }
-  }
+  let seq = runDir ? await nextThreadSeq(runDir) : 0;
   const finalBible = replay(log.events);
   const known = new Set(Object.keys(finalBible.characters));
   const storyText = log.events
