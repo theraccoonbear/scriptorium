@@ -243,9 +243,17 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   }
 
   console.error(`[scriptorium] ${c.dim(`make ${storyPath} → ${story.runDir} (${steps.join(" → ")})`)}`);
+  // Art and audio don't depend on each other, so they run at the same time;
+  // the video waits for both.
+  const stages: Step[][] = [];
   for (const step of steps) {
-    console.error(`[scriptorium] ${c.blue(c.bold(`== ${step} ==`))}`);
-    if (step === "story") {
+    const last = stages.at(-1);
+    if (last && ((step === "audiobook" && last.includes("art")) || (step === "art" && last.includes("audiobook")))) last.push(step);
+    else stages.push([step]);
+  }
+  for (const stage of stages) {
+    console.error(`[scriptorium] ${c.blue(c.bold(`== ${stage.join(" + ")} ==`))}`);
+    if (stage[0] === "story") {
       await run.story(story);
       continue;
     }
@@ -254,7 +262,10 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
     if (!events.some((e) => e.type === "scene_committed")) {
       throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
     }
-    await run[step](story, events);
+    // Both finish (or fail) before the first failure is reported.
+    const results = await Promise.allSettled(stage.map((step) => run[step as Exclude<Step, "story">](story, events)));
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failed) throw failed.reason;
   }
   console.error(`[scriptorium] ${c.ok(`done: ${steps.join(", ")}`)}`);
   const ledger = readLedger(story.runDir);

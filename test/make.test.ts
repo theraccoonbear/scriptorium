@@ -156,3 +156,21 @@ test("a story file's shared cast list is found relative to the story file", asyn
   assert.equal(s.audiobook.castingFile, join(dir, "../casts/osmagus.json"));
   assert.deepEqual(s.audiobook.designVoices, ["osmagus"]);
 });
+
+test("make runs art and audio at the same time; the video waits for both, and a failure lets the other finish", async () => {
+  const { file, dir } = await storyDir({});
+  await make(file, { only: "story" });
+  const log: string[] = [];
+  const slow = (name: string, ms: number, fail = false) => async () => {
+    log.push(`${name} start`);
+    await new Promise((r) => setTimeout(r, ms));
+    log.push(`${name} end`);
+    if (fail) throw new Error(`${name} broke`);
+  };
+  await make(file, { from: "art", steps: { art: slow("art", 30), audiobook: slow("audiobook", 10), video: slow("video", 1) } });
+  assert.deepEqual(log, ["art start", "audiobook start", "audiobook end", "art end", "video start", "video end"]);
+  log.length = 0;
+  await assert.rejects(make(file, { from: "art", steps: { art: slow("art", 5, true), audiobook: slow("audiobook", 20), video: slow("video", 1) } }), /art broke/);
+  assert.deepEqual(log, ["art start", "audiobook start", "art end", "audiobook end"], "audio finished; the video never started");
+  void dir;
+});
