@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { EventLog } from "./eventlog.ts";
 import { checkDirection } from "./providers.ts";
-import { formatSummary, readLedger, summarize } from "./usage.ts";
+import { formatSummary, readLedger, summarize, usd } from "./usage.ts";
+import { pitch } from "./pitch.ts";
+import type { Pitch } from "./pitch.ts";
 import { artStep, audiobookStep, loadRun, readContexts, storyStep, videoStep } from "./steps.ts";
 import { c } from "./colors.ts";
 import { CRITIC_MODES } from "./types.ts";
@@ -233,6 +236,26 @@ const defaultRunners: StepRunners = {
 
 const SETTINGS_FILE = "story-settings.json";
 
+// The story's pitch: what the steps to run will need and cost.
+export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: readonly Step[] = STEPS): Pitch {
+  const artist = story.config.artist ?? {};
+  return pitch({
+    events,
+    ledger: readLedger(story.runDir),
+    scenes: story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length,
+    wordsPerShot: story.config.artWordsPerShot,
+    art: { maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, skip: !steps.includes("art") || !story.config.roles.artdirector },
+    audio: { narration: story.audiobook.narration, dialogue: story.audiobook.dialogue, geminiMode: story.audiobook.geminiMode, geminiConcurrency: story.audiobook.geminiConcurrency, skip: !steps.includes("audiobook") },
+    ...(story.config.budget ? { budgetUsd: story.config.budget.usd } : {}),
+    ...readJson<Record<string, { prompt: string }>>(join(story.runDir, "art", "art.json"), (m) => ({ artManifest: m })),
+    scenesVoiced: existsSync(join(story.runDir, "audiobook")) ? readdirSync(join(story.runDir, "audiobook")).filter((f) => /^scene-\d+\.wav$/.test(f)).length : 0
+  });
+}
+
+function readJson<T>(path: string, wrap: (value: T) => object): object {
+  try { return wrap(JSON.parse(readFileSync(path, "utf8")) as T); } catch { return {}; }
+}
+
 // Pipeline position of a step, with art and audio in the chosen order.
 function rank(step: Step, order: StepOrder): number {
   if (step === "art") return order === "art-first" ? 1 : 2;
@@ -263,6 +286,10 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   }
 
   console.error(`[scriptorium] ${c.dim(`make ${storyPath} → ${story.runDir} (${steps.join(" → ")})`)}`);
+  // The pitch, before anything is spent (the full breakdown: npm run pitch).
+  const p = storyPitch(story, await loadRun(story.runDir), steps);
+  console.error(`[scriptorium] ${c.dim(`pitch: ~${usd(p.totalUsd)} to spend (images ~${usd(p.images.usd)}, voice ~${usd(p.audio.usd)}, ${p.audio.geminiRequests} Gemini voice requests)${story.config.budget ? ` · budget ${usd(story.config.budget.usd)}` : ""}`)}`);
+  for (const w of p.warnings) console.error(`[scriptorium] ${c.retry(w)}`);
   // Art and audio don't depend on each other: they run in the story's order
   // (audio first by default), or at the same time. The video waits for both.
   const order = opts.stepOrder ?? story.stepOrder;

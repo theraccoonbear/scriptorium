@@ -314,6 +314,10 @@ export interface ArtistConfig {
   referenceSize?: number;  // longest side (px) of reference images sent; default 768, 0 = full size
   inspectSize?: number;    // longest side (px) of the image sent for inspection; default 1024
   concurrency?: number;    // images rendered at once (default 4)
+  // Triage: render every shot once, then this many retakes per shot on average
+  // (0.5 = half a retake each), worst-scored first. Unset = retake each image on
+  // the spot up to maxAttempts.
+  retakes?: number;
 }
 
 // A structured role call: the model output plus the exact inputs that produced it.

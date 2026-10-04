@@ -139,9 +139,12 @@ test("one failed image doesn't stop the others", async () => {
 });
 
 test("toInspection normalizes model output", () => {
-  assert.deepEqual(toInspection({ ok: true, issues: [], revised_prompt: "" }), { ok: true, issues: [], revisedPrompt: undefined });
-  assert.deepEqual(toInspection({ ok: "yes", issues: ["x"], revised_prompt: "fixed" }), { ok: false, issues: ["x"], revisedPrompt: "fixed" });
-  assert.deepEqual(toInspection(null), { ok: false, issues: [], revisedPrompt: undefined });
+  assert.deepEqual(toInspection({ ok: true, issues: [], revised_prompt: "" }), { ok: true, severity: 0, issues: [], revisedPrompt: undefined });
+  assert.deepEqual(toInspection({ ok: "yes", issues: ["x"], revised_prompt: "fixed" }), { ok: false, severity: 5, issues: ["x"], revisedPrompt: "fixed" });
+  assert.deepEqual(toInspection(null), { ok: false, severity: 5, issues: [], revisedPrompt: undefined });
+  // The model's own score, kept within 0-10.
+  assert.equal(toInspection({ ok: false, severity: 8, issues: ["wrong horn"] }).severity, 8);
+  assert.equal(toInspection({ ok: false, severity: 42 }).severity, 10);
 });
 
 test("config defaults to Gemini and image extensions follow the returned type", () => {
@@ -347,4 +350,48 @@ test("images render in parallel (up to the limit), each scene's shots anchored o
   assert.deepEqual(call("b2").references.map((r) => r.label), [SCENE_LABEL]);
   assert.ok(call("b1").references.length > 0, "a first shot without canon still gets a style anchor");
   assert.ok(backend.calls.findIndex((c) => c.prompt === "a1") < backend.calls.findIndex((c) => c.prompt === "a2"), "anchors first");
+});
+
+test("triage: every shot once, then retakes go to the worst-scored first; a retake is kept only if it scores better", async () => {
+  const runDir = await tmp();
+  const events = [
+    ev(0, "visual_ref", { kind: "character", id: "nell", appearance: "a", prompt: "portrait nell" }),
+    ev(1, "scene_art", { sceneIndex: 0, prompt: "s1", shots: ["s1", "s2", "s3", "s4"].map((p, k) => ({ startParagraph: k, prompt: p, characters: ["nell"] })) }),
+    ev(2, "cover_art", { sceneCount: 1, prompt: "cover" })
+  ];
+  // First takes score: s1 2 (fine), s2 9 (awful), s3 5, s4 7, cover 1. A retake of s2 scores 3 (better);
+  // of s4 scores 8 (worse). The reference is rejected once, then fine.
+  const first: Record<string, number> = { s1: 2, s2: 9, s3: 5, s4: 7, cover: 1 };
+  const retake: Record<string, number> = { s2: 3, s4: 8, s3: 4 };
+  const seen = new Map<string, number>();
+  const inspector = {
+    async inspect(req: { prompt: string }) {
+      const base = req.prompt.split("\n\nRETAKE")[0];
+      const n = seen.get(base) ?? 0; seen.set(base, n + 1);
+      if (base === "portrait nell") return n === 0 ? { ok: false, severity: 6, issues: ["off"], revisedPrompt: "portrait nell\n\nRETAKE" } : { ok: true, severity: 0, issues: [] };
+      const severity = n === 0 ? first[base] : retake[base];
+      return { ok: severity < 3, severity, issues: severity < 3 ? [] : ["problem"], revisedPrompt: `${base}\n\nRETAKE` };
+    }
+  };
+  const backend = new MockImageBackend();
+  const events2: string[] = [];
+  const result = await renderArt(events, { runDir, backend, inspector, retakes: 0.4, maxAttempts: 3, shrink: async (img) => img,
+    onProgress: (e) => { if (e.type === "triage") events2.push(`triage ${e.scored}/${e.retakes}`); if (e.type === "retake_done") events2.push(`${e.key} ${e.before}->${e.after} ${e.kept ? "kept" : "dropped"}`); } });
+  // 5 scored (4 shots + cover) × 0.4 = 2 retakes: the two worst (s2: 9, s4: 7), not s3 (5).
+  assert.deepEqual(events2.sort(), ["scene-01-02 9->3 kept", "scene-01-04 7->8 dropped", "triage 5/2"].sort());
+  assert.equal(result.manifest["scene-01-02"].severity, 3);
+  assert.equal(result.manifest["scene-01-02"].retaken, true);
+  assert.equal(result.manifest["scene-01-04"].severity, 7, "the worse retake was dropped");
+  assert.equal(result.manifest["character-nell"].attempts, 2, "references keep their own retake loop");
+  assert.equal(backend.calls.filter((c) => c.prompt.startsWith("s")).length, 4 + 2, "each shot once, plus two retakes");
+});
+
+test("triage respects a hard cap (what the budget can buy), and skips images that scored fine", async () => {
+  const runDir = await tmp();
+  const events = [ev(0, "scene_art", { sceneIndex: 0, prompt: "a", shots: ["a", "b", "c"].map((p, k) => ({ startParagraph: k, prompt: p })) })];
+  const inspector = { async inspect(req: { prompt: string }) { const s = req.prompt === "a" ? 1 : 8; return { ok: s < 3, severity: s, issues: [] }; } };
+  const backend = new MockImageBackend();
+  let retakes = -1;
+  await renderArt(events, { runDir, backend, inspector, retakes: 1, maxRetakes: 1, shrink: async (img) => img, onProgress: (e) => { if (e.type === "triage") retakes = e.retakes; } });
+  assert.equal(retakes, 1, "one retake allowed by the cap, though 1 per shot was asked for");
 });
