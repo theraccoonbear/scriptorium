@@ -64,6 +64,19 @@ Story files can also steer each creative layer directly. `artStyle` fixes the ar
 
 The layers are `contextgate`, `worldbuilder`, `worldgate`, `creator`, `director`, `beatgate`, `writer`, `continuist`, `critic`, `archivist`, `patchgate`, `artdirector` and `artist`. `artist` notes go with every image request and inspection. A misspelled layer is an error rather than silently ignored. Use context files for story facts, and `direction` for how each layer should work.
 
+**The pitch.** `npm run pitch -- stories/keeper.json` shows what a story will need and cost **before anything is spent**:
+- scenes still to write;
+- images (references, shots, cover and retakes), and voice requests by Gemini mode, with the days of the 100-a-day voice cap they'll use;
+- estimated cost and time for each, against the budget.
+
+It's exact where the run already knows (written, tagged and directed scenes; images and audio already rendered are skipped, just as the steps skip them) and estimated where it doesn't. Costs come from the run's own ledger when it has history. `make` prints a one-line pitch when it starts, with warnings: more than a day of voice quota, or over budget.
+
+**Image triage.** `"artist": { "retakes": 0.5 }` changes how images are retaken.
+- Instead of retaking each rejected image on the spot, every shot is generated **once**. The inspector scores each from 0 (matches) to 10 (unusable), then the retakes go to the **worst-scored images first**: 0.5 means half a retake per shot on average.
+- A retake is kept only if it scores better.
+- Reference images keep their own full retake loop, since every shot depends on them.
+- With a `budget`, the retakes are also capped at what the remaining money can buy.
+
 **Order and parallelism.** After the story, `make` runs **audio before art** by default (`"stepOrder": "audio-first"`). Voicing is cheap, and listening is where you find a story that needs a rewrite, before any image is paid for. `"art-first"` reverses that, and `"parallel"` runs both at once, which is fastest. `--step-order` overrides it per run, and the video always waits for both.
 - Within each step, `artist.concurrency` sets how many images render at once (default 4; 1 for one at a time).
 - `audiobook.geminiConcurrency` sets how many Gemini voice batches run at once (default 2), always within the per-minute limit.

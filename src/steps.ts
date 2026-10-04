@@ -18,7 +18,8 @@ import type { TonePaletteData } from "./tagging.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 import { replay } from "./bible.ts";
 import { c } from "./colors.ts";
-import { accountantFor, runAccounted, usd } from "./usage.ts";
+import { accountantFor, readLedger, runAccounted, usd } from "./usage.ts";
+import { pitch, TYPICAL } from "./pitch.ts";
 import type { Bible, SceneCommittedData, StoryConfig, StoryEvent } from "./types.ts";
 
 // The pipeline's steps — story, art, audiobook, video — as plain functions with
@@ -165,6 +166,18 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
   return accounted(runDir, config, "art", () => artStepInner(runDir, config, events, force));
 }
 
+// With a budget, triage retakes are capped at what's left after the first pass.
+function triageCap(runDir: string, config: StoryConfig, events: StoryEvent[]): { maxRetakes?: number } {
+  if (!config.budget) return {};
+  const ledger = readLedger(runDir);
+  const p = pitch({ events, ledger, scenes: events.filter((e) => e.type === "scene_committed").length, art: { retakes: 0 }, audio: { skip: true } });
+  const perImage = p.images.generations > 0 ? p.images.usd / p.images.generations : TYPICAL.imageUsd + TYPICAL.inspectionUsd;
+  const left = config.budget.usd - accountantFor(runDir).spent - p.images.usd;
+  const maxRetakes = Math.max(0, Math.floor(left / perImage));
+  console.error(`[scriptorium] ${c.dim(`triage: the budget leaves room for up to ${maxRetakes} retake${maxRetakes === 1 ? "" : "s"}`)}`);
+  return { maxRetakes };
+}
+
 async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined) {
   const artist = resolveArtistConfig(config.artist);
   const result = await renderArt(events, {
@@ -174,6 +187,7 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
     maxAttempts: artist.maxAttempts,
     maxReferences: artist.maxReferences,
     concurrency: artist.concurrency,
+    ...(artist.retakes !== undefined ? { retakes: artist.retakes, ...triageCap(runDir, config, events) } : {}),
     referenceSize: artist.referenceSize,
     inspectSize: artist.inspectSize,
     direction: config.direction?.artist,
@@ -184,6 +198,8 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
       else if (event.type === "attempt_rejected") console.error(`[scriptorium]   ${c.retry(`attempt ${event.attempt} rejected: ${event.issues.join("; ")}`)}`);
       else if (event.type === "job_done") console.error(`[scriptorium] ${event.accepted ? c.ok(`${event.key} written`) : c.retry(`${event.key} kept after ${event.attempts} rejected attempts`)} ${c.dim(event.file)}`);
       else if (event.type === "job_failed") console.error(`[scriptorium] ${c.fail(`${event.key} failed: ${event.error}`)}`);
+      else if (event.type === "triage") console.error(`[scriptorium] ${c.blue(c.bold(`triage: ${event.scored} images scored — retaking the worst ${event.retakes}`))}`);
+      else if (event.type === "retake_done") console.error(`[scriptorium]   ${event.kept ? c.ok(`${event.key}: retake kept (severity ${event.before} → ${event.after})`) : c.dim(`${event.key}: retake no better (${event.before} → ${event.after}) — kept the first`)}`);
     }
   });
   if (result.rendered + result.failed > 0) {

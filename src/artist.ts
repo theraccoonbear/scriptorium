@@ -47,6 +47,7 @@ export interface ImageBackend {
 
 export interface Inspection {
   ok: boolean;
+  severity?: number;  // 0 (matches) to 10 (unusable)
   issues: string[];
   revisedPrompt?: string;
 }
@@ -66,7 +67,7 @@ export interface Inspector {
 export const INSPECTOR_SYSTEM = `You are the Art Inspector. You check a generated still image against the prompt it was made from, before it is used in a narrated story video.
 
 Output ONLY JSON:
-{"ok":boolean,"issues":[string],"revised_prompt":string}
+{"ok":boolean,"severity":number,"issues":[string],"revised_prompt":string}
 
 CHECK FOR:
 - PROMPT MISMATCH: the main subject, action, or setting described in the prompt is missing or wrong.
@@ -81,6 +82,7 @@ CHECK FOR:
 
 RULES:
 - ok: true if the image is usable as-is. Minor stylistic drift is fine — only flag what a viewer would notice.
+- severity: how far the image falls short, 0-10, judged as a viewer would notice it. 0 = matches everything; 1-2 = small drift a viewer wouldn't notice; 3-4 = noticeable but usable (a slightly off color, a stiff pose); 5-6 = a clear mistake (wrong object shape, wrong hair, ignored camera angle); 7-8 = wrong in a way that breaks the story (wrong character, a key object wrong, a real-person likeness, text in the image); 9-10 = unusable (broken anatomy, the wrong scene). Score every image, ok or not; the worst images across a story are retaken first.
 - issues: one short sentence per problem; empty when ok.
 - revised_prompt: when ok is false, rewrite the ORIGINAL prompt to fix the issues (make the missed detail explicit, restate character appearance, make the action and camera angle explicit for a STAGING issue, add "no text"). Keep the same scene and moment. When ok is true, return "".`;
 
@@ -191,6 +193,8 @@ export interface ManifestEntry {
   attempts: number;
   accepted: boolean;    // false = attempts ran out; the last image was kept anyway
   issues: string[];
+  severity?: number;    // the inspector's 0-10 score for the kept image
+  retaken?: boolean;    // triage replaced the first image with a better retake
 }
 
 export type ArtManifest = Record<string, ManifestEntry>;
@@ -200,7 +204,9 @@ export type ArtProgress =
   | { type: "job_skipped"; key: string; file: string }
   | { type: "attempt_rejected"; key: string; attempt: number; issues: string[] }
   | { type: "job_done"; key: string; file: string; attempts: number; accepted: boolean }
-  | { type: "job_failed"; key: string; error: string };
+  | { type: "job_failed"; key: string; error: string }
+  | { type: "triage"; scored: number; retakes: number }
+  | { type: "retake_done"; key: string; before: number; after: number; kept: boolean };
 
 export interface ArtOptions {
   runDir: string;
@@ -211,6 +217,11 @@ export interface ArtOptions {
   maxReferences?: number;  // earlier renders passed for continuity, default 3
   maxPortraits?: number;   // character portraits passed per image, default 3 (plus 1 location and 2 props)
   concurrency?: number;    // images rendered at once, default 4
+  // Triage: render every shot (and the cover) once, then spend this many
+  // retakes per shot on average (0.5 = half a retake each) on the worst-scored
+  // first. References keep the full retake loop: every shot depends on them.
+  retakes?: number;
+  maxRetakes?: number;     // a hard cap on triage retakes (e.g. what the budget can buy)
   force?: boolean;         // re-render even when the prompt is unchanged
   // Longest side, in px, of images sent as references (default 768) and of the
   // candidate sent for inspection (default 1024); 0 sends them full size. Files
@@ -326,6 +337,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   let saving = Promise.resolve();
   const saveManifest = () => (saving = saving.then(() => writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8")));
 
+  const triage = opts.retakes !== undefined && opts.inspector !== undefined;
+  const scored = new Map<string, { job: ArtJob; severity: number; retakePrompt?: string }>();
   const one = async (job: ArtJob, index: number) => {
     const prior = manifest[job.key];
     if (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && prior.photos === job.photoKey && existing.has(prior.file)) {
@@ -341,7 +354,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const references = await referencesFor(job);
     try {
       const forInspection = (img: Image) => shrink(img, inspectSize);
-      const entry = await renderOne(job, references, opts.backend, opts.inspector, maxAttempts, emit, style, forInspection, direction);
+      const entry = await renderOne(job, references, opts.backend, opts.inspector, triage && !job.ref ? 1 : maxAttempts, emit, style, forInspection, direction);
+      if (triage && !job.ref && entry.severity !== undefined) scored.set(job.key, { job, severity: entry.severity, ...(entry.retakePrompt ? { retakePrompt: entry.retakePrompt } : {}) });
       const file = `${job.key}.${extensionFor(entry.image.mimeType)}`;
       await writeFile(join(outDir, file), entry.image.data);
       manifest[job.key] = {
@@ -356,7 +370,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         ...(job.photoKey ? { photos: job.photoKey } : {}),
         attempts: entry.attempts,
         accepted: entry.accepted,
-        issues: entry.issues
+        issues: entry.issues,
+        ...(entry.severity !== undefined ? { severity: entry.severity } : {})
       };
       // Persist after every image so an interrupted render resumes where it stopped.
       await saveManifest();
@@ -387,8 +402,38 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const limit = n === 2 && refs.size === 0 ? 1 : opts.concurrency ?? 4;
     await inParallel(stage, limit, ({ job, index }) => one(job, index));
   }
+  if (triage) await triageRetakes();
   await saveManifest();
   return result;
+
+  // Retakes go to the worst images first; a retake is kept only if it scores better.
+  async function triageRetakes() {
+    const share = Math.max(0, opts.retakes ?? 0);
+    const allowed = Math.min(Math.round(share * scored.size), opts.maxRetakes ?? Infinity);
+    const worst = [...scored.values()].filter((s) => s.severity >= 3).sort((a, b) => b.severity - a.severity).slice(0, allowed);
+    emit({ type: "triage", scored: scored.size, retakes: worst.length });
+    await inParallel(worst, opts.concurrency ?? 4, async ({ job, severity, retakePrompt }) => {
+      try {
+        const references = await referencesFor(job);
+        const again = await renderOne({ ...job, prompt: retakePrompt ?? job.prompt }, references, opts.backend, opts.inspector, 1, emit, style, (img) => shrink(img, inspectSize), direction);
+        const after = again.severity ?? severity;
+        const kept = after < severity;
+        if (kept) {
+          const file = `${job.key}.${extensionFor(again.image.mimeType)}`;
+          await writeFile(join(outDir, file), again.image.data);
+          const prior = manifest[job.key];
+          manifest[job.key] = { ...prior, file, finalPrompt: again.finalPrompt, attempts: (prior?.attempts ?? 1) + 1, accepted: again.accepted, issues: again.issues, severity: after, retaken: true };
+          await saveManifest();
+        } else {
+          manifest[job.key] = { ...manifest[job.key], attempts: (manifest[job.key]?.attempts ?? 1) + 1 };
+        }
+        emit({ type: "retake_done", key: job.key, before: severity, after, kept });
+      } catch (err) {
+        if (isBudgetError(err)) throw err;
+        emit({ type: "job_failed", key: job.key, error: `retake: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    });
+  }
 }
 
 // Runs fn over items, at most `limit` at a time. A budget stop ends the run;
@@ -414,10 +459,12 @@ export async function renderOne(
   style?: string,
   forInspection: (img: Image) => Promise<Image> = async (img) => img,
   direction?: string
-): Promise<{ image: Image; finalPrompt: string; attempts: number; accepted: boolean; issues: string[] }> {
+): Promise<{ image: Image; finalPrompt: string; attempts: number; accepted: boolean; issues: string[]; severity?: number; retakePrompt?: string }> {
   let prompt = job.prompt;
   let image: Image | undefined;
   let issues: string[] = [];
+  let severity: number | undefined;
+  let retakePrompt: string | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // A failed generation (timeout, blocked or empty reply) uses up an attempt rather than the whole image.
     try {
@@ -431,15 +478,15 @@ export async function renderOne(
     }
     if (!inspector) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [] };
     const verdict = await inspector.inspect({ prompt, image: await forInspection(image), references, ...(style ? { style } : {}), ...(direction ? { direction } : {}) });
-    if (verdict.ok) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [] };
+    severity = verdict.severity;
+    if (verdict.ok) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [], ...(severity !== undefined ? { severity } : {}) };
     issues = verdict.issues;
     emit({ type: "attempt_rejected", key: job.key, attempt, issues });
-    if (attempt < maxAttempts) {
-      prompt = verdict.revisedPrompt?.trim()
-        || `${job.prompt}\n\nFix these problems from the previous attempt:\n${issues.map((i) => `- ${i}`).join("\n")}`;
-    }
+    retakePrompt = verdict.revisedPrompt?.trim()
+      || `${job.prompt}\n\nFix these problems from the previous attempt:\n${issues.map((i) => `- ${i}`).join("\n")}`;
+    if (attempt < maxAttempts) prompt = retakePrompt;
   }
-  return { image: image!, finalPrompt: prompt, attempts: maxAttempts, accepted: false, issues };
+  return { image: image!, finalPrompt: prompt, attempts: maxAttempts, accepted: false, issues, ...(severity !== undefined ? { severity } : {}), ...(retakePrompt ? { retakePrompt } : {}) };
 }
 
 // ---- Gemini ----
@@ -530,10 +577,13 @@ export class GeminiInspector implements Inspector {
 }
 
 export function toInspection(raw: unknown): Inspection {
-  const r = (raw ?? {}) as { ok?: unknown; issues?: unknown; revised_prompt?: unknown };
+  const r = (raw ?? {}) as { ok?: unknown; issues?: unknown; revised_prompt?: unknown; severity?: unknown };
   const issues = Array.isArray(r.issues) ? r.issues.map(String).filter(Boolean) : [];
+  const n = Number(r.severity);
   return {
     ok: r.ok === true,
+    // A missing score is guessed from the verdict, so triage always has a number.
+    severity: Number.isFinite(n) ? Math.max(0, Math.min(10, n)) : r.ok === true ? 0 : 5,
     issues,
     revisedPrompt: typeof r.revised_prompt === "string" && r.revised_prompt.trim() ? r.revised_prompt : undefined
   };
@@ -575,9 +625,9 @@ export class MockInspector implements Inspector {
     const n = this.seen.get(base) ?? 0;
     this.seen.set(base, n + 1);
     if (n < this.rejectFirst) {
-      return { ok: false, issues: ["mock: subject missing"], revisedPrompt: `${base}\n\nREVISED: ${n + 1}` };
+      return { ok: false, severity: 6, issues: ["mock: subject missing"], revisedPrompt: `${base}\n\nREVISED: ${n + 1}` };
     }
-    return { ok: true, issues: [] };
+    return { ok: true, severity: 0, issues: [] };
   }
 }
 

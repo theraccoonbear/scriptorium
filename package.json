@@ -16,7 +16,8 @@
     "art": "node --env-file=.env src/cli.ts art --config story.opencode-go.config.json",
     "artdirect": "node --env-file=.env src/cli.ts artdirect --config story.opencode-go.config.json",
     "video": "node src/cli.ts video",
-    "cast": "node --env-file-if-exists=.env src/cli.ts cast"
+    "cast": "node --env-file-if-exists=.env src/cli.ts cast",
+    "pitch": "node --env-file-if-exists=.env src/cli.ts pitch"
   },
   "engines": {
     "node": ">=20"

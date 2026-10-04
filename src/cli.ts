@@ -9,7 +9,8 @@ import { replay } from "./bible.ts";
 import { parseVoiceGenders } from "./audiobook.ts";
 import { accounted, artStep, castPreviewStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
 import { formatSummary, readLedger, summarize } from "./usage.ts";
-import { loadStoryFile, make, STEP_ORDERS } from "./make.ts";
+import { loadStoryFile, make, STEP_ORDERS, storyPitch } from "./make.ts";
+import { formatPitch } from "./pitch.ts";
 import type { StepOrder } from "./make.ts";
 import { GEMINI_MODES } from "./geminiBatch.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
@@ -41,6 +42,7 @@ const USAGE = `scriptorium <command> [options]
                                                          existing run, then render the images
             [--redo <kind>:<id>,...] [--note "..."]     also recreate these references (e.g. prop:horn),
                                                          with your corrections in --note
+  pitch <story.json>                                    what the story will need and cost, before spending
   cast  <story.json> [--as "..."]                      preview the story's cast: describe each member from
                                                          their photos and render one portrait each
   cost  --out <dir>                                     what a run has spent so far, by step, role and model
@@ -206,6 +208,15 @@ async function main() {
     const story = await loadStoryFile(storyFile);
     const results = await castPreviewStep({ runDir: story.runDir, config: story.config, cast: story.cast, as: values.as });
     if (results.some((r) => !r.accepted)) process.exitCode = 1;
+    return;
+  }
+
+  if (command === "pitch") {
+    const storyFile = positionals[0];
+    if (!storyFile) throw new Error("usage: pitch <story.json>");
+    const story = await loadStoryFile(storyFile);
+    const events = await new EventLog(story.runDir).load();
+    console.log(formatPitch(storyPitch(story, events), story.config.budget?.usd));
     return;
   }
 
