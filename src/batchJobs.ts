@@ -27,6 +27,7 @@ export function geminiBatchJobs(opts: {
   fetch?: Fetch;
   sleep?: (ms: number) => Promise<void>;
   log?: (msg: string) => void;
+  maxJobBytes?: number;             // inline jobs are capped at 20MB; larger batches split (default 15MB)
 } = {}): BatchJobs {
   const get = opts.fetch ?? (fetch as unknown as Fetch);
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -41,7 +42,22 @@ export function geminiBatchJobs(opts: {
     await mkdir(dirname(opts.stateFile), { recursive: true });
     await writeFile(opts.stateFile, JSON.stringify(state, null, 2) + "\n");
   };
-  return {
+  // Requests carrying images (an image job's references) quickly pass the inline
+  // limit: split into jobs under maxJobBytes, run together, results in order.
+  const run = async (model: string, role: string, requests: unknown[]): Promise<BatchItem[]> => {
+    const limit = opts.maxJobBytes ?? 15 * 1024 * 1024;
+    const chunks: unknown[][] = [];
+    let size = 0;
+    for (const r of requests) {
+      const bytes = JSON.stringify(r).length;
+      if (chunks.length === 0 || (size + bytes > limit && chunks.at(-1)!.length > 0)) { chunks.push([]); size = 0; }
+      chunks.at(-1)!.push(r);
+      size += bytes;
+    }
+    if (chunks.length > 1) log(`${requests.length} ${role} requests split into ${chunks.length} batch jobs (inline jobs are capped at 20MB)`);
+    return (await Promise.all(chunks.map((c) => one.run(model, role, c)))).flat();
+  };
+  const one: BatchJobs = {
     async run(model, role, requests) {
       const signature = createHash("sha1").update(model).update(JSON.stringify(requests)).digest("hex");
       const state = await loadState();
@@ -97,6 +113,7 @@ export function geminiBatchJobs(opts: {
       }
     }
   };
+  return { run };
 }
 
 // Collects calls made close together into one batch: each caller gets a
