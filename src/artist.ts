@@ -228,6 +228,10 @@ export interface ArtOptions {
   maxRetakes?: number | (() => number);
   retakeAbove?: number;    // only images scored at least this severity are retaken (default 5)
   force?: boolean;         // re-render even when the prompt is unchanged
+  // Images the author signed off on (art.json keys): kept as they are, even
+  // when their prompt changes or force is set, and never retaken.
+  approved?: ReadonlySet<string>;
+  only?: "references";     // render just the reference portraits, places and props
   // Longest side, in px, of images sent as references (default 768) and of the
   // candidate sent for inspection (default 1024); 0 sends them full size. Files
   // on disk stay full size. References are most of each request's size.
@@ -346,7 +350,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const scored = new Map<string, { job: ArtJob; severity: number; retakePrompt?: string }>();
   const one = async (job: ArtJob, index: number) => {
     const prior = manifest[job.key];
-    if (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && prior.photos === job.photoKey && existing.has(prior.file)) {
+    const approved = Boolean(opts.approved?.has(job.key) && prior && existing.has(prior.file));
+    if (approved || (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && prior.photos === job.photoKey && existing.has(prior.file))) {
       // Same image, but keep its placement current in case the shot's anchor moved.
       prior.sceneIndex = job.sceneIndex;
       prior.startParagraph = job.startParagraph;
@@ -397,9 +402,11 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const stages = [
     refJobs.slice(0, 1),
     refJobs.slice(1),
-    indexed.filter(({ job }) => isAnchor(job)),
-    indexed.filter(({ job }) => !job.ref && !isAnchor(job) && job.sceneIndex !== undefined),
-    indexed.filter(({ job }) => !job.ref && job.sceneIndex === undefined)
+    ...(opts.only === "references" ? [] : [
+      indexed.filter(({ job }) => isAnchor(job)),
+      indexed.filter(({ job }) => !job.ref && !isAnchor(job) && job.sceneIndex !== undefined),
+      indexed.filter(({ job }) => !job.ref && job.sceneIndex === undefined)
+    ])
   ];
   // A run with no references chains each scene's first shot to the one before
   // (as it always did), so those render one at a time.

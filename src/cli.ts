@@ -9,7 +9,8 @@ import { replay } from "./bible.ts";
 import { parseVoiceGenders } from "./audiobook.ts";
 import { accounted, artStep, castPreviewStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
 import { formatSummary, readLedger, summarize } from "./usage.ts";
-import { loadStoryFile, make, STEP_ORDERS, storyPitch } from "./make.ts";
+import { loadStoryFile, make, planSteps, STEP_ORDERS, storyPitch } from "./make.ts";
+import { setApproval } from "./approvals.ts";
 import { formatPitch } from "./pitch.ts";
 import type { StepOrder } from "./make.ts";
 import { GEMINI_MODES } from "./geminiBatch.ts";
@@ -22,6 +23,15 @@ const USAGE = `scriptorium <command> [options]
         run a story file's whole pipeline: story → art → audiobook → video.
         Re-running finishes whatever's missing. Steps: story, art, audiobook, video.
         --force allows changed story settings for a story already in progress
+        Review phases, one at a time with --only, before the steps they feed:
+          characters   draft/record the author's character sheet (<run>/characters.json)
+          refs         reference portraits, places and props only (art/)
+          voices       cast every speaker and render a sample of each (audiobook/samples/)
+        [--redo character:<id>,voice:<id>,...] [--note "..."]
+                       remake these references (with your corrections) or recast these voices
+  approve <story.json> <key>... [--revoke]
+        sign off on images (art.json keys: character-nell, scene-01-03, cover) or voices
+        (voice:nell, voice:narrator): approved work is never regenerated
   run   --config <file> [--out <prefix>] [--scenes N] [--premise "..."] [--setting "..."]
         [--context <file.md> ...] [--max-attempts N|unlimited] [--speaker-tags]
         generate (or resume) a story
@@ -176,6 +186,7 @@ async function main() {
       narration: { type: "string" },
       parallel: { type: "string" },
       note: { type: "string" },
+      revoke: { type: "boolean" },
       as: { type: "string" }
     }
   });
@@ -216,7 +227,17 @@ async function main() {
     if (!storyFile) throw new Error("usage: pitch <story.json>");
     const story = await loadStoryFile(storyFile);
     const events = await new EventLog(story.runDir).load();
-    console.log(formatPitch(storyPitch(story, events), story.config.budget?.usd));
+    const steps = values.only ? planSteps(values.only) : undefined;
+    console.log(formatPitch(storyPitch(story, events, steps), story.config.budget?.usd));
+    return;
+  }
+
+  if (command === "approve") {
+    const [storyFile, ...targets] = positionals;
+    if (!storyFile || targets.length === 0) throw new Error("usage: approve <story.json> <character-nell|scene-01-03|cover|voice:nell>... [--revoke]");
+    const story = await loadStoryFile(storyFile);
+    const a = await setApproval(story.runDir, targets, !values.revoke);
+    console.log(`${c.ok(values.revoke ? "revoked" : "approved")} ${targets.join(", ")} ${c.dim(`(art: ${a.art.length} approved, voices: ${a.voices.length} approved)`)}`);
     return;
   }
 
@@ -225,7 +246,8 @@ async function main() {
     if (!storyFile) throw new Error("usage: make <story.json> [--only <steps>] [--from <step>] [--step-order audio-first|art-first|parallel] [--force]");
     const order = values["step-order"];
     if (order !== undefined && !(STEP_ORDERS as readonly string[]).includes(order)) throw new Error(`--step-order must be one of ${STEP_ORDERS.join(", ")}`);
-    await make(storyFile, { only: values.only, from: values.from, force: values.force, ...(order ? { stepOrder: order as StepOrder } : {}) });
+    const redo = (values.redo ?? "").split(",").map((r) => r.trim()).filter(Boolean);
+    await make(storyFile, { only: values.only, from: values.from, force: values.force, ...(order ? { stepOrder: order as StepOrder } : {}), ...(redo.length ? { redo } : {}), ...(values.note ? { notes: values.note } : {}) });
     return;
   }
 

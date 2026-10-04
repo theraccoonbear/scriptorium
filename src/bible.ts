@@ -1,6 +1,6 @@
 // The story bible is derived state. Only the archivist's patches change it,
 // and it is always rebuilt by replaying the event log.
-import type { Bible, Patch, StoryEvent } from "./types.ts";
+import type { AuthorCharactersData, Bible, Character, Patch, SheetCharacter, StoryEvent } from "./types.ts";
 
 const RECENT_KEEP = 2;
 const ARC_CHUNK = 2;
@@ -85,7 +85,9 @@ export function applyPatch(bible: Bible, patch: Patch | undefined, index: number
 
 export function replay(events: StoryEvent[]): Bible {
   let bible = emptyBible();
+  let sheet: Record<string, SheetCharacter> | undefined;
   for (const e of events) {
+    if (e.type === "author_characters") sheet = (e.data as AuthorCharactersData).characters;
     if (e.type === "scene_committed") {
       const data = e.data as { bible?: Partial<Bible>; patch?: Patch; index: number };
       // First scene may carry the initial bible state from createAndDirect.
@@ -96,13 +98,33 @@ export function replay(events: StoryEvent[]): Bible {
       bible = applyPatch(bible, data.patch, data.index);
     }
   }
-  return bible;
+  return sheet ? { ...bible, characters: withSheet(bible.characters, sheet) } : bible;
+}
+
+// The author's sheet over the generated characters: every filled field wins,
+// whatever the archivist recorded before or after.
+export function withSheet(characters: Record<string, Character>, sheet: Record<string, SheetCharacter>): Record<string, Character> {
+  const out = { ...characters };
+  for (const [id, s] of Object.entries(sheet)) {
+    const c = out[id];
+    if (!c) continue;
+    const filled = (v?: string) => (v && v.trim() ? v.trim() : undefined);
+    out[id] = {
+      ...c,
+      ...(filled(s.name) ? { name: filled(s.name)! } : {}),
+      ...(filled(s.gender) ? { gender: filled(s.gender) } : {}),
+      ...(filled(s.vocal) ? { vocal: filled(s.vocal) } : {}),
+      ...(filled(s.appearance) ? { appearance: filled(s.appearance) } : {}),
+      ...(filled(s.background) ? { background: filled(s.background) } : {})
+    };
+  }
+  return out;
 }
 
 // Compact text view handed to every role.
 export function renderBible(bible: Bible): string {
   const chars = Object.values(bible.characters)
-    .map((c) => `- ${c.id} (${c.name}${c.gender ? `, ${c.gender}` : ""}, ${c.status}): ${c.traits} | goal: ${c.goal} | voice: ${c.voice}`)
+    .map((c) => `- ${c.id} (${c.name}${c.gender ? `, ${c.gender}` : ""}, ${c.status}): ${c.traits} | goal: ${c.goal} | voice: ${c.voice}${c.appearance ? ` | looks (author): ${c.appearance}` : ""}${c.background ? ` | background (author): ${c.background}` : ""}`)
     .join("\n");
   const locs = Object.values(bible.locations)
     .map((l) => `- ${l.id}: ${l.name}. ${l.description}`)

@@ -137,3 +137,19 @@ test("a designed voice is requested as voiceConfig.voice; prebuilt and library v
   assert.deepEqual(speechConfigFor("en-gb-advisor-9"), { voiceConfig: { prebuiltVoiceConfig: { voiceName: "en-gb-advisor-9" } } });
   assert.deepEqual(speechConfigFor("Kore"), { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } });
 });
+
+// Issue #84: recasting a voice the author didn't like, from their edited vocal description.
+test("a recast speaker is cast afresh from their current vocal description; the rest keep their voices", async () => {
+  const prose = ['"You\'re him," Nell said.', '"Edrick Vell."', "The fire hissed."].join("\n\n");
+  const { runDir, log } = await storyLog(prose, ["nell", "edrick", "narrator"], CHARS);
+  const prompts: string[] = [];
+  let pick = { narrator: "en-gb-storyteller-1", characters: { nell: "en-ie-friend-2", edrick: "en-gb-advisor-9" } as Record<string, string> };
+  const role: Role = { provider: { complete: async (req) => { prompts.push(req.prompt); return JSON.stringify({ ...pick, reasons: {} }); } } };
+  await castVoiceRun({ events: log.events, role, runDir, library: async () => LIB, log: () => {} });
+  pick = { narrator: "", characters: { nell: "kore" } } as typeof pick;
+  const voices = await castVoiceRun({ events: log.events, role, runDir, recast: ["nell"], library: async () => LIB, log: () => {} });
+  assert.equal(voices.nell, "kore");
+  assert.equal(voices.edrick, "en-gb-advisor-9");
+  assert.match(prompts[1], /nell \(Nell Ashby/);
+  assert.ok(!/edrick \(Edrick/.test(prompts[1]), "only Nell is recast");
+});

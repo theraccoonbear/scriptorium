@@ -3,7 +3,11 @@ import { basename, join } from "node:path";
 import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders } from "./providers.ts";
-import { runStory } from "./engine.ts";
+import { planReferences, planShots, runStory } from "./engine.ts";
+import { readApprovals } from "./approvals.ts";
+import { syncCharacterSheet } from "./characterSheet.ts";
+import { geminiSpeaker } from "./geminiTts.ts";
+import { renderVoiceSamples } from "./voiceSamples.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
 import type { EncoderChoice } from "./video.ts";
@@ -163,9 +167,40 @@ async function castPreviewInner(opts: CastPreviewOptions) {
   return results;
 }
 
-// Renders a run's art prompts (references, shots, cover) into <runDir>/art/.
-export async function artStep(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined) {
-  return accounted(runDir, config, "art", () => artStepInner(runDir, config, events, force));
+// The phases an author can review one at a time. "references": just the
+// portraits, places and props (remaking any in `redo`, with the author's
+// `notes`); otherwise everything — shots planned for any scene without them.
+export interface ArtPhase {
+  only?: "references";
+  redo?: string[];     // "kind:id"
+  notes?: string;
+}
+
+// Plans whatever art the run is missing (with the config's art director), then
+// renders it into <runDir>/art/. Approved images are never redone.
+export async function artStep(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, phase: ArtPhase = {}) {
+  return accounted(runDir, config, phase.only === "references" ? "refs" : "art", async () => {
+    const approved = new Set((await readApprovals(runDir)).art);
+    const roles = buildRoleProviders(config);
+    if (roles.artdirector && events.some((e) => e.type === "scene_committed")) {
+      const log = new EventLog(runDir);
+      await log.load();
+      if (phase.only === "references") {
+        await syncCharacterSheet(runDir, log);
+        const { made, stale } = await planReferences({ config, log, roles, runDir, redo: phase.redo, notes: phase.notes, approved });
+        if (stale.length) console.error(`[scriptorium] ${c.dim(`character sheet changed for ${stale.join(", ")} — new portraits`)}`);
+        if (made.length) console.error(`[scriptorium] ${c.ok(`${made.length} reference${made.length === 1 ? "" : "s"} planned`)} ${c.dim(made.join(", "))}`);
+      } else {
+        if (phase.redo?.length) throw new Error("--redo applies to the refs step (make --only refs --redo kind:id)");
+        const planned = await planShots({ config, log, roles, runDir });
+        if (planned) console.error(`[scriptorium] ${c.ok(`shots planned for ${planned} scene${planned === 1 ? "" : "s"}`)}`);
+      }
+      events = log.events;
+    } else if (phase.only === "references" || phase.redo?.length) {
+      throw new Error("the refs step needs a config with an artdirector role");
+    }
+    return artStepInner(runDir, config, events, force, { approved, ...(phase.only ? { only: phase.only } : {}) });
+  });
 }
 
 // With a budget, triage retakes are capped at what's left — worked out when
@@ -191,7 +226,7 @@ function triageCap(runDir: string, config: StoryConfig, _events: StoryEvent[]): 
   };
 }
 
-async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined) {
+async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, lock: { approved?: ReadonlySet<string>; only?: "references" } = {}) {
   const artist = resolveArtistConfig(config.artist);
   // Batch Mode: every image a stage asks for goes out together, at half price.
   const batch = artist.batch === true && artist.image.type === "gemini";
@@ -209,6 +244,7 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
     inspectSize: artist.inspectSize,
     direction: config.direction?.artist,
     force,
+    ...lock,
     onProgress: (event) => {
       if (event.type === "job_start") console.error(`[scriptorium] ${c.blue(c.bold(`${event.key} (${event.index + 1}/${event.total})`))}`);
       else if (event.type === "job_skipped") console.error(`[scriptorium] ${c.dim(`${event.key} unchanged — skipping (${event.file})`)}`);
@@ -279,7 +315,9 @@ export async function audiobookStep(runDir: string, events: StoryEvent[], opts: 
   return accounted(runDir, opts.config, "audiobook", () => audiobookStepInner(runDir, events, opts));
 }
 
-async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions) {
+// Everything voicing needs before a word is spoken: the tone palette (palette
+// mode), speaker tags, and the cast. `recast` speakers get a fresh voice.
+async function prepareVoices(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions, recast: string[] = []) {
   // Palette mode: design each speaker's tones from the whole script first, so
   // tagging can choose a tone for every line from them.
   let palette: TonePaletteData | undefined;
@@ -306,12 +344,42 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
         ...(opts.castingFile ? { castingFile: opts.castingFile } : {}),
         ...(opts.designVoices ? { designVoices: opts.designVoices } : {}),
         pinned: opts.geminiVoices ?? {},
+        ...(recast.length ? { recast } : {}),
         log: (m) => console.error(m)
       });
     } else {
       console.error(`[scriptorium] ${c.retry("no config — Gemini voices assigned by gender, not cast (pass --config)")}`);
     }
   }
+  return { events, palette, geminiVoices };
+}
+
+// The voices phase: tag and cast the story, then a short sample of every cast
+// voice for the author to review (audiobook/samples/). `redo` speakers are
+// cast afresh — never ones the author approved.
+export async function voicesStep(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions & { redo?: string[] } = {}) {
+  return accounted(runDir, opts.config, "voices", async () => {
+    const approved = new Set((await readApprovals(runDir)).voices);
+    const locked = (opts.redo ?? []).filter((id) => approved.has(id));
+    if (locked.length) throw new Error(`voice${locked.length === 1 ? "" : "s"} ${locked.join(", ")} approved — revoke the approval before recasting`);
+    if (opts.narration !== "gemini" && opts.dialogue !== "gemini") throw new Error("the voices step casts Gemini voices — set audiobook narration or dialogue to \"gemini\"");
+    // The author's sheet (vocal descriptions) is what casting reads.
+    const log = new EventLog(runDir);
+    await log.load();
+    await syncCharacterSheet(runDir, log);
+    events = log.events;
+    const prepared = await prepareVoices(runDir, events, opts, opts.redo);
+    const voices = prepared.geminiVoices ?? {};
+    const samples = await renderVoiceSamples(prepared.events, { runDir, voices, speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}) }) });
+    for (const s of samples) console.error(`[scriptorium] ${s.made ? c.ok(`${s.name}: ${s.voice}`) : c.dim(`${s.name}: ${s.voice} (sample unchanged)`)}${approved.has(s.id) ? c.dim(" — approved") : ""} ${c.dim(s.file)}`);
+    return samples;
+  });
+}
+
+async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions) {
+  const prepared = await prepareVoices(runDir, events, opts);
+  events = prepared.events;
+  const { palette, geminiVoices } = prepared;
   const result = await generateAudiobook(events, {
     runDir,
     narratorVoice: opts.narratorVoice,

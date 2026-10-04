@@ -197,3 +197,21 @@ test("a story file's art settings layer over the config's", async () => {
   assert.equal(s.config.artist?.batch, true);
   assert.equal(s.config.artist?.retakes, 0.5);
 });
+
+// Issue #84: review phases through make, with redo routed to the right phase.
+test("make runs a review phase on its own, routing --redo to it", async () => {
+  const { file } = await storyDir({});
+  await make(file, { only: "story" });
+  const calls: string[] = [];
+  const steps = {
+    characters: async () => { calls.push("characters"); },
+    refs: async (_s: unknown, _e: unknown, redo: string[], notes?: string) => { calls.push(`refs ${redo.join(",")} ${notes ?? ""}`.trim()); },
+    voices: async (_s: unknown, _e: unknown, redo: string[]) => { calls.push(`voices ${redo.join(",")}`.trim()); }
+  };
+  await make(file, { only: "refs,characters", steps });
+  await make(file, { only: "refs", redo: ["character:nell"], notes: "older", steps });
+  await make(file, { only: "voices", redo: ["voice:nell"], steps });
+  assert.deepEqual(calls, ["characters", "refs", "refs character:nell older", "voices nell"]);
+  await assert.rejects(make(file, { only: "art", redo: ["character:nell"], steps }), /refs phase/);
+  await assert.rejects(make(file, { only: "refs", notes: "x", steps }), /--note goes with --redo/);
+});

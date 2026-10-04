@@ -30,8 +30,10 @@ export interface PitchInput {
   ledger?: LedgerEntry[];
   scenes: number;                       // planned scenes
   wordsPerShot?: number;                // artWordsPerShot (default 110)
-  art?: { maxAttempts?: number; retakes?: number; concurrency?: number; skip?: boolean; batch?: boolean };
-  audio?: { narration?: "kokoro" | "gemini"; dialogue?: "kokoro" | "gemini"; geminiMode?: GeminiMode; geminiConcurrency?: number; skip?: boolean; geminiBatch?: boolean };
+  // refsOnly: the refs phase — just references, `refTargets` of them (exact when known).
+  art?: { maxAttempts?: number; retakes?: number; concurrency?: number; skip?: boolean; batch?: boolean; refsOnly?: boolean; refTargets?: number };
+  // samplesOnly: the voices phase — one short sample per speaker (`speakers` of them).
+  audio?: { narration?: "kokoro" | "gemini"; dialogue?: "kokoro" | "gemini"; geminiMode?: GeminiMode; geminiConcurrency?: number; skip?: boolean; geminiBatch?: boolean; samplesOnly?: boolean; speakers?: number };
   budgetUsd?: number;
   artManifest?: Record<string, { prompt: string }>;  // art/art.json: images already rendered
   scenesVoiced?: number;                             // scenes whose audio is already rendered
@@ -77,8 +79,13 @@ export function pitch(input: PitchInput): Pitch {
     cover = pending.some((j) => j.key === "cover") || input.scenes > committed.length ? 1 : 0;
   }
   const art = input.art ?? {};
+  if (art.refsOnly) {
+    references = art.refTargets ?? references;
+    shotsToRender = 0;
+    cover = 0;
+  }
   // Retakes: triage spends exactly its share; inspection-and-retry averages ~0.4 per image.
-  const retakes = art.skip ? 0 : art.retakes !== undefined ? Math.round(art.retakes * (shotsToRender + cover)) + Math.round(0.4 * references) : Math.round(0.4 * (shotsToRender + cover + references));
+  const retakes = art.skip ? 0 : art.refsOnly ? Math.round(0.4 * references) : art.retakes !== undefined ? Math.round(art.retakes * (shotsToRender + cover)) + Math.round(0.4 * references) : Math.round(0.4 * (shotsToRender + cover + references));
   const generations = art.skip ? 0 : references + shotsToRender + cover + retakes;
   const imageUsd = averageUsd(ledger, (e) => e.model.includes("image")) ?? TYPICAL.imageUsd;
   const inspectUsd = averageUsd(ledger, (e) => e.role === "inspector") ?? TYPICAL.inspectionUsd;
@@ -90,7 +97,7 @@ export function pitch(input: PitchInput): Pitch {
   const audio = input.audio ?? {};
   // Scenes already voiced are skipped, as the audiobook step skips them.
   const unvoiced = input.scenes > 0 ? Math.max(0, input.scenes - (input.scenesVoiced ?? 0)) / input.scenes : 0;
-  const seconds = audio.skip ? 0 : (words / TYPICAL.wordsPerSecond) * unvoiced;
+  let seconds = audio.skip ? 0 : (words / TYPICAL.wordsPerSecond) * unvoiced;
   const narrationShare = audio.narration === "gemini" ? 1 : 0;
   const dialogueShare = audio.dialogue === "gemini" ? 1 : 0;
   const geminiShare = audio.skip ? 0 : Math.max(narrationShare * 0.7 + dialogueShare * 0.3, 0);
@@ -112,8 +119,14 @@ export function pitch(input: PitchInput): Pitch {
     }
     geminiRequests = Math.round(geminiRequests * 1.2); // retakes of reads that ran long
   }
-  const batchVoice = audio.geminiBatch === true && (audio.geminiMode ?? "line") !== "line";
-  const audioUsd = seconds * geminiShare * 1.2 * TYPICAL.ttsUsdPerSecond * (batchVoice ? 0.5 : 1);
+  const batchVoice = audio.geminiBatch === true && (audio.geminiMode ?? "line") !== "line" && !audio.samplesOnly;
+  let audioUsd = seconds * geminiShare * 1.2 * TYPICAL.ttsUsdPerSecond * (batchVoice ? 0.5 : 1);
+  if (audio.samplesOnly) {
+    // A sample of each speaker: about a dozen seconds each, live.
+    geminiRequests = audio.skip ? 0 : audio.speakers ?? 0;
+    seconds = geminiRequests * 12;
+    audioUsd = seconds * TYPICAL.ttsUsdPerSecond;
+  }
   const kokoroSeconds = audio.skip ? 0 : seconds * (1 - geminiShare);
   const audioMinutes = (geminiRequests * TYPICAL.ttsSecondsPerRequest) / 60 / Math.max(1, audio.geminiConcurrency ?? 2) + kokoroSeconds / 1.05 / 60;
   const days = Math.ceil(geminiRequests / TYPICAL.ttsPerDay);
@@ -122,7 +135,8 @@ export function pitch(input: PitchInput): Pitch {
   const spentUsd = ledger.reduce((a, e) => a + (e.usd ?? 0), 0);
   const totalUsd = storyUsd + imagesUsd + audioUsd;
   const warnings: string[] = [];
-  if (days > 1) warnings.push(`${geminiRequests} Gemini voice requests is ${days} days of the 100-a-day cap — try geminiMode "palette" or "speaker"`);
+  // Batch Mode and samples don't count against the live daily cap.
+  if (days > 1 && !batchVoice && !audio.samplesOnly) warnings.push(`${geminiRequests} Gemini voice requests is ${days} days of the 100-a-day cap — try geminiMode "palette" or "speaker"`);
   if (input.budgetUsd !== undefined && spentUsd + totalUsd > input.budgetUsd) warnings.push(`estimated ${usd(spentUsd + totalUsd)} is over the ${usd(input.budgetUsd)} budget`);
   return {
     batch: { images: art.batch === true, voice: batchVoice },

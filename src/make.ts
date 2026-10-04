@@ -7,7 +7,12 @@ import { checkDirection } from "./providers.ts";
 import { formatSummary, readLedger, summarize, usd } from "./usage.ts";
 import { pitch } from "./pitch.ts";
 import type { Pitch } from "./pitch.ts";
-import { artStep, audiobookStep, loadRun, readContexts, storyStep, videoStep } from "./steps.ts";
+import { artStep, audiobookStep, loadRun, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
+import type { AudiobookStepOptions } from "./steps.ts";
+import { portraitIds, recordedSheet, syncCharacterSheet } from "./characterSheet.ts";
+import { staleCharacterRefs } from "./engine.ts";
+import { replay } from "./bible.ts";
+import { refAppearances } from "./visualrefs.ts";
 import { c } from "./colors.ts";
 import { CRITIC_MODES } from "./types.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
@@ -84,9 +89,13 @@ export interface ResolvedStory {
 }
 
 export const STEPS = ["story", "art", "audiobook", "video"] as const;
+// Review phases, run on their own with --only before the steps they feed:
+// the character sheet, reference portraits, and cast voices with samples.
+export const PHASES = ["characters", "refs", "voices"] as const;
+const ALL_STEPS = ["story", "characters", "refs", "voices", "art", "audiobook", "video"] as const;
 export const STEP_ORDERS = ["audio-first", "art-first", "parallel"] as const;
 export type StepOrder = (typeof STEP_ORDERS)[number];
-export type Step = (typeof STEPS)[number];
+export type Step = (typeof ALL_STEPS)[number];
 
 // Paths in a story file are relative to the story file's own directory.
 export async function loadStoryFile(path: string): Promise<ResolvedStory> {
@@ -151,17 +160,22 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
 }
 
 // Which steps to run: all of them, `--only a,b`, or `--from x` onward.
+// The review phases (characters, refs, voices) only run when named in --only.
 export function planSteps(only?: string, from?: string): Step[] {
   const parse = (s: string): Step => {
-    if (!(STEPS as readonly string[]).includes(s)) throw new Error(`unknown step "${s}" (steps: ${STEPS.join(", ")})`);
+    if (!(ALL_STEPS as readonly string[]).includes(s)) throw new Error(`unknown step "${s}" (steps: ${STEPS.join(", ")}; review phases: ${PHASES.join(", ")})`);
     return s as Step;
   };
   if (only && from) throw new Error("use --only or --from, not both");
   if (only) {
     const wanted = new Set(only.split(",").map((s) => parse(s.trim())));
-    return STEPS.filter((s) => wanted.has(s));
+    return ALL_STEPS.filter((s) => wanted.has(s));
   }
-  if (from) return STEPS.slice(STEPS.indexOf(parse(from)));
+  if (from) {
+    const step = parse(from);
+    if ((PHASES as readonly string[]).includes(step)) throw new Error(`${step} is a review phase — run it with --only ${step}`);
+    return STEPS.slice(STEPS.indexOf(step as (typeof STEPS)[number]));
+  }
   return [...STEPS];
 }
 
@@ -203,11 +217,16 @@ export interface MakeOptions {
   from?: string;
   force?: boolean;  // allow changed story settings for a story already in progress
   stepOrder?: StepOrder;  // overrides the story file's
+  redo?: string[];  // refs to remake ("character:nell") or voices to recast ("voice:nell")
+  notes?: string;   // the author's corrections for the remade refs
   steps?: Partial<StepRunners>;  // injectable for tests
 }
 
 export interface StepRunners {
   story: (story: ResolvedStory) => Promise<void>;
+  characters: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
+  refs: (story: ResolvedStory, events: StoryEvent[], redo: string[], notes?: string) => Promise<void>;
+  voices: (story: ResolvedStory, events: StoryEvent[], redo: string[]) => Promise<void>;
   art: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   audiobook: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   video: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
@@ -221,21 +240,32 @@ const defaultRunners: StepRunners = {
       cast: s.cast
     });
   },
+  characters: async (s) => {
+    const log = new EventLog(s.runDir);
+    await log.load();
+    const sync = await syncCharacterSheet(s.runDir, log);
+    const n = Object.keys(recordedSheet(log.events) ?? {}).length;
+    console.error(`[scriptorium] ${c.ok(sync.created ? `character sheet drafted: ${n} characters` : `character sheet: ${n} characters${sync.added.length ? `, added ${sync.added.join(", ")}` : ""}${sync.recorded ? " — your edits recorded" : ""}`)} ${c.dim(sync.file)}`);
+  },
+  refs: async (s, events, redo, notes) => { await artStep(s.runDir, s.config, events, false, { only: "references", redo, ...(notes ? { notes } : {}) }); },
+  voices: async (s, events, redo) => { await voicesStep(s.runDir, events, { ...audiobookOptions(s), redo }); },
   // make never re-renders finished work; the individual commands take --force for that.
   art: async (s, events) => { await artStep(s.runDir, s.config, events, false); },
-  audiobook: async (s, events) => {
-    const a = s.audiobook;
-    await audiobookStep(s.runDir, events, {
-      narratorVoice: a.narratorVoice, language: a.language, characterGenders: a.voiceGenders,
-      narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
-      kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
-      geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
-      casting: a.casting, geminiConcurrency: a.geminiConcurrency, geminiBatch: a.geminiBatch, castingFile: a.castingFile, designVoices: a.designVoices,
-      config: s.config
-    });
-  },
+  audiobook: async (s, events) => { await audiobookStep(s.runDir, events, audiobookOptions(s)); },
   video: async (s, events) => { await videoStep(s.runDir, events, false, s.video); }
 };
+
+function audiobookOptions(s: ResolvedStory): AudiobookStepOptions {
+  const a = s.audiobook;
+  return {
+    narratorVoice: a.narratorVoice, language: a.language, characterGenders: a.voiceGenders,
+    narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
+    kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
+    geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
+    casting: a.casting, geminiConcurrency: a.geminiConcurrency, geminiBatch: a.geminiBatch, castingFile: a.castingFile, designVoices: a.designVoices,
+    config: s.config
+  };
+}
 
 const SETTINGS_FILE = "story-settings.json";
 
@@ -247,12 +277,31 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     ledger: readLedger(story.runDir),
     scenes: story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length,
     wordsPerShot: story.config.artWordsPerShot,
-    art: { maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, batch: artist.batch, skip: !steps.includes("art") || !story.config.roles.artdirector },
-    audio: { narration: story.audiobook.narration, dialogue: story.audiobook.dialogue, geminiMode: story.audiobook.geminiMode, geminiConcurrency: story.audiobook.geminiConcurrency, geminiBatch: story.audiobook.geminiBatch, skip: !steps.includes("audiobook") },
+    art: {
+      maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, batch: artist.batch,
+      skip: !(steps.includes("art") || steps.includes("refs")) || !story.config.roles.artdirector,
+      ...(steps.includes("refs") && !steps.includes("art") ? { refsOnly: true, refTargets: refTargets(events) } : {})
+    },
+    audio: {
+      narration: story.audiobook.narration, dialogue: story.audiobook.dialogue, geminiMode: story.audiobook.geminiMode, geminiConcurrency: story.audiobook.geminiConcurrency, geminiBatch: story.audiobook.geminiBatch,
+      skip: !(steps.includes("audiobook") || steps.includes("voices")),
+      ...(steps.includes("voices") && !steps.includes("audiobook") ? { samplesOnly: true, speakers: Object.keys(replay(events).characters).length + 1 } : {})
+    },
     ...(story.config.budget ? { budgetUsd: story.config.budget.usd } : {}),
     ...readJson<Record<string, { prompt: string }>>(join(story.runDir, "art", "art.json"), (m) => ({ artManifest: m })),
     scenesVoiced: existsSync(join(story.runDir, "audiobook")) ? readdirSync(join(story.runDir, "audiobook")).filter((f) => /^scene-\d+\.wav$/.test(f)).length : 0
   });
+}
+
+// References the refs phase would make: portraits and places without one,
+// portraits the sheet has changed, and a couple of key props.
+function refTargets(events: StoryEvent[]): number {
+  const have = refAppearances(events);
+  const bible = replay(events);
+  return portraitIds(events).filter((id) => !have.characters[id]).length
+    + Object.keys(bible.locations).filter((id) => !have.locations[id]).length
+    + staleCharacterRefs(events).length
+    + (Object.keys(have.props).length === 0 ? 2 : 0);
 }
 
 function readJson<T>(path: string, wrap: (value: T) => object): object {
@@ -263,6 +312,9 @@ function readJson<T>(path: string, wrap: (value: T) => object): object {
 function rank(step: Step, order: StepOrder): number {
   if (step === "art") return order === "art-first" ? 1 : 2;
   if (step === "audiobook") return order === "art-first" ? 2 : 1;
+  if (step === "characters") return 0.1;
+  if (step === "refs") return 0.2;
+  if (step === "voices") return 0.3;
   return step === "story" ? 0 : 3;
 }
 
@@ -270,6 +322,12 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   const story = await loadStoryFile(storyPath);
   const steps = planSteps(opts.only, opts.from);
   const run = { ...defaultRunners, ...opts.steps };
+  const redo = opts.redo ?? [];
+  const redoVoices = redo.filter((r) => r.startsWith("voice:")).map((r) => r.slice("voice:".length));
+  const redoRefs = redo.filter((r) => !r.startsWith("voice:"));
+  if (redoRefs.length && !steps.includes("refs")) throw new Error(`--redo ${redoRefs.join(",")}: references are remade in the refs phase (--only refs)`);
+  if (redoVoices.length && !steps.includes("voices")) throw new Error(`--redo voice:…: voices are recast in the voices phase (--only voices)`);
+  if (opts.notes && redoRefs.length === 0) throw new Error("--note goes with --redo <kind>:<id>");
   await mkdir(story.runDir, { recursive: true });
 
   // Guard the story in progress against changed settings.
@@ -310,13 +368,21 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
       await run.story(story);
       continue;
     }
+    if (stage[0] === "characters" || stage[0] === "refs" || stage[0] === "voices") {
+      const events = await new EventLog(story.runDir).load();
+      if (!events.some((e) => e.type === "scene_committed")) throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
+      if (stage[0] === "characters") await run.characters(story, events);
+      else if (stage[0] === "refs") await run.refs(story, events, redoRefs, opts.notes);
+      else await run.voices(story, events, redoVoices);
+      continue;
+    }
     // Later steps read the run as the story step left it.
     const events = await new EventLog(story.runDir).load();
     if (!events.some((e) => e.type === "scene_committed")) {
       throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
     }
     // Both finish (or fail) before the first failure is reported.
-    const results = await Promise.allSettled(stage.map((step) => run[step as Exclude<Step, "story">](story, events)));
+    const results = await Promise.allSettled(stage.map((step) => run[step as "art" | "audiobook" | "video"](story, events)));
     const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
     if (failed) throw failed.reason;
   }
