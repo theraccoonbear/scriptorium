@@ -25,7 +25,8 @@ function fakeApi(opts: { fail?: boolean } = {}) {
     if (init?.method === "POST") {
       const body = JSON.parse(init.body!);
       submitted.push({ model: url.split("/models/")[1].split(":")[0], requests: body.batch.input_config.requests.requests });
-      return { ok: true, status: 200, json: async () => ({ name: `batches/job${submitted.length}` }) };
+      const name = `batches/job${submitted.length}`;
+      return { ok: true, status: 200, json: async () => ({ name }) };
     }
     const name = url.split("/v1beta/")[1];
     const n = (polls.get(name) ?? 0) + 1;
@@ -119,4 +120,13 @@ test("in batch mode a scene's voice batches go out as one job", async () => {
   const out = await voiceSceneBatches(scene, "speaker", { bible: emptyBible(), voiceFor: (s) => `gemini:${s}`, speak: geminiBatchSpeaker(fakeJobs, { model: "tts" }), concurrency: 10000, onProgress: () => {} });
   assert.equal(out.size, scenePieces(scene).length);
   assert.deepEqual(jobs, [3], "narrator, Nell and Edrick batches: one job");
+});
+
+test("a batch too big for one inline job is split into several, results back in order", async () => {
+  const api = fakeApi();
+  const big = Array.from({ length: 5 }, (_, n) => ({ n, image: "x".repeat(400) }));
+  const items = await geminiBatchJobs({ apiKey: "k", fetch: api.fetch, sleep: noSleep, maxJobBytes: 1000 }).run("m", "artist", big);
+  assert.deepEqual(api.submitted.map((j) => j.requests.length), [2, 2, 1], "split into jobs under the limit");
+  // The fake fails each job's second request (key "1"): requests 1 and 3 overall.
+  assert.deepEqual(items.map((i) => i.response?.echo.n ?? "error"), [0, "error", 2, "error", 4], "every result in its original place");
 });

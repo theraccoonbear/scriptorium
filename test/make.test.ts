@@ -190,3 +190,10 @@ test("by default audio runs before art (cheap first: a rewrite costs no images);
   const bad = await storyDir({ stepOrder: "sideways" });
   await assert.rejects(loadStoryFile(bad.file), /"stepOrder" must be one of audio-first, art-first, parallel/);
 });
+
+test("a story file's art settings layer over the config's", async () => {
+  const { file } = await storyDir({ artist: { batch: true, retakes: 0.5 } });
+  const s = await loadStoryFile(file);
+  assert.equal(s.config.artist?.batch, true);
+  assert.equal(s.config.artist?.retakes, 0.5);
+});
