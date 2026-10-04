@@ -77,6 +77,12 @@ It's exact where the run already knows (written, tagged and directed scenes; ima
 - Reference images keep their own full retake loop, since every shot depends on them.
 - With a `budget`, the retakes are also capped at what the remaining money can buy.
 
+**Batch Mode: half price, slower.** Gemini's Batch Mode runs many requests as one job at **50% of the price**, with its own rate limits. Results usually take a few minutes and at most 24 hours.
+- `"artist": { "batch": true }` sends each stage's images as one job: the first reference, the other references, each scene's first shot, the other shots, then the cover. Retakes form the next job. Inspections stay live.
+- `"audiobook": { "geminiBatch": true }` sends a scene's voice batches as one job in palette or speaker mode. Line mode stays live.
+- A job is recorded as soon as it's submitted, so a stopped run **resumes polling the same job** rather than paying again.
+- Batch calls are logged at half price, and the pitch shows the batch price.
+
 **Order and parallelism.** After the story, `make` runs **audio before art** by default (`"stepOrder": "audio-first"`). Voicing is cheap, and listening is where you find a story that needs a rewrite, before any image is paid for. `"art-first"` reverses that, and `"parallel"` runs both at once, which is fastest. `--step-order` overrides it per run, and the video always waits for both.
 - Within each step, `artist.concurrency` sets how many images render at once (default 4; 1 for one at a time).
 - `audiobook.geminiConcurrency` sets how many Gemini voice batches run at once (default 2), always within the per-minute limit.

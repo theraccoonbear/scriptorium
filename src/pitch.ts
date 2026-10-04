@@ -16,7 +16,7 @@ export const TYPICAL = {
   imageUsd: 0.089,         // one image generation with references (Chapter 3's average)
   inspectionUsd: 0.0066,   // one inspection
   storyUsdPerScene: 0.30,  // Opus writer + editor, Haiku elsewhere (Gallows Inn: $0.88 / 3 scenes)
-  ttsUsdPerSecond: 0.000225, // Gemini Flash TTS: ~25 audio tokens/s at $9/M
+  ttsUsdPerSecond: 0.000279, // Gemini Flash TTS: ~31 audio tokens/s at $9/M (measured)
   wordsPerScene: 1500,
   wordsPerSecond: 2.6,     // narration pace
   paragraphsPerScene: 50,
@@ -30,14 +30,15 @@ export interface PitchInput {
   ledger?: LedgerEntry[];
   scenes: number;                       // planned scenes
   wordsPerShot?: number;                // artWordsPerShot (default 110)
-  art?: { maxAttempts?: number; retakes?: number; concurrency?: number; skip?: boolean };
-  audio?: { narration?: "kokoro" | "gemini"; dialogue?: "kokoro" | "gemini"; geminiMode?: GeminiMode; geminiConcurrency?: number; skip?: boolean };
+  art?: { maxAttempts?: number; retakes?: number; concurrency?: number; skip?: boolean; batch?: boolean };
+  audio?: { narration?: "kokoro" | "gemini"; dialogue?: "kokoro" | "gemini"; geminiMode?: GeminiMode; geminiConcurrency?: number; skip?: boolean; geminiBatch?: boolean };
   budgetUsd?: number;
   artManifest?: Record<string, { prompt: string }>;  // art/art.json: images already rendered
   scenesVoiced?: number;                             // scenes whose audio is already rendered
 }
 
 export interface Pitch {
+  batch: { images: boolean; voice: boolean };
   exact: { story: boolean; shots: boolean; voicing: boolean };
   story: { scenesToWrite: number; usd: number };
   images: { references: number; shots: number; cover: number; generations: number; retakes: number; usd: number; minutes: number };
@@ -81,7 +82,8 @@ export function pitch(input: PitchInput): Pitch {
   const generations = art.skip ? 0 : references + shotsToRender + cover + retakes;
   const imageUsd = averageUsd(ledger, (e) => e.model.includes("image")) ?? TYPICAL.imageUsd;
   const inspectUsd = averageUsd(ledger, (e) => e.role === "inspector") ?? TYPICAL.inspectionUsd;
-  const imagesUsd = generations * (imageUsd + inspectUsd);
+  // Batch Mode: generations at half price (inspections stay live).
+  const imagesUsd = generations * (imageUsd * (art.batch ? 0.5 : 1) + inspectUsd);
   const imageMinutes = (generations * TYPICAL.imageSeconds) / 60 / Math.max(1, art.concurrency ?? 4);
 
   // Voice: Gemini requests by mode (exact when the scenes are tagged and batched).
@@ -110,7 +112,8 @@ export function pitch(input: PitchInput): Pitch {
     }
     geminiRequests = Math.round(geminiRequests * 1.2); // retakes of reads that ran long
   }
-  const audioUsd = seconds * geminiShare * 1.2 * TYPICAL.ttsUsdPerSecond;
+  const batchVoice = audio.geminiBatch === true && (audio.geminiMode ?? "line") !== "line";
+  const audioUsd = seconds * geminiShare * 1.2 * TYPICAL.ttsUsdPerSecond * (batchVoice ? 0.5 : 1);
   const kokoroSeconds = audio.skip ? 0 : seconds * (1 - geminiShare);
   const audioMinutes = (geminiRequests * TYPICAL.ttsSecondsPerRequest) / 60 / Math.max(1, audio.geminiConcurrency ?? 2) + kokoroSeconds / 1.05 / 60;
   const days = Math.ceil(geminiRequests / TYPICAL.ttsPerDay);
@@ -122,6 +125,7 @@ export function pitch(input: PitchInput): Pitch {
   if (days > 1) warnings.push(`${geminiRequests} Gemini voice requests is ${days} days of the 100-a-day cap — try geminiMode "palette" or "speaker"`);
   if (input.budgetUsd !== undefined && spentUsd + totalUsd > input.budgetUsd) warnings.push(`estimated ${usd(spentUsd + totalUsd)} is over the ${usd(input.budgetUsd)} budget`);
   return {
+    batch: { images: art.batch === true, voice: batchVoice },
     exact: { story: toWrite === 0, shots: undirectedScenes <= 0, voicing: exactVoicing },
     story: { scenesToWrite: toWrite, usd: storyUsd },
     images: { references: art.skip ? 0 : references, shots: art.skip ? 0 : shotsToRender, cover: art.skip ? 0 : cover, generations, retakes, usd: imagesUsd, minutes: imageMinutes },
@@ -149,6 +153,7 @@ export function formatPitch(p: Pitch, budgetUsd?: number): string {
       ? "voice: nothing to voice"
       : `voice${est(p.exact.voicing)}: ~${Math.round(p.audio.seconds / 60)} min of audio, ${p.audio.geminiRequests} Gemini requests${p.audio.geminiRequests ? ` (${p.audio.days} day${p.audio.days === 1 ? "" : "s"} of quota)` : ""}, ~${usd(p.audio.usd)}, ~${m(p.audio.minutes)}`,
     `total: ~${usd(p.totalUsd)} still to spend${p.spentUsd > 0 ? ` (${usd(p.spentUsd)} spent so far)` : ""}${budgetUsd !== undefined ? ` · budget ${usd(budgetUsd)}` : ""}`,
+    ...(p.batch.images || p.batch.voice ? [`batch mode (${[p.batch.images && "images", p.batch.voice && "voice"].filter(Boolean).join(" and ")}): half price, but results can take minutes to hours`] : []),
     ...p.warnings.map((w) => `⚠ ${w}`)
   ].join("\n");
 }
