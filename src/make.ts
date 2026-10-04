@@ -60,6 +60,7 @@ export interface StoryFile {
   maxDraftsPerScene?: number;          // hard stop for a scene that won't settle (default 20)
   pricing?: StoryConfig["pricing"];    // per-model USD per million tokens, over the defaults
   artStyle?: string;                   // prescriptive art style; overrides the Creator's
+  artist?: StoryConfig["artist"];      // image settings over the config's (batch, retakes, concurrency...)
   critic?: StoryConfig["critic"];      // "blocking" (default), "advisory" or "off"
   // Real people and animals who star in the story, from photos (paths relative to the story file).
   cast?: { name: string; photos: string | string[]; notes?: string }[];
@@ -104,7 +105,8 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...(raw.budget ?? baseConfig.budget ? { budget: raw.budget ?? baseConfig.budget } : {}),
     ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
     ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {}),
-    ...(raw.critic ?? baseConfig.critic ? { critic: raw.critic ?? baseConfig.critic } : {})
+    ...(raw.critic ?? baseConfig.critic ? { critic: raw.critic ?? baseConfig.critic } : {}),
+    ...(raw.artist ? { artist: { ...baseConfig.artist, ...raw.artist } } : {})
   };
   if (config.budget !== undefined && !(typeof config.budget.usd === "number" && config.budget.usd > 0)) {
     throw new Error(`${path}: "budget" must look like { "usd": 5 }`);
