@@ -171,7 +171,11 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
     const complication = isFinal
       ? "Resolve the central conflict. No new complications."
       : pick(COMPLICATIONS, rng);
-    const overdue = isFinal
+    // With an author's plan, setups are paid where the plan pays them: an
+    // unexplained detail may stay unexplained on purpose, so none is overdue.
+    const overdue = config.context
+      ? []
+      : isFinal
       ? bible.ledger
       : bible.ledger.filter((s) => i - s.openedAt >= overdueAfter);
 

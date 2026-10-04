@@ -407,6 +407,28 @@ test("the beat gate flags a beat that leaves the author's plan", async () => {
   assert.ok(out.prompt.includes("SUGGESTED COMPLICATION (optional"));
 });
 
+// Issue #81 (Rantoul's Mushrooms, scene 5): the director paid off a stained
+// quarterstaff with an invented reveal — it was a poison applicator — that the
+// author's plan never made, and the beat gate let it through.
+test("in an adaptation the director reveals only what the plan reveals, and the gate flags an invented reveal", async () => {
+  const context = "Scene 5 — The troll: Lemuel feeds the troll leg six; it collapses. Leg four, owl hoots, the wagon escapes.";
+  const beatRole = { provider: { complete: async () => JSON.stringify(testBeat) }, temperature: 0 };
+  const params = { bible: emptyBible(), sceneIndex: 4, total: 6, tension: 9, complication: "Someone arrives who should not be here.", overdue: [] };
+  const planned = await direct(beatRole, { ...params, context });
+  assert.ok(planned.prompt.includes("Reveal only what the plan reveals"));
+  assert.ok(planned.prompt.includes("open setups the plan doesn't pay off stay open"));
+  assert.ok(!(await direct(beatRole, params)).prompt.includes("Reveal only what the plan reveals"), "original stories keep their payoffs");
+  assert.ok(BEAT_GATE_SYSTEM.includes("explains, reveals or connects something the plan leaves unexplained"));
+  assert.ok(BEAT_GATE_SYSTEM.includes("a secret purpose for an object"));
+  const invented = { ...testBeat, mustReveal: "The troll's collapse was the gnacien toxin on Rantoul's quarterstaff: he is more prepared than he seems." };
+  const verdict = { ok: false, issues: [{ type: "OFF_PLAN", severity: "high", quote: invented.mustReveal, constraint: "the author's Scene 5", detail: "The plan never explains the quarterstaff." }] };
+  const gateRole = { provider: { complete: async () => JSON.stringify(verdict) }, temperature: 0 };
+  const out = await reviewBeat(gateRole, { bible: emptyBible(), beat: invented, sceneIndex: 4, total: 6, tension: 9, complication: "x", context });
+  assert.ok(out.prompt.includes(invented.mustReveal), "the gate sees the reveal");
+  assert.equal(out.result.ok, false);
+  assert.equal(out.result.issues[0].type, "OFF_PLAN");
+});
+
 test("the art director shoots the decisive instant, in motion, with a named camera angle", () => {
   assert.ok(ARTDIRECTOR_SYSTEM.includes("Pick the decisive instant"));
   assert.ok(ARTDIRECTOR_SYSTEM.includes("at most one such shot per scene"));

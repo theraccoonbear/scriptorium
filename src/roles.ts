@@ -136,7 +136,7 @@ SPEC ISSUE TYPES (for reviewing beat specs and bible patches, not prose):
 - WRONG_PAYOFF: a payoff doesn't match its setup, or a required setup is missing
 - INADEQUATE_SPEC: required fields missing/empty, duplicate names, or output too generic to use
 - REHASH: the beat re-litigates an already-resolved decision without introducing new pressure
-- OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events`;
+- OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events, or explains, reveals or connects something the plan leaves unexplained`;
 
 // Shared issue contract for ALL gates. One schema, one dedup key — a gate that
 // omits `constraint` degrades repeat-detection to prose quotes that change every
@@ -253,11 +253,11 @@ Allowed types:
 - CANON_CONTRADICTION: the spec conflicts with established bible facts
 - POV_LEAK: the spec requires the POV character to know something they cannot plausibly know
 - WRONG_PAYOFF: a payoff doesn't match its setup, or an overdue setup is missing from payoffs
-- OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events
+- OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events, or explains, reveals or connects something the plan leaves unexplained
 - REHASH: the beat re-decides something already closed, or restates a turn the story already made
 
 CHECK SPECIFICALLY:
-- If the STORY CONTEXT lays out what happens in this scene (by scene number), check the spec against it FIRST. Every event the author lists for this scene must be covered by the spec, as an outcome or a fixed moment (the spec need not fix their order); no event the author assigns to a later scene may be. A spec that goes somewhere else — however well-made — is OFF_PLAN. Bridging from where the last scene actually ended to the plan's events is fine.
+- If the STORY CONTEXT lays out what happens in this scene (by scene number), check the spec against it FIRST. Every event the author lists for this scene must be covered by the spec, as an outcome or a fixed moment (the spec need not fix their order); no event the author assigns to a later scene may be. A spec that goes somewhere else — however well-made — is OFF_PLAN. Bridging from where the last scene actually ended to the plan's events is fine. Then read mustReveal and payoffs against the plan: a reveal, explanation or connection the plan does not make (a secret purpose for an object, a hidden cause behind an event, a link between two of the author's details) is OFF_PLAN, however neat. In an author's story an unexplained detail is often left unexplained on purpose.
 - Read mustReveal against every constraint. If the reveal would itself violate a constraint (e.g. the reveal says a problem is solved/compensated while a constraint says it must remain unresolved), flag UNSATISFIABLE_CONSTRAINT.
 - Read constraints against each other. Two constraints that cannot hold in the same scene = UNSATISFIABLE_CONSTRAINT.
 - Read the conflict and payoffs against the bible and prior scenes.
@@ -587,7 +587,7 @@ export async function direct(role: Role, params: {
     "YOUR PREVIOUS BEAT SPEC WAS REJECTED. ISSUES TO FIX:"
   );
   const plan = context
-    ? `THE AUTHOR'S PLAN COMES FIRST: if the STORY CONTEXT lays out what happens in scene ${sceneIndex + 1}, this beat must deliver those events — as outcomes the scene must reach and at most three fixed moments, never as a step-by-step sequence — and nothing the author assigns to a later scene. Where the last scene ended somewhere the plan didn't expect, bridge from where it actually ended to the plan's events.`
+    ? `THE AUTHOR'S PLAN COMES FIRST: if the STORY CONTEXT lays out what happens in scene ${sceneIndex + 1}, this beat must deliver those events — as outcomes the scene must reach and at most three fixed moments, never as a step-by-step sequence — and nothing the author assigns to a later scene. Where the last scene ended somewhere the plan didn't expect, bridge from where it actually ended to the plan's events. Reveal only what the plan reveals: mustReveal comes from this scene's planned events, and never explains, solves or connects anything the plan leaves unexplained. An odd detail the author never explains is often the joke or the point, and the reader draws the conclusion; open setups the plan doesn't pay off stay open.`
     : "";
   const prompt = [
     context ? `STORY CONTEXT (provided by author):\n${context}` : "",
