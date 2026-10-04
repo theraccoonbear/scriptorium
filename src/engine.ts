@@ -10,7 +10,8 @@ import { EventLog } from "./eventlog.ts";
 import { isBudgetError } from "./usage.ts";
 import { storedContext } from "./context.ts";
 import { continuistLane, dedupIssues, sameIssue, stuckIssues } from "./review.ts";
-import { refAppearances, storyArtStyle } from "./visualrefs.ts";
+import { readVisualRefs, refAppearances, storyArtStyle } from "./visualrefs.ts";
+import { lookOf, portraitIds } from "./characterSheet.ts";
 import type { RefAppearances } from "./visualrefs.ts";
 import type {
   Beat,
@@ -645,7 +646,9 @@ async function directReferences(
     recordTiming("artdirector", Date.now() - t0);
     if (out.result.artStyle && !storyArtStyle(log.events)) await log.append("art_style", { style: out.result.artStyle });
     for (const r of out.result.references ?? []) {
-      await log.append("visual_ref", r satisfies VisualRefData);
+      // A portrait remembers the author's sheet entry it was drawn from.
+      const sheet = r.kind === "character" ? lookOf(bible.characters[r.id]) : undefined;
+      await log.append("visual_ref", (sheet ? { ...r, sheet } : r) satisfies VisualRefData);
       made.push(r);
     }
     await record(out, n);
@@ -781,6 +784,97 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
     await log.append("cover_art", cover);
   }
   return committed.length;
+}
+
+// Portraits whose author sheet entry changed since they were made (or, for
+// ones made before the sheet, whose look the author has since rewritten).
+export function staleCharacterRefs(events: StoryEvent[]): string[] {
+  const bible = replay(events);
+  return readVisualRefs(events)
+    .filter((r) => r.kind === "character" && bible.characters[r.id])
+    .filter((r) => {
+      const c = bible.characters[r.id];
+      const now = lookOf(c);
+      if (!now) return false;
+      return r.sheet ? r.sheet !== now : c.appearance !== r.appearance || Boolean(c.background);
+    })
+    .map((r) => r.id)
+    .sort();
+}
+
+// The references phase: a portrait for every character on the author's sheet
+// (except portrait: false), every location, and the story's key props — made
+// where missing, remade where the sheet changed or the author asked (redo,
+// with notes), never touching what the author approved.
+export async function planReferences({ config, log, roles, runDir, redo = [], notes, approved = new Set() }: {
+  config: StoryConfig;
+  log: EventLog;
+  roles: Roles;
+  runDir?: string;
+  redo?: string[];                    // "kind:id" references to remake
+  notes?: string;                     // author corrections for those
+  approved?: ReadonlySet<string>;     // art keys the author signed off on
+}): Promise<{ made: string[]; stale: string[] }> {
+  const artRole = roles.artdirector;
+  if (!artRole) throw new Error("config has no artdirector role");
+  await log.load();
+  await applyAuthorArtStyle(config, log);
+  let seq = runDir ? await nextThreadSeq(runDir) : 0;
+  const isApproved = (r: string) => approved.has(r.replace(":", "-"));
+  for (const r of redo) if (isApproved(r)) throw new Error(`${r} is approved — revoke the approval before remaking it`);
+  if (notes && redo.length === 0) throw new Error("--note only applies with --redo");
+  const stale = staleCharacterRefs(log.events).map((id) => `character:${id}`).filter((r) => !isApproved(r) && !redo.includes(r));
+  const bible = replay(log.events);
+  const known = new Set(Object.keys(bible.characters));
+  const storyText = log.events.filter((e) => e.type === "scene_committed").flatMap((e) => sceneParagraphs((e.data as SceneCommittedData).prose, known));
+  const record = async (out: RoleOutput<ArtDirection>) => {
+    if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-references", out);
+  };
+  const ids = (list: string[], kind: string) => list.filter((r) => r.startsWith(`${kind}:`)).map((r) => r.slice(kind.length + 1));
+  const made: VisualRefData[] = [];
+  // The author's redo notes go only to what they're about.
+  if (redo.length > 0) {
+    made.push(...await directReferences(artRole, bible, log, storyText, record, new Set(redo), notes,
+      { characterIds: ids(redo, "character"), locationIds: ids(redo, "location"), props: ids(redo, "prop").length > 0 }));
+  }
+  made.push(...await directReferences(artRole, replay(log.events), log, storyText, record, new Set(stale), undefined,
+    { characterIds: portraitIds(log.events), locationIds: Object.keys(bible.locations) }));
+  return { made: made.map((r) => `${r.kind}:${r.id}`), stale: stale.map((r) => r.slice("character:".length)) };
+}
+
+// The shots phase's planning: shots for every scene that has none yet, and the
+// cover when it's missing or out of date. Directed shots are kept as they are.
+export async function planShots({ config, log, roles, runDir }: { config: StoryConfig; log: EventLog; roles: Roles; runDir?: string }): Promise<number> {
+  const artRole = roles.artdirector;
+  if (!artRole) throw new Error("config has no artdirector role");
+  await log.load();
+  await applyAuthorArtStyle(config, log);
+  let seq = runDir ? await nextThreadSeq(runDir) : 0;
+  const recordRefs = async (out: RoleOutput<ArtDirection>) => {
+    if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-references", out);
+  };
+  const directed = new Set(log.events.filter((e) => e.type === "scene_art").map((e) => (e.data as SceneArtData).sceneIndex));
+  const events = [...log.events];
+  let planned = 0;
+  for (const [n, e] of events.entries()) {
+    if (e.type !== "scene_committed") continue;
+    const d = e.data as SceneCommittedData;
+    if (directed.has(d.index)) continue;
+    const bible = replay(events.slice(0, n + 1));
+    const shot = await directSceneShots(artRole, config, bible, d.beat, d.prose, d.index, sceneArtPrompts(log.events), log, recordRefs);
+    for (const draft of shot.drafts) if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector", draft);
+    const out = shot.drafts.at(-1)!;
+    await log.append("scene_art", { sceneIndex: d.index, prompt: out.result.prompt, shots: out.result.shots } satisfies SceneArtData);
+    planned++;
+  }
+  const committed = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);
+  const lastCover = log.events.filter((e) => e.type === "cover_art").at(-1)?.data as CoverArtData | undefined;
+  if (committed.length > 0 && (planned > 0 || lastCover?.sceneCount !== committed.length)) {
+    const out = await directCoverArt(artRole, replay(log.events), committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
+    if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
+    await log.append("cover_art", { sceneCount: committed.length, prompt: out.result.prompt } satisfies CoverArtData);
+  }
+  return planned;
 }
 
 function sceneArtPrompts(events: StoryEvent[]): string[] {

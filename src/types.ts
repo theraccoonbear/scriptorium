@@ -34,6 +34,26 @@ export interface Character {
   // texture, accent (e.g. "fifties, low and gravelly, unhurried, a hill-country burr").
   // `voice` is how they TALK (register, word choice) and guides the writer.
   vocal?: string;
+  // From the author's character sheet (characters.json): how they look, and
+  // the history the story leaves out. Canon for portraits and casting.
+  appearance?: string;
+  background?: string;
+}
+
+// One character on the author's sheet. Filled fields override the generated
+// bible; empty ones leave it alone. portrait: false = no reference portrait.
+export interface SheetCharacter {
+  name?: string;
+  gender?: string;
+  appearance?: string;
+  background?: string;
+  vocal?: string;
+  portrait?: boolean;
+}
+
+// author_characters event: the sheet as the author last saved it (newest wins).
+export interface AuthorCharactersData {
+  characters: Record<string, SheetCharacter>;
 }
 
 export interface Location {
@@ -153,6 +173,7 @@ export interface VisualRefData {
   name?: string;       // props: what the story calls it
   appearance: string;
   prompt: string;
+  sheet?: string;      // characters: the author's sheet entry it was made from (to notice edits)
 }
 
 // Legacy (pre-locations/props) portrait event; read as a character VisualRefData.

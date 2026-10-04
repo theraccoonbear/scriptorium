@@ -23,6 +23,7 @@ export interface VoiceCastOptions {
   castingFile?: string;                // shared cast list (default: <runDir>/audiobook/casting.json)
   designVoices?: string[];             // character ids to give a designed voice
   pinned?: Record<string, string>;     // geminiVoices from the story file: always win
+  recast?: string[];                   // speaker ids (or "narrator") to cast afresh
   library?: () => Promise<LibraryVoice[]>;                              // injectable
   design?: typeof designVoice;                                          // injectable
   log?: (msg: string) => void;
@@ -41,6 +42,11 @@ export async function castVoiceRun(o: VoiceCastOptions): Promise<Record<string, 
   const bible = voicedBible(o.events);
   const speakers = [...new Set(buildScenes(o.events).flatMap((s) => s.segments.map((x) => x.speaker)))].filter((id) => id !== "narrator");
   let changed = false;
+  for (const id of o.recast ?? []) {
+    if (id === "narrator") delete sheet.narrator;
+    else delete sheet.characters[id];
+    changed = true;
+  }
 
   // Designed voices for the listed leads (once; the id is kept in the cast list).
   for (const id of (o.designVoices ?? []).filter((id) => speakers.includes(id) && !pinned[id] && !sheet.characters[id]?.designed)) {
