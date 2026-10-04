@@ -248,3 +248,17 @@ test("tags made by older tagging logic are redone", async () => {
   assert.equal(sceneTags(log.events).size, 0, "version-1 tags are stale");
   assert.deepEqual(await tagRun(log, fakeRole(GOOD)), [0]);
 });
+
+test("regression: a tagged speaker the bible doesn't have is still voiced (Hesketh's \"Door\"), never read by the narrator tag and all", async () => {
+  const log = new EventLog(await mkdtemp(join(tmpdir(), "scriptorium-tag-")));
+  await log.load();
+  const prose = ['She stood in the doorway. Hesketh, behind the bar, said, "Door," and she shut it.', '"You\'re him."'].join("\n\n");
+  // Scene 1's bible has only Nell; Hesketh is tagged but declared nowhere.
+  await log.append("scene_committed", { index: 0, prose, bible: { characters: { nell: { id: "nell", name: "Nell Ashby", traits: "", goal: "", voice: "", status: "active" } } } });
+  await log.append("scene_tags", { version: 2, index: 0, source: proseHash(prose), tags: ["hesketh", "nell"], delivery: ["", ""], speakers: [] });
+  const [scene] = buildScenes(log.events);
+  const door = scene.segments.find((s) => s.text.includes("Door"))!;
+  assert.equal(door.speaker, "hesketh");
+  assert.ok(!scene.segments.some((s) => s.text.includes("hesketh:")), "the tag is never spoken");
+  assert.equal(voicedBible(log.events).characters.hesketh.name, "Hesketh");
+});

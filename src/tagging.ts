@@ -220,6 +220,15 @@ export function taggedCharacters(events: StoryEvent[], bibleIds: ReadonlySet<str
       };
     }
   }
+  // Any id the tags use that nobody declared (bible or newSpeakers) is still a
+  // speaker: voiced, never left to the narrator with its tag read aloud.
+  for (const d of sceneTags(events).values()) {
+    for (const tag of d.tags) {
+      const id = aliases.get(tag) ?? tag;
+      if (id === "narrator" || bibleIds.has(id) || out[id]) continue;
+      out[id] = { id, name: id.replace(/[_-]+/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase()), traits: "", goal: "", voice: "", status: "active" };
+    }
+  }
   return out;
 }
 
