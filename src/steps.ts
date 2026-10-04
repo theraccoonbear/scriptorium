@@ -7,13 +7,15 @@ import { runStory } from "./engine.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
 import type { EncoderChoice } from "./video.ts";
-import { CAST_PHOTO_LABEL, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig } from "./artist.ts";
+import { BatchImageBackend, CAST_PHOTO_LABEL, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig } from "./artist.ts";
 import type { ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
 import { designRun, needsTagging, sceneTags, tagRun } from "./tagging.ts";
 import { castVoiceRun } from "./casting.ts";
+import { geminiBatchJobs } from "./batchJobs.ts";
+import type { GeminiSpec } from "./types.ts";
 import type { TonePaletteData } from "./tagging.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 import { replay } from "./bible.ts";
@@ -180,13 +182,17 @@ function triageCap(runDir: string, config: StoryConfig, events: StoryEvent[]): {
 
 async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined) {
   const artist = resolveArtistConfig(config.artist);
+  // Batch Mode: every image a stage asks for goes out together, at half price.
+  const batch = artist.batch === true && artist.image.type === "gemini";
   const result = await renderArt(events, {
     runDir,
-    backend: makeImageBackend(artist.image),
+    backend: batch
+      ? new BatchImageBackend(artist.image as GeminiSpec, geminiBatchJobs({ stateFile: join(runDir, "art", "batch-jobs.json"), log: (m) => console.error(`[scriptorium] ${c.dim(m)}`) }))
+      : makeImageBackend(artist.image),
     inspector: artist.inspector ? makeInspector(artist.inspector) : undefined,
     maxAttempts: artist.maxAttempts,
     maxReferences: artist.maxReferences,
-    concurrency: artist.concurrency,
+    concurrency: batch ? 10000 : artist.concurrency,
     ...(artist.retakes !== undefined ? { retakes: artist.retakes, ...triageCap(runDir, config, events) } : {}),
     referenceSize: artist.referenceSize,
     inspectSize: artist.inspectSize,
@@ -224,6 +230,7 @@ export interface AudiobookStepOptions {
   geminiFallback?: "kokoro" | "gemini";
   pauseScale?: number;
   geminiConcurrency?: number;
+  geminiBatch?: boolean;      // batched modes through Gemini Batch Mode (half price, slower)
   casting?: boolean;          // cast Gemini voices from the library (default true when Gemini speaks)
   castingFile?: string;       // a cast list shared across chapters
   designVoices?: string[];    // characters to give a designed voice
@@ -311,6 +318,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     geminiFallback: opts.geminiFallback,
     pauseScale: opts.pauseScale,
     geminiConcurrency: opts.geminiConcurrency,
+    geminiBatch: opts.geminiBatch,
     force: opts.force,
     onProgress: (event) => {
       if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);

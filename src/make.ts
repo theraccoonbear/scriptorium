@@ -46,6 +46,7 @@ export interface StoryFile {
     pauseScale?: number;                         // batched modes: scales the pauses between pieces (default 1)
     casting?: boolean;                           // cast Gemini voices from the library (default true)
     geminiConcurrency?: number;                  // batched modes: voice batches at once (default 2; 1 = one at a time)
+    geminiBatch?: boolean;                       // batched modes through Gemini Batch Mode (half price, slower)
     castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
     designVoices?: string[];                     // character ids to give a designed voice
   };
@@ -227,7 +228,7 @@ const defaultRunners: StepRunners = {
       narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
       kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
       geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
-      casting: a.casting, geminiConcurrency: a.geminiConcurrency, castingFile: a.castingFile, designVoices: a.designVoices,
+      casting: a.casting, geminiConcurrency: a.geminiConcurrency, geminiBatch: a.geminiBatch, castingFile: a.castingFile, designVoices: a.designVoices,
       config: s.config
     });
   },
@@ -244,8 +245,8 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     ledger: readLedger(story.runDir),
     scenes: story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length,
     wordsPerShot: story.config.artWordsPerShot,
-    art: { maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, skip: !steps.includes("art") || !story.config.roles.artdirector },
-    audio: { narration: story.audiobook.narration, dialogue: story.audiobook.dialogue, geminiMode: story.audiobook.geminiMode, geminiConcurrency: story.audiobook.geminiConcurrency, skip: !steps.includes("audiobook") },
+    art: { maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, batch: artist.batch, skip: !steps.includes("art") || !story.config.roles.artdirector },
+    audio: { narration: story.audiobook.narration, dialogue: story.audiobook.dialogue, geminiMode: story.audiobook.geminiMode, geminiConcurrency: story.audiobook.geminiConcurrency, geminiBatch: story.audiobook.geminiBatch, skip: !steps.includes("audiobook") },
     ...(story.config.budget ? { budgetUsd: story.config.budget.usd } : {}),
     ...readJson<Record<string, { prompt: string }>>(join(story.runDir, "art", "art.json"), (m) => ({ artManifest: m })),
     scenesVoiced: existsSync(join(story.runDir, "audiobook")) ? readdirSync(join(story.runDir, "audiobook")).filter((f) => /^scene-\d+\.wav$/.test(f)).length : 0

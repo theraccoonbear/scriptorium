@@ -78,6 +78,7 @@ export interface LedgerEntry extends Usage {
   role: string;
   model: string;
   usd: number | null;  // null: no price for this model
+  batch?: boolean;     // a batch-mode call, priced at half
 }
 
 export class BudgetExceededError extends Error {
@@ -128,7 +129,8 @@ export class Accountant {
     if (this.budgetUsd !== undefined && this.spent >= this.budgetUsd) throw new BudgetExceededError(this.spent, this.budgetUsd);
   }
 
-  record(role: string, model: string, response: unknown): LedgerEntry | undefined {
+  // priceFactor: batch-mode calls cost half (BATCH_PRICE_FACTOR).
+  record(role: string, model: string, response: unknown, opts: { priceFactor?: number } = {}): LedgerEntry | undefined {
     const usage = extractUsage(response);
     if (!usage) return undefined;
     const price = priceFor(model, this.prices);
@@ -136,10 +138,10 @@ export class Accountant {
       this.unpriced.add(model);
       console.error(`[scriptorium] no price for model "${model}" — its tokens are logged but not costed (add it to config.pricing)`);
     }
-    const usd = price ? costOf(usage, price) : null;
+    const usd = price ? costOf(usage, price) * (opts.priceFactor ?? 1) : null;
     // Steps can run at once (art and audio): the step is the caller's, not the last one set.
     const step = context.getStore()?.step ?? this.step;
-    const entry: LedgerEntry = { ts: new Date().toISOString(), step, role, model, ...usage, usd };
+    const entry: LedgerEntry = { ts: new Date().toISOString(), step, role, model, ...usage, usd, ...(opts.priceFactor !== undefined && opts.priceFactor !== 1 ? { batch: true } : {}) };
     appendFileSync(this.file, JSON.stringify(entry) + "\n");
     this.spent += usd ?? 0;
     this.stepSpent += usd ?? 0;

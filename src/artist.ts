@@ -6,6 +6,8 @@ import { parseJson } from "./roles.ts";
 import type { ArtistBackendSpec, ArtistConfig, CoverArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
 import { readVisualRefs, refKey, storyArtStyle } from "./visualrefs.ts";
 import { isBudgetError } from "./usage.ts";
+import { microBatcher } from "./batchJobs.ts";
+import type { BatchJobs } from "./batchJobs.ts";
 import { CAST_SYSTEM, castCharacters, loadImage, toCastDescription } from "./cast.ts";
 import type { CastDescriber } from "./cast.ts";
 
@@ -517,36 +519,59 @@ async function geminiGenerate(spec: GeminiSpec, role: string, body: unknown, sle
   }
 }
 
+// One image request body, and the image out of its response (live or batch).
+export function imageRequest(spec: GeminiSpec, { prompt, references, aspectRatio, style, direction }: ImageRequest): Record<string, unknown> {
+  const parts: GeminiPart[] = [];
+  if (style) parts.push({ text: `ART STYLE — every image of this story uses exactly this style; render in it regardless of the references' subjects: ${style}` });
+  if (direction) parts.push({ text: `AUTHOR ART DIRECTION — applies to every image; follow it exactly: ${direction}` });
+  for (const ref of references) {
+    parts.push({ text: ref.label ?? SCENE_LABEL });
+    parts.push(imagePart(ref));
+  }
+  parts.push({ text: references.length > 0 || style ? `Now generate this image:\n${prompt}` : prompt });
+  return {
+    contents: [{ role: "user", parts }],
+    generationConfig: {
+      responseModalities: ["IMAGE"],
+      imageConfig: { aspectRatio: aspectRatio ?? spec.aspectRatio ?? "16:9" }
+    }
+  };
+}
+
+export function imageFrom(data: any): Image {
+  const candidate = data?.candidates?.[0];
+  for (const p of candidate?.content?.parts ?? []) {
+    const inline = p.inlineData ?? p.inline_data;
+    if (inline?.data) {
+      return { data: Buffer.from(inline.data, "base64"), mimeType: inline.mimeType ?? inline.mime_type ?? "image/png" };
+    }
+  }
+  const reason = candidate?.finishReason ?? data?.promptFeedback?.blockReason ?? "no candidates";
+  throw new Error(`Gemini returned no image (${reason})`);
+}
+
 export class GeminiImageBackend implements ImageBackend {
   spec: GeminiSpec;
   constructor(spec: GeminiSpec) { this.spec = spec; }
 
-  async generate({ prompt, references, aspectRatio, style, direction }: ImageRequest): Promise<Image> {
-    const parts: GeminiPart[] = [];
-    if (style) parts.push({ text: `ART STYLE — every image of this story uses exactly this style; render in it regardless of the references' subjects: ${style}` });
-    if (direction) parts.push({ text: `AUTHOR ART DIRECTION — applies to every image; follow it exactly: ${direction}` });
-    for (const ref of references) {
-      parts.push({ text: ref.label ?? SCENE_LABEL });
-      parts.push(imagePart(ref));
-    }
-    parts.push({ text: references.length > 0 || style ? `Now generate this image:\n${prompt}` : prompt });
-    const data = await geminiGenerate(this.spec, "artist", {
-      contents: [{ role: "user", parts }],
-      generationConfig: {
-        responseModalities: ["IMAGE"],
-        imageConfig: { aspectRatio: aspectRatio ?? this.spec.aspectRatio ?? "16:9" }
-      }
-    });
-    const candidate = data.candidates?.[0];
-    for (const p of candidate?.content?.parts ?? []) {
-      const inline = p.inlineData ?? p.inline_data;
-      if (inline?.data) {
-        return { data: Buffer.from(inline.data, "base64"), mimeType: inline.mimeType ?? inline.mime_type ?? "image/png" };
-      }
-    }
-    const reason = candidate?.finishReason ?? data.promptFeedback?.blockReason ?? "no candidates";
-    throw new Error(`Gemini returned no image (${reason})`);
+  async generate(req: ImageRequest): Promise<Image> {
+    return imageFrom(await geminiGenerate(this.spec, "artist", imageRequest(this.spec, req)));
   }
+}
+
+// Images through Batch Mode: the generations a stage asks for together go out as
+// one batch job at half price; retakes asked for while it runs form the next.
+export class BatchImageBackend implements ImageBackend {
+  private send: (req: ImageRequest) => Promise<Image>;
+  constructor(spec: GeminiSpec, jobs: BatchJobs) {
+    this.send = microBatcher<ImageRequest, Image>(async (reqs) => {
+      const items = await jobs.run(spec.model, "artist", reqs.map((r) => imageRequest(spec, r)));
+      return items.map((item) => {
+        try { return item.response ? imageFrom(item.response) : new Error(`batch: ${item.error}`); } catch (err) { return err as Error; }
+      });
+    });
+  }
+  generate(req: ImageRequest): Promise<Image> { return this.send(req); }
 }
 
 export class GeminiInspector implements Inspector {

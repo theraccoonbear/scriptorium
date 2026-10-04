@@ -1,4 +1,6 @@
 import { postJson, requireKey } from "./providers.ts";
+import { microBatcher } from "./batchJobs.ts";
+import type { BatchJobs } from "./batchJobs.ts";
 
 // Gemini TTS for acted lines. Gemini TTS is an LLM that reads its whole prompt
 // as context, so direction must be fenced off: an AUDIO PROFILE / THE SCENE /
@@ -147,19 +149,38 @@ export function geminiSpeaker(spec: GeminiTtsSpec = {}, sleep: (ms: number) => P
   };
 }
 
+// One TTS request body, and the audio out of its response (live or batch).
+export function ttsRequest(prompt: string, voice: string): Record<string, unknown> {
+  return { contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseModalities: ["AUDIO"], speechConfig: speechConfigFor(voice) } };
+}
+
+export function audioFrom(data: any): { samples: Float32Array; sampleRate: number } {
+  const part = (data?.candidates?.[0]?.content?.parts ?? []).find((p: { inlineData?: unknown }) => p.inlineData);
+  if (!part) throw new Error(`Gemini TTS returned no audio (${data?.candidates?.[0]?.finishReason ?? data?.promptFeedback?.blockReason ?? "no candidates"})`);
+  return decodeWav(Buffer.from(part.inlineData.data, "base64"));
+}
+
 function geminiCall(spec: GeminiTtsSpec, model: string): Speak {
   return async (prompt, voice) => {
     const data = await postJson(
       `${GEMINI_BASE}/models/${model}:generateContent`,
       { "x-goog-api-key": requireKey(spec.apiKeyEnv ?? "GEMINI_API_KEY") },
-      {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseModalities: ["AUDIO"], speechConfig: speechConfigFor(voice) }
-      },
+      ttsRequest(prompt, voice),
       { type: "gemini", model, role: "tts", timeoutMs: spec.timeoutMs ?? 60000, retries: spec.retries ?? 1 }
     );
-    const part = (data.candidates?.[0]?.content?.parts ?? []).find((p: { inlineData?: unknown }) => p.inlineData);
-    if (!part) throw new Error(`Gemini TTS returned no audio (${data.candidates?.[0]?.finishReason ?? data.promptFeedback?.blockReason ?? "no candidates"})`);
-    return decodeWav(Buffer.from(part.inlineData.data, "base64"));
+    return audioFrom(data);
   };
+}
+
+// Speech through Batch Mode: calls made together (a scene's voice batches)
+// go out as one batch job at half price.
+export function geminiBatchSpeaker(jobs: BatchJobs, spec: GeminiTtsSpec = {}): Speak {
+  const model = spec.model ?? DEFAULT_GEMINI_TTS_MODEL;
+  const send = microBatcher<{ prompt: string; voice: string }, { samples: Float32Array; sampleRate: number }>(async (reqs) => {
+    const items = await jobs.run(model, "tts", reqs.map((r) => ttsRequest(r.prompt, r.voice)));
+    return items.map((item) => {
+      try { return item.response ? audioFrom(item.response) : new Error(`batch: ${item.error}`); } catch (err) { return err as Error; }
+    });
+  });
+  return (prompt, voice) => send({ prompt, voice });
 }
