@@ -40,6 +40,7 @@ export interface StoryFile {
     paletteSize?: number;                        // palette mode: tones per speaker (default 4)
     geminiRpm?: number;                          // Gemini TTS requests per minute (default 9)
     geminiFallback?: "kokoro" | "gemini";        // a Gemini line that keeps failing (default: gemini if all-Gemini)
+    pauseScale?: number;                         // batched modes: scales the pauses between pieces (default 1)
   };
   video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
@@ -206,7 +207,7 @@ const defaultRunners: StepRunners = {
       narratorVoice: a.narratorVoice, language: a.language, characterGenders: a.voiceGenders,
       narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
       kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
-      geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback,
+      geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
       config: s.config
     });
   },

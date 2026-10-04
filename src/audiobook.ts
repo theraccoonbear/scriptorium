@@ -339,6 +339,7 @@ export interface AudiobookOptions {
   palette?: TonePaletteData;  // palette mode: the story's tone palettes (made by the audiobook step)
   geminiRpm?: number;          // Gemini TTS requests per minute (default 9; Tier 1 allows 10)
   geminiFallback?: "kokoro" | "gemini";  // see hybridVoicing
+  pauseScale?: number;  // batched modes: scales the silences put back between pieces (default 1)
   characterVoices?: Record<string, string>;  // character id -> Kokoro voice, chosen by the author
   // Kokoro voices to use or avoid (e.g. weak or overused ones), by id.
   kokoroVoices?: { include?: string[]; exclude?: string[] };
@@ -437,20 +438,40 @@ export function scenePieces(scene: Scene): { segment: number; speaker: string; t
   });
 }
 
+// Silence before a piece, by the kind of join: within a paragraph (a quote and
+// its "she said"), a new paragraph by the same speaker, or a change of speaker.
+// Batched Gemini pieces are trimmed tight, so without this a reply starts the
+// instant the previous line ends.
+export type PieceGap = (prev: { speaker: string; paragraph: number | undefined; piece: number }, next: { speaker: string; paragraph: number | undefined; piece: number }) => number;
+
+export function naturalGaps(scale = 1, applies: (piece: number) => boolean = () => true): PieceGap {
+  return (prev, next) => {
+    if (!applies(prev.piece) && !applies(next.piece)) return 0;
+    const seconds = prev.paragraph === next.paragraph ? 0.15 : prev.speaker === next.speaker ? 0.35 : 0.5;
+    return seconds * scale;
+  };
+}
+
 export async function synthesizeScene(
   scene: Scene,
   voiceFor: (speaker: string) => string,
   synth: Synthesize,
   onChunk: (segmentIndex: number, speaker: string, text: string) => void = () => {},
-  onSegment: (segmentIndex: number, speaker: string) => void = () => {}
+  onSegment: (segmentIndex: number, speaker: string) => void = () => {},
+  gap?: PieceGap
 ): Promise<SynthesizedScene> {
   const chunks: Float32Array[] = [];
   const starts: Array<number | undefined> = [];
   let samples = 0;
   const recent: string[] = [];  // the last few pieces spoken, as context for acted lines
   const all = scenePieces(scene);
+  let prev: { speaker: string; paragraph: number | undefined; piece: number } | undefined;
   for (const [s, seg] of scene.segments.entries()) {
     for (const { text, paragraph, piece } of all.map((x, piece) => ({ ...x, piece })).filter((x) => x.segment === s)) {
+      const here = { speaker: seg.speaker, paragraph, piece };
+      const silence = prev && gap ? Math.round(gap(prev, here) * SAMPLE_RATE) : 0;
+      if (silence > 0) { chunks.push(new Float32Array(silence)); samples += silence; }
+      prev = here;
       if (paragraph !== undefined && starts[paragraph] === undefined) starts[paragraph] = samples / SAMPLE_RATE;
       const context = recent.join(" ").slice(-500);
       const d = paragraph !== undefined ? scene.delivery?.[paragraph] : undefined;
@@ -641,7 +662,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     narratorVoice: opts.narratorVoice ?? null, language: opts.language ?? "en", genders, modelId, dtype,
     // Only part of the key when set, so audiobooks made before these options stay current.
     ...(usesGemini ? { narration, dialogue, geminiModel: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, geminiVoices: opts.geminiVoices ?? {} } : {}),
-    ...(usesGemini && (opts.geminiMode ?? "line") !== "line" ? { geminiMode: opts.geminiMode, ...(opts.geminiMode === "palette" ? { palette: opts.palette?.source ?? null } : {}) } : {}),
+    ...(usesGemini && (opts.geminiMode ?? "line") !== "line" ? { geminiMode: opts.geminiMode, pauseScale: opts.pauseScale ?? 1, ...(opts.geminiMode === "palette" ? { palette: opts.palette?.source ?? null } : {}) } : {}),
     ...(opts.kokoroVoices ? { kokoroVoices: opts.kokoroVoices } : {}),
     ...(opts.characterVoices ? { characterVoices: opts.characterVoices } : {})
   };
@@ -762,7 +783,9 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
       voiceFor,
       synth,
       (segmentIndex, speaker, text) => onProgress({ type: "chunk_done", sceneIndex: scene.index, segmentIndex, segments, speaker, text }),
-      (segmentIndex, speaker) => onProgress({ type: "segment_done", sceneIndex: scene.index, segmentIndex, segments, speaker })
+      (segmentIndex, speaker) => onProgress({ type: "segment_done", sceneIndex: scene.index, segmentIndex, segments, speaker }),
+      // Batched pieces are trimmed tight; put natural pauses back between them.
+      mode !== "line" ? naturalGaps(opts.pauseScale ?? 1, (piece) => batched.has(piece)) : undefined
     );
     const file = sceneFile(scene.index);
     const path = `${outDir}/${file}`;

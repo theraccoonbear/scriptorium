@@ -206,6 +206,7 @@ export interface AudiobookStepOptions {
   paletteSize?: number;  // palette mode: tones per speaker (default 4)
   geminiRpm?: number;
   geminiFallback?: "kokoro" | "gemini";
+  pauseScale?: number;
   force?: boolean;
   config?: StoryConfig;  // for spend accounting (pricing, budget)
 }
@@ -270,6 +271,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     palette,
     geminiRpm: opts.geminiRpm,
     geminiFallback: opts.geminiFallback,
+    pauseScale: opts.pauseScale,
     force: opts.force,
     onProgress: (event) => {
       if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);

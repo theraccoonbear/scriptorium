@@ -269,3 +269,17 @@ test("a take that didn't cut cleanly is never kept", async () => {
   await assert.rejects(voiceBatch(async () => ({ samples: audio([{ sound: 30 }]), sampleRate: RATE }), batch, "Kore", who, RATE, 3, { cache, model: "m" }));
   assert.equal(await cache.get(batchKey(batchPrompt(batch, who), "Kore", "m")), undefined);
 });
+
+test("batched pieces get natural pauses back: a beat between turns, less within a paragraph", async () => {
+  const { synthesizeScene, naturalGaps } = await import("../src/audiobook.ts");
+  const scene = parseScene(0, ['nell: "Go," she said. "Now."', 'edrick: "No."', 'edrick: "Not yet."'].join("\n\n"), new Set(["nell", "edrick"]));
+  const second = async function* (text: string) { yield { text, audio: new Float32Array(RATE) }; };  // every piece is 1s
+  const plain = await synthesizeScene(scene, () => "v", second);
+  const paced = await synthesizeScene(scene, () => "v", second, () => {}, () => {}, naturalGaps());
+  // Pieces: "Go," / she said. / "Now." (¶1), "No." (¶2, new speaker), "Not yet." (¶3, same speaker)
+  const extra = (paced.audio.length - plain.audio.length) / RATE;
+  assert.ok(Math.abs(extra - (0.15 + 0.15 + 0.5 + 0.35)) < 0.01, `added ${extra}s`);
+  assert.ok(Math.abs(paced.paragraphStarts[1] - (3 + 0.3 + 0.5)) < 0.01, "timings include the pauses");
+  const none = await synthesizeScene(scene, () => "v", second, () => {}, () => {}, naturalGaps(1, () => false));
+  assert.equal(none.audio.length, plain.audio.length, "pieces that weren't batched keep their own padding");
+});
