@@ -88,6 +88,15 @@ export interface GeminiTtsSpec {
 
 export type Speak = (prompt: string, voice: string) => Promise<{ samples: Float32Array; sampleRate: number }>;
 
+// The speechConfig for a voice. Prebuilt and library voices are named in
+// prebuiltVoiceConfig; a designed or cloned voice (voice_...) only works as
+// voiceConfig.voice (prebuiltVoiceConfig rejects it: "No matching speaker voice").
+export function speechConfigFor(voice: string): Record<string, unknown> {
+  return voice.startsWith("voice_")
+    ? { voiceConfig: { voice } }
+    : { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } };
+}
+
 // Gemini TTS rate limits ran out after waiting: the per-minute or (more often)
 // the per-day cap. It stops the audiobook — never a reason to retake, re-cut,
 // or fall back to another engine. Finished scenes are kept; re-run later.
@@ -135,7 +144,7 @@ function geminiCall(spec: GeminiTtsSpec, model: string): Speak {
       { "x-goog-api-key": requireKey(spec.apiKeyEnv ?? "GEMINI_API_KEY") },
       {
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
+        generationConfig: { responseModalities: ["AUDIO"], speechConfig: speechConfigFor(voice) }
       },
       { type: "gemini", model, role: "tts", timeoutMs: spec.timeoutMs ?? 60000, retries: spec.retries ?? 1 }
     );

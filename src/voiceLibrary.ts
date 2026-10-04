@@ -70,7 +70,9 @@ export async function designVoice(spec: { name: string; description: string; lan
   }, { type: "gemini", model, role: "voicedesign", timeoutMs: 120000 });
   const id = (data as { id?: string }).id;
   if (!id) throw new Error(`voice design returned no id: ${JSON.stringify(data).slice(0, 200)}`);
-  const audio = (data as { prompted?: { sample_audio?: { data?: string } } }).prompted?.sample_audio?.data;
+  // The preview comes back as the voice's sample_audio (top level).
+  const d = data as { sample_audio?: { data?: string }; prompted?: { sample_audio?: { data?: string } } };
+  const audio = d.sample_audio?.data ?? d.prompted?.sample_audio?.data;
   return { id, ...(audio ? { preview: Buffer.from(audio, "base64") } : {}) };
 }
 

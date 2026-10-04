@@ -130,3 +130,10 @@ test("the voice library is fetched per region, paged, and cached for a week", as
   assert.ok(urls.length > n, "refetched after a week");
   assert.match(voiceLine(LIB[1]), /^en-gb-advisor-9 \| male \| pitch low \| Glasgow English \| Lawyer \| 50-year-old lawyer/);
 });
+
+test("a designed voice is requested as voiceConfig.voice; prebuilt and library voices by name", async () => {
+  const { speechConfigFor } = await import("../src/geminiTts.ts");
+  assert.deepEqual(speechConfigFor("voice_lhyk6vziocjn"), { voiceConfig: { voice: "voice_lhyk6vziocjn" } });
+  assert.deepEqual(speechConfigFor("en-gb-advisor-9"), { voiceConfig: { prebuiltVoiceConfig: { voiceName: "en-gb-advisor-9" } } });
+  assert.deepEqual(speechConfigFor("Kore"), { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } });
+});
