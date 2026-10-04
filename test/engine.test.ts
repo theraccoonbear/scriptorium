@@ -560,3 +560,11 @@ test("editProblem: trims are fine; gutting, padding and lost speaker tags are no
   assert.equal(editProblem(tagged, tagged.replace("The wind", "Wind"), tags), undefined);
   assert.equal(editProblem(tagged, tagged.replace("narrator: ", ""), tags), "edit lost speaker tags");
 });
+
+// Issue #81: with an author's plan, nothing forces a payoff the plan doesn't make.
+test("with an author's plan, open setups are never overdue, even in the final scene", async () => {
+  const config = await loadConfig({ scenes: 7, context: "Scene 1 — The ditch: they wake. A stained quarterstaff is never explained." });
+  const log = new EventLog(await tmp());
+  const bible = await runStory({ config, log, roles: buildRoleProviders(config) });
+  assert.ok(bible.ledger.length > 0, "setups the plan doesn't pay off stay open");
+});
