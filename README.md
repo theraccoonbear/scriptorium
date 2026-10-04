@@ -95,10 +95,12 @@ npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, 
 | **creator** | Builds the foundation: premise, tone, **art style**, cast (with gender), locations, **key objects**, threads, and scene 1's beat. Runs on the `director`'s provider. | — |
 | **director** | Plans each later scene as a JSON beat spec — never prose. | yes |
 | **writer** | Writes the scene in the POV character's voice, inside a word band. | yes |
+| **editor** | Line-edits each draft before review: hunts machine-prose tics, trims about 10%, and keeps every event, name and speaker tag. An edit that guts or pads the scene is discarded. | optional |
 | **continuist** | Blocks continuity and canon errors: POV, timeline, constraints, setups, key-object contradictions. | yes |
 | **critic** | Blocks craft problems: pacing, telling-not-showing, sensory detail, voice drift, recurring style tics. | optional |
 | **archivist** | The only role that changes the bible, via JSON patches. | yes |
 | **worldgate / beatgate / patchgate** | Review the worldbuilder's output, each beat spec, and each bible patch before they're used. | optional (fall back to the continuist / critic) |
+| **voicedirector** | Before the audiobook: labels who speaks each paragraph and how (a delivery note per line), designs each character's tone palette from the whole script, and picks each line's tone from it. Never changes the text; quote-mark checks catch its mistakes. Defaults to the continuist's model. | optional |
 | **artdirector** | After each scene: a sequence of shots, plus canonical visual references for what they show; at the end, the cover. | optional |
 
 Every role is mapped to a provider in the config, so each can run on a different model.
@@ -162,7 +164,20 @@ This describes everyone, recording the descriptions in the run so the story reus
 
 `audiobook` narrates each scene with [Kokoro](https://github.com/hexgrad/kokoro), running locally, so it needs no API key and can run offline. The first run downloads the model.
 
-- **Multiple voices:** with `--speaker-tags` on `run`, the writer tags every paragraph with its speaker. Each character then gets their own voice, quoted dialogue is voiced by its speaker, and narration is read by the narrator.
+- **Multiple voices, automatically.** The writer writes plain prose. Before the audiobook, the **voice director** (the config's `voicedirector` role, else the continuist's model) labels who speaks each paragraph. Each character then gets their own voice, quoted dialogue is voiced by its speaker, and narration is read by the narrator.
+  - The labels are stored beside the story; the text itself is never changed, and the voice director never even sends it back.
+  - Speakers the bible doesn't have, such as a dragon or a guard, get voices too.
+  - The voice director also writes a short **delivery note** per line ("low and furious, trying not to be overheard"), which directs Gemini's performance. Kokoro can't act, so it ignores them.
+  - From the command line, pass `--config` to `audiobook` so untagged scenes can be tagged. Older runs written with `--speaker-tags` are used as they are.
+- **Gemini modes.** Gemini TTS allows few requests (Tier 1: 10 a minute, 100 a day), so `"geminiMode"` in the `audiobook` block (or `--gemini-mode`) trades direction for requests. The dollar cost is about the same in every mode: you pay for the audio.
+  - `"line"` (the default): one request per line, each with its own delivery note. The best, and the most requests (a few hundred for a 4,000-word story).
+  - `"palette"`: the voice director gives each character a palette of `paletteSize` tones (default 4) designed from the whole script. The narrator gets a fixed four: neutral, tense, hushed, grave. Lines are batched by speaker and tone, a few dozen requests in total.
+  - `"speaker"`: lines are batched by speaker with no direction. The fewest requests.
+  - In the batched modes, Gemini is asked for a long pause between lines. The audio is cut where the pieces best match each line's expected length, worked out from its letters and that take's pace, so a two-word line can't swallow its neighbour. Each piece is then checked against its words.
+  - A batch that won't cut cleanly is retaken, then split in half and tried again. Narrator batches stay small (8 lines), because narration has the most pauses inside lines.
+  - Requests are paced to `geminiRpm` (default 9) per minute, and a rate limit waits rather than falling back.
+  - **Every take is paid for once.** Each batch that cuts cleanly is saved in `audiobook/batches/` as a playable WAV, keyed by its exact prompt, voice and model. A re-run, after a quota stop or a crash, re-cuts the saved takes and asks Gemini only for what's missing. Running out of quota stops the run with a "re-run later" message, and never falls back to Kokoro.
+  - **`geminiFallback`** decides what happens to a Gemini line that keeps failing. With `"gemini"`, the default for an all-Gemini story, it gets retried with just the bare line, then the shortest take is kept and flagged in the log. With `"kokoro"`, the default when the story uses Kokoro anyway, Kokoro reads it.
 - **Gender-matched voices:** a character whose gender is known gets a voice of that gender. Use `--voice-gender` to set genders for older runs.
 - **Voice curation:** `"kokoroVoices": { "exclude": ["am_adam"] }` in a story file's `audiobook` block (or `--exclude-voices`) keeps weak or overused voices out. An `include` list instead limits the cast to exactly those voices.
 - **Chosen voices:** `"characterVoices": { "osmagus": "bm_george" }` in the `audiobook` block (or `--character-voice osmagus=bm_george`) gives a character the voice you pick, by bible id. Nobody else is assigned that voice.
@@ -227,7 +242,7 @@ Other config keys:
 | `maxRevisions` | 2 | Drafts per scene = this + 1 (or `--max-attempts`). |
 | `sceneWords` | `{min:1200,max:1800}` | The writer's word band. The critic blocks more than 2× overshoot. |
 | `overdueAfter` | 3 | Scenes before an open setup must be paid off. |
-| `speakerTags` | false | Tag paragraphs by speaker for multi-voice audio (or `--speaker-tags`). |
+| `speakerTags` | false | Have the writer tag paragraphs itself (or `--speaker-tags`). Not needed: the audiobook's voice director labels plain prose. |
 | `artWordsPerShot` | 110 | Narration words per art shot. |
 | `rngSeed` | 1 | Seeds the complication table. |
 | `artist` | Gemini | `image` and `inspector` backends (`gemini` or `mock`; `"inspector": null` skips review), `maxAttempts`, `maxReferences`, `referenceSize`, `inspectSize`. |

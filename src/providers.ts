@@ -70,6 +70,18 @@ export class MockProvider {
         return JSON.stringify(this.critique(ctx));
       case "critic":
         return JSON.stringify({ ok: true, issues: [], review: "Mock review: looks good." });
+      case "editor":
+        return ctx.prose ?? "";
+      case "voicedirector": {
+        if (ctx.task === "palette") {
+          // Two tones for every cast member.
+          const ids: string[] = ctx.castIds ?? [];
+          return JSON.stringify({ palettes: Object.fromEntries(ids.map((id) => [id, ["plain", "intense"].slice(0, ctx.size ?? 2)])) });
+        }
+        // A paragraph with a quotation is the first cast member's; the rest is narration.
+        const castIds: string[] = ctx.castIds ?? [];
+        return JSON.stringify({ paragraphs: (ctx.paragraphs ?? []).map((p: string, n: number) => ({ n: n + 1, speaker: p.includes('"') && castIds[0] ? castIds[0] : "narrator", delivery: "" })), newSpeakers: [] });
+      }
       case "archivist":
         return JSON.stringify(this.archive(ctx));
       case "beatgate":
@@ -532,7 +544,7 @@ export async function listModels(spec: ProviderSpec): Promise<string[]> {
 
 // Adaptive timeouts per role. Floor set from observed minimums, ceiling from P99 + safety.
 const roleTimings: Record<string, number[]> = {};
-const ROLE_FLOORS: Record<string, number> = { worldbuilder: 180000, director: 180000, writer: 180000, continuist: 180000, critic: 180000, archivist: 180000, beatgate: 180000, patchgate: 180000, worldgate: 180000, contextgate: 180000, artdirector: 180000 };
+const ROLE_FLOORS: Record<string, number> = { worldbuilder: 180000, director: 180000, writer: 180000, continuist: 180000, critic: 180000, archivist: 180000, beatgate: 180000, patchgate: 180000, worldgate: 180000, contextgate: 180000, artdirector: 180000, editor: 180000 };
 const TIMEOUT_CEILING_MS = 120000;
 const TIMEOUT_SAFETY = 1.5;
 
@@ -557,7 +569,7 @@ export function timeoutForRole(roleName: string): number {
 // "artist" is the image model, handled by the art step.
 export const DIRECTION_LAYERS = [
   "contextgate", "worldbuilder", "worldgate", "creator", "director", "beatgate",
-  "writer", "continuist", "critic", "archivist", "patchgate", "artdirector", "artist"
+  "writer", "editor", "voicedirector", "continuist", "critic", "archivist", "patchgate", "artdirector", "artist"
 ] as const;
 
 export function checkDirection(direction: Record<string, string> | undefined): void {
@@ -587,7 +599,8 @@ export function buildRoleProviders(config: StoryConfig): Roles {
     if (!instances[cfg.provider]) {
       throw new Error(`Role ${role} references unknown provider ${cfg.provider}`);
     }
-    const timeoutMs = cfg.timeoutMs ?? timeoutForRole(role);
+    // A role's own timeout, else its provider's (e.g. a slow, thinking model), else the adaptive default.
+    const timeoutMs = cfg.timeoutMs ?? config.providers[cfg.provider].timeoutMs ?? timeoutForRole(role);
     roles[role] = { provider: instances[cfg.provider], temperature: cfg.temperature, timeoutMs };
   }
   // Config must provide director/writer/continuist/archivist; validated at call sites.

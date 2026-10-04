@@ -7,7 +7,7 @@
     "scriptorium": "src/cli.ts"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc",
     "demo": "node --env-file=.env src/cli.ts run --config story.config.json --out runs/demo",
     "story": "node --env-file=.env src/cli.ts run --config story.opencode-go.config.json",

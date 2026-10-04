@@ -9,8 +9,14 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { replay } from "./bible.ts";
+import { fileBatchCache, planBatches, voiceBatch } from "./geminiBatch.ts";
+import type { BatchCache, BatchPiece, GeminiMode } from "./geminiBatch.ts";
+import { paletteToneFor } from "./tagging.ts";
+import type { TonePaletteData } from "./tagging.ts";
+import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
 import type { Speak } from "./geminiTts.ts";
+import { isTtsRateLimit } from "./geminiTts.ts";
 import { isBudgetError } from "./usage.ts";
 import type { Bible, SceneCommittedData, StoryEvent } from "./types.ts";
 
@@ -36,6 +42,8 @@ export interface Scene {
   index: number;
   tagged: boolean;
   segments: SpeakerSegment[];
+  // How a paragraph's speaker performs it (from the voice director), by paragraph index.
+  delivery?: Record<number, { speaker: string; note: string }>;
 }
 
 const TAG_LINE = /^([a-z][a-z0-9_]*):\s+([\s\S]+)$/;
@@ -281,15 +289,32 @@ export function filterVoicesByLanguage(
     .map(([id]) => id);
 }
 
+// The run's scenes as the audiobook reads them. A scene written without speaker
+// tags uses the voice director's labels (scene_tags) when it has them.
 export function buildScenes(events: StoryEvent[]): Scene[] {
-  const bible = replay(events);
+  const bible = voicedBible(events);
   const knownIds = new Set(Object.keys(bible.characters));
+  const tags = sceneTags(events);
+  const aliases = speakerAliases(events);
   return events
     .filter((e) => e.type === "scene_committed")
     .map((e) => {
       const d = e.data as SceneCommittedData;
-      return parseScene(d.index, d.prose, knownIds);
+      const t = tags.get(d.index);
+      if (!t) return parseScene(d.index, d.prose, knownIds);
+      const speakers = t.tags.map((tag) => aliases.get(tag) ?? tag);
+      const scene = parseScene(d.index, applyTags(d.prose, speakers), knownIds);
+      const delivery: Record<number, { speaker: string; note: string }> = {};
+      t.delivery.forEach((note, p) => { if (note) delivery[p] = { speaker: speakers[p], note }; });
+      return Object.keys(delivery).length > 0 ? { ...scene, delivery } : scene;
     });
+}
+
+// The bible plus any speakers the voice director found that it doesn't have.
+export function voicedBible(events: StoryEvent[]): Bible {
+  const bible = replay(events);
+  const extra = taggedCharacters(events, new Set(Object.keys(bible.characters)));
+  return Object.keys(extra).length > 0 ? { ...bible, characters: { ...bible.characters, ...extra } } : bible;
 }
 
 export interface AudiobookOptions {
@@ -307,6 +332,14 @@ export interface AudiobookOptions {
   dialogue?: TtsEngine;   // default "kokoro"
   geminiModel?: string;
   geminiVoices?: Record<string, string>;  // character id (or "narrator") -> Gemini voice name
+  // How Gemini lines are requested: "line" (one request each, own direction — the
+  // default), "palette" (batched by speaker and palette tone), "speaker" (batched by
+  // speaker, no direction). See geminiBatch.ts.
+  geminiMode?: GeminiMode;
+  palette?: TonePaletteData;  // palette mode: the story's tone palettes (made by the audiobook step)
+  geminiRpm?: number;          // Gemini TTS requests per minute (default 9; Tier 1 allows 10)
+  geminiFallback?: "kokoro" | "gemini";  // see hybridVoicing
+  pauseScale?: number;  // batched modes: scales the silences put back between pieces (default 1)
   characterVoices?: Record<string, string>;  // character id -> Kokoro voice, chosen by the author
   // Kokoro voices to use or avoid (e.g. weak or overused ones), by id.
   kokoroVoices?: { include?: string[]; exclude?: string[] };
@@ -320,6 +353,9 @@ export type AudiobookProgress =
   | { type: "model_ready" }
   | { type: "scene_skipped"; index: number; path: string }
   | { type: "line_fallback"; speaker: string; error: string }
+  | { type: "line_kept_long"; speaker: string; seconds: number }
+  | { type: "batch_done"; sceneIndex: number; batch: number; batches: number; speaker: string; lines: number; tone?: string; cached: boolean }
+  | { type: "batch_failed"; sceneIndex: number; speaker: string; lines: number; error: string; split: boolean }
   | { type: "scene_start"; index: number; total: number; segments: number }
   | { type: "chunk_done"; sceneIndex: number; segmentIndex: number; segments: number; speaker: string; text: string }
   | { type: "segment_done"; sceneIndex: number; segmentIndex: number; segments: number; speaker: string }
@@ -343,7 +379,7 @@ export interface AudioManifest {
 // Everything that determines a scene's audio: its speakers and text, and the
 // voice settings (narrator, language, character genders, model).
 export function sceneRenderKey(scene: Scene, settings: Record<string, unknown>): string {
-  return createHash("sha1").update(JSON.stringify({ segments: scene.segments.map((s) => [s.speaker, s.text]), settings })).digest("hex");
+  return createHash("sha1").update(JSON.stringify({ segments: scene.segments.map((s) => [s.speaker, s.text]), settings, ...(scene.delivery ? { delivery: scene.delivery } : {}) })).digest("hex");
 }
 
 export function sceneFile(index: number): string {
@@ -365,7 +401,7 @@ export type TtsEngine = "kokoro" | "gemini";
 
 // One TTS pass over `text`, yielding audio per sentence-ish chunk. `context` is
 // the text just before this piece (for engines that act the line).
-export type Synthesize = (text: string, voice: string, ctx?: { speaker: string; context: string }) => AsyncIterable<{ text: string; audio: Float32Array }>;
+export type Synthesize = (text: string, voice: string, ctx?: { speaker: string; context: string; delivery?: string; piece?: number }) => AsyncIterable<{ text: string; audio: Float32Array }>;
 
 // Linear resample for engines whose output rate differs from the audiobook's.
 export function resample(samples: Float32Array, from: number, to: number): Float32Array {
@@ -389,25 +425,58 @@ export interface SynthesizedScene {
 // segment) so each paragraph's start offset in the audio is known exactly.
 // Kokoro already synthesizes sentence by sentence, so splitting at paragraph
 // boundaries costs nothing extra.
+// A scene's voiced pieces in voicing order: each segment's "\n\n"-separated
+// parts, with the paragraph each comes from. Batched Gemini voicing and
+// synthesizeScene both use this, so piece numbers line up.
+export function scenePieces(scene: Scene): { segment: number; speaker: string; text: string; paragraph: number | undefined }[] {
+  return scene.segments.flatMap((seg, s) => {
+    const parts = seg.text.split("\n\n");
+    const aligned = parts.length === seg.paragraphs.length;
+    return aligned
+      ? parts.map((text, k) => ({ segment: s, speaker: seg.speaker, text, paragraph: seg.paragraphs[k] }))
+      : [{ segment: s, speaker: seg.speaker, text: seg.text, paragraph: seg.paragraphs[0] }];
+  });
+}
+
+// Silence before a piece, by the kind of join: within a paragraph (a quote and
+// its "she said"), a new paragraph by the same speaker, or a change of speaker.
+// Batched Gemini pieces are trimmed tight, so without this a reply starts the
+// instant the previous line ends.
+export type PieceGap = (prev: { speaker: string; paragraph: number | undefined; piece: number }, next: { speaker: string; paragraph: number | undefined; piece: number }) => number;
+
+export function naturalGaps(scale = 1, applies: (piece: number) => boolean = () => true): PieceGap {
+  return (prev, next) => {
+    if (!applies(prev.piece) && !applies(next.piece)) return 0;
+    const seconds = prev.paragraph === next.paragraph ? 0.15 : prev.speaker === next.speaker ? 0.35 : 0.5;
+    return seconds * scale;
+  };
+}
+
 export async function synthesizeScene(
   scene: Scene,
   voiceFor: (speaker: string) => string,
   synth: Synthesize,
   onChunk: (segmentIndex: number, speaker: string, text: string) => void = () => {},
-  onSegment: (segmentIndex: number, speaker: string) => void = () => {}
+  onSegment: (segmentIndex: number, speaker: string) => void = () => {},
+  gap?: PieceGap
 ): Promise<SynthesizedScene> {
   const chunks: Float32Array[] = [];
   const starts: Array<number | undefined> = [];
   let samples = 0;
   const recent: string[] = [];  // the last few pieces spoken, as context for acted lines
+  const all = scenePieces(scene);
+  let prev: { speaker: string; paragraph: number | undefined; piece: number } | undefined;
   for (const [s, seg] of scene.segments.entries()) {
-    const pieces = seg.text.split("\n\n");
-    const aligned = pieces.length === seg.paragraphs.length;
-    const work = aligned ? pieces.map((text, k) => ({ text, paragraph: seg.paragraphs[k] })) : [{ text: seg.text, paragraph: seg.paragraphs[0] }];
-    for (const { text, paragraph } of work) {
+    for (const { text, paragraph, piece } of all.map((x, piece) => ({ ...x, piece })).filter((x) => x.segment === s)) {
+      const here = { speaker: seg.speaker, paragraph, piece };
+      const silence = prev && gap ? Math.round(gap(prev, here) * SAMPLE_RATE) : 0;
+      if (silence > 0) { chunks.push(new Float32Array(silence)); samples += silence; }
+      prev = here;
       if (paragraph !== undefined && starts[paragraph] === undefined) starts[paragraph] = samples / SAMPLE_RATE;
       const context = recent.join(" ").slice(-500);
-      for await (const chunk of synth(text, voiceFor(seg.speaker), { speaker: seg.speaker, context })) {
+      const d = paragraph !== undefined ? scene.delivery?.[paragraph] : undefined;
+      const delivery = d && d.speaker === seg.speaker ? d.note : undefined;
+      for await (const chunk of synth(text, voiceFor(seg.speaker), { speaker: seg.speaker, context, piece, ...(delivery ? { delivery } : {}) })) {
         chunks.push(chunk.audio);
         samples += chunk.audio.length;
         onChunk(s, seg.speaker, chunk.text);
@@ -462,8 +531,14 @@ export function hybridVoicing(p: {
   kokoroSynth: Synthesize;
   speak: Speak;
   onFallback?: (speaker: string, error: string) => void;
+  // A Gemini line that keeps failing: "kokoro" reads it with Kokoro; "gemini"
+  // keeps it in Gemini (a bare retry, then the best take). Default: kokoro when
+  // the story uses Kokoro anyway, gemini for an all-Gemini story.
+  fallback?: "kokoro" | "gemini";
+  onKeptLong?: (speaker: string, seconds: number) => void;
 }): { voiceFor: (speaker: string) => string; synth: Synthesize } {
   const { bible, assignment, narration, dialogue, kokoroSynth, speak } = p;
+  const fallback = p.fallback ?? (narration === "kokoro" || dialogue === "kokoro" ? "kokoro" : "gemini");
   const kokoroVoiceFor = (speaker: string) => speaker === "narrator"
     ? assignment.narrator
     : (assignment.characters[speaker] ?? assignment.narrator);
@@ -482,20 +557,32 @@ export function hybridVoicing(p: {
     const ch = bible.characters[speaker];
     const scene = sceneContext(ctx?.context ?? "");
     const prompt = buildTtsPrompt(speaker === "narrator" || !ch
-      ? { name: "Narrator", profile: `The narrator of a story. Tone: ${bible.tone || "measured, warm storytelling"}.`, scene, notes: "Storytelling narration: clear, engaged, natural pace; let the drama of the moment color the read without over-acting.", line: text }
-      : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" "), scene, line: text });
+      ? { name: "Narrator", profile: `The narrator of a story. Tone: ${bible.tone || "measured, warm storytelling"}.`, scene, notes: ctx?.delivery ? `Storytelling narration, ${ctx.delivery}.` : "Storytelling narration: clear, engaged, natural pace; let the drama of the moment color the read without over-acting.", line: text }
+      : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" "), scene, ...(ctx?.delivery ? { notes: ctx.delivery } : {}), line: text });
+    // A reply far longer than the line could take means the model spoke
+    // something else too (direction, context): retry, then fall back.
+    const geminiVoice = voice.slice("gemini:".length);
+    let best: Float32Array | undefined;
+    const take = async (pr: string): Promise<Float32Array | undefined> => {
+      const { samples, sampleRate } = await speak(pr, geminiVoice);
+      const audio = resample(samples, sampleRate, SAMPLE_RATE);
+      if (!best || audio.length < best.length) best = audio;
+      return samples.length / sampleRate <= maxLineSeconds(text) ? audio : undefined;
+    };
     try {
-      // A reply far longer than the line could take means the model spoke
-      // something else too (direction, context): retry once, then fall back.
       let audio: Float32Array | undefined;
-      for (let attempt = 0; attempt < 2 && !audio; attempt++) {
-        const { samples, sampleRate } = await speak(prompt, voice.slice("gemini:".length));
-        if (samples.length / sampleRate <= maxLineSeconds(text)) audio = resample(samples, sampleRate, SAMPLE_RATE);
+      for (let attempt = 0; attempt < 2 && !audio; attempt++) audio = await take(prompt);
+      // Staying in Gemini: a bare prompt (just the line) rarely reads anything else aloud.
+      if (!audio && fallback === "gemini") for (let attempt = 0; attempt < 2 && !audio; attempt++) audio = await take(text);
+      if (!audio && fallback === "gemini" && best) {
+        p.onKeptLong?.(speaker, best.length / SAMPLE_RATE);
+        audio = best;
       }
       if (!audio) throw new Error(`audio far longer than the line (over ${maxLineSeconds(text)}s) on both attempts`);
       yield { text, audio };
     } catch (err) {
-      if (isBudgetError(err)) throw err;  // a spent budget stops the audiobook; it never quietly switches engines
+      if (isBudgetError(err) || isTtsRateLimit(err)) throw err;  // a spent budget or quota stops the audiobook; it never quietly switches engines
+      if (fallback === "gemini") throw err;
       p.onFallback?.(speaker, err instanceof Error ? err.message : String(err));
       yield* kokoroSynth(text, kokoroVoiceFor(speaker));
     }
@@ -503,15 +590,65 @@ export function hybridVoicing(p: {
   return { voiceFor, synth };
 }
 
+// Voices a scene's Gemini pieces in batches (palette or speaker mode), returning
+// each piece's audio by its number. A batch that fails is left out, and its lines
+// are voiced one by one as in line mode.
+export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
+  bible: Bible;
+  voiceFor: (speaker: string) => string;
+  speak: Speak;
+  toneOf?: (scene: number, paragraph: number, speaker: string) => string | undefined;
+  cache?: BatchCache;   // takes already paid for (see geminiBatch.ts)
+  model?: string;
+  onProgress: (event: AudiobookProgress) => void;
+}): Promise<Map<number, Float32Array>> {
+  const pieces: BatchPiece[] = scenePieces(scene).flatMap((x, order) => {
+    if (!p.voiceFor(x.speaker).startsWith("gemini:") || !speakable(x.text)) return [];
+    const tone = mode === "palette" && x.paragraph !== undefined ? p.toneOf?.(scene.index, x.paragraph, x.speaker) : undefined;
+    return [{ order, speaker: x.speaker, text: x.text, ...(tone ? { tone } : {}) }];
+  });
+  const out = new Map<number, Float32Array>();
+  const queue = planBatches(pieces);
+  let done = 0;
+  // A batch that won't cut cleanly is halved and each half tried again (two
+  // requests, not one per line); a single line that still fails is voiced in line mode.
+  while (queue.length > 0) {
+    const batch = queue.shift()!;
+    const i = done++;
+    const batches = done + queue.length;
+    const ch = p.bible.characters[batch.speaker];
+    const who = batch.speaker === "narrator" || !ch
+      ? { name: "Narrator", profile: `The narrator of a story. Tone: ${p.bible.tone || "measured, warm storytelling"}.` }
+      : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" ") };
+    try {
+      let cached = false;
+      const audio = await voiceBatch(p.speak, batch, p.voiceFor(batch.speaker).slice("gemini:".length), who, SAMPLE_RATE, 3, { cache: p.cache, model: p.model, onCached: () => { cached = true; } });
+      batch.pieces.forEach((piece, k) => out.set(piece.order, audio[k]));
+      p.onProgress({ type: "batch_done", sceneIndex: scene.index, batch: i + 1, batches, speaker: batch.speaker, lines: batch.pieces.length, cached, ...(batch.tone ? { tone: batch.tone } : {}) });
+    } catch (err) {
+      if (isBudgetError(err) || isTtsRateLimit(err)) throw err;
+      const halves = batch.pieces.length > 1
+        ? [batch.pieces.slice(0, Math.ceil(batch.pieces.length / 2)), batch.pieces.slice(Math.ceil(batch.pieces.length / 2))].map((ps) => ({ ...batch, pieces: ps }))
+        : [];
+      queue.unshift(...halves);
+      p.onProgress({ type: "batch_failed", sceneIndex: scene.index, speaker: batch.speaker, lines: batch.pieces.length, error: err instanceof Error ? err.message : String(err), split: halves.length > 0 });
+    }
+  }
+  return out;
+}
+
 // Synthesizes one WAV per scene under `<runDir>/audiobook/`. Long text always
 // goes through tts.stream() — tts.generate() silently truncates anything past
 // ~509 tokens, which would drop the tail of a full-length scene.
 export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOptions): Promise<AudiobookResult> {
-  const bible = replay(events);
+  const bible = voicedBible(events);
   const scenes = buildScenes(events);
   const onProgress = opts.onProgress ?? (() => {});
   const outDir = `${opts.runDir}/audiobook`;
   await mkdir(outDir, { recursive: true });
+  // What will be voiced, readable: who reads each piece, and how.
+  await writeFile(`${outDir}/script.md`, renderScript(scenes), "utf8");
+  for (const problem of voicingProblems(scenes)) console.error(`[scriptorium] ✗ narrator would read a spoken line — ${problem}`);
 
   const genders: Record<string, string | undefined> = {};
   for (const ch of Object.values(bible.characters)) genders[ch.id] = ch.gender;
@@ -525,6 +662,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     narratorVoice: opts.narratorVoice ?? null, language: opts.language ?? "en", genders, modelId, dtype,
     // Only part of the key when set, so audiobooks made before these options stay current.
     ...(usesGemini ? { narration, dialogue, geminiModel: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, geminiVoices: opts.geminiVoices ?? {} } : {}),
+    ...(usesGemini && (opts.geminiMode ?? "line") !== "line" ? { geminiMode: opts.geminiMode, pauseScale: opts.pauseScale ?? 1, ...(opts.geminiMode === "palette" ? { palette: opts.palette?.source ?? null } : {}) } : {}),
     ...(opts.kokoroVoices ? { kokoroVoices: opts.kokoroVoices } : {}),
     ...(opts.characterVoices ? { characterVoices: opts.characterVoices } : {})
   };
@@ -619,21 +757,35 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
       yield { text: said, audio: audio.audio };
     }
   };
-  const { voiceFor, synth } = hybridVoicing({
-    bible, assignment, narration, dialogue, kokoroSynth,
-    speak: opts.speak ?? geminiSpeaker({ model: opts.geminiModel }),
-    onFallback: (speaker, error) => onProgress({ type: "line_fallback", speaker, error })
+  const speak = opts.speak ?? geminiSpeaker({ model: opts.geminiModel, minIntervalMs: Math.ceil(60000 / (opts.geminiRpm ?? 9)) });
+  const { voiceFor, synth: lineSynth } = hybridVoicing({
+    bible, assignment, narration, dialogue, kokoroSynth, speak, fallback: opts.geminiFallback,
+    onFallback: (speaker, error) => onProgress({ type: "line_fallback", speaker, error }),
+    onKeptLong: (speaker, seconds) => onProgress({ type: "line_kept_long", speaker, seconds })
   });
+  const mode: GeminiMode = usesGemini ? opts.geminiMode ?? "line" : "line";
+  const toneOf = mode === "palette" && opts.palette ? paletteToneFor(events, opts.palette) : undefined;
+  // Batched modes voice each scene's Gemini pieces up front; synth hands them out
+  // by piece number, and anything a batch couldn't voice goes line by line.
+  let batched = new Map<number, Float32Array>();
+  const synth: Synthesize = async function* (text, voice, ctx) {
+    const audio = ctx?.piece !== undefined ? batched.get(ctx.piece) : undefined;
+    if (audio) { yield { text, audio }; return; }
+    yield* lineSynth(text, voice, ctx);
+  };
 
   for (const scene of todo) {
     const segments = scene.segments.length;
     onProgress({ type: "scene_start", index: scene.index, total: scenes.length, segments });
+    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak, toneOf, onProgress, cache: fileBatchCache(`${outDir}/batches`, SAMPLE_RATE), model: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL });
     const { audio, paragraphStarts } = await synthesizeScene(
       scene,
       voiceFor,
       synth,
       (segmentIndex, speaker, text) => onProgress({ type: "chunk_done", sceneIndex: scene.index, segmentIndex, segments, speaker, text }),
-      (segmentIndex, speaker) => onProgress({ type: "segment_done", sceneIndex: scene.index, segmentIndex, segments, speaker })
+      (segmentIndex, speaker) => onProgress({ type: "segment_done", sceneIndex: scene.index, segmentIndex, segments, speaker }),
+      // Batched pieces are trimmed tight; put natural pauses back between them.
+      mode !== "line" ? naturalGaps(opts.pauseScale ?? 1, (piece) => batched.has(piece)) : undefined
     );
     const file = sceneFile(scene.index);
     const path = `${outDir}/${file}`;

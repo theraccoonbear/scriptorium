@@ -113,9 +113,11 @@ test("critic blocks sustained overshoot as PACE", () => {
 
 // --- issue #4: style patterns ---
 test("writer bans the observed tics", () => {
-  assert.ok(WRITER_SYSTEM.includes("No negation-then-correction"), "missing negation rule");
-  assert.ok(WRITER_SYSTEM.includes("No abstract padding"), "missing padding rule");
-  assert.ok(WRITER_SYSTEM.includes("Never state the theme outright"), "missing theme rule");
+  assert.ok(WRITER_SYSTEM.includes("Negation-then-correction"), "missing negation rule");
+  assert.ok(WRITER_SYSTEM.includes('"He did not X. He Y."'), "missing did-not rule");
+  assert.ok(WRITER_SYSTEM.includes("Abstract padding"), "missing padding rule");
+  assert.ok(WRITER_SYSTEM.includes("stating the theme"), "missing theme rule");
+  assert.ok(WRITER_SYSTEM.includes("Stock fantasy phrasing"), "missing stock-phrase rule");
 });
 
 test("critic blocks style tics only on recurrence", () => {
@@ -411,4 +413,37 @@ test("the art director shoots the decisive instant, in motion, with a named came
   assert.ok(ARTDIRECTOR_SYSTEM.includes("Name a camera angle and placement in every prompt"));
   assert.ok(ARTDIRECTOR_SYSTEM.includes("Only what a camera can see"));
   assert.ok(!ARTDIRECTOR_SYSTEM.includes("tension and aftermath"));
+});
+
+// --- issue #66: better prose ---
+import { EDITOR_SYSTEM, PROSE_TICS } from "../src/roles.ts";
+import { buildRoleProviders } from "../src/providers.ts";
+
+test("beats are outcomes, not choreography; the writer is told the order and means are its own", async () => {
+  for (const sys of [DIRECTOR_SYSTEM]) {
+    assert.ok(sys.includes("WRITE THE BEAT AS OUTCOMES, NOT CHOREOGRAPHY"));
+    assert.ok(sys.includes("at most THREE fixed moments"));
+    assert.ok(sys.includes("Never write dialogue"));
+  }
+  assert.ok(WRITER_SYSTEM.includes("The order and the means are yours"));
+  assert.ok(WRITER_SYSTEM.includes("A scene turns"));
+  const out = await write(mockRole, { bible: emptyBible(), beat: { ...testBeat, constraints: ["x"] }, sceneIndex: 0, attempt: 0, sceneWords: { min: 1, max: 2 } });
+  assert.ok(out.prompt.includes("CONSTRAINTS (must hold by the end of the scene; the order and the means are yours"));
+  assert.ok(out.prompt.includes("MUST REVEAL (what the reader must come to understand — show it; no one announces it)"));
+});
+
+test("the line editor hunts the same tics and keeps events, names and speaker tags", () => {
+  assert.ok(EDITOR_SYSTEM.includes(PROSE_TICS));
+  assert.ok(EDITOR_SYSTEM.includes("Never add, remove, reorder or change events"));
+  assert.ok(EDITOR_SYSTEM.includes("every paragraph you return must begin with one"));
+});
+
+test("a role takes its provider's timeout when it sets none (a slow thinking model)", () => {
+  const roles = buildRoleProviders({
+    providers: { slow: { type: "mock", timeoutMs: 600000 }, quick: { type: "mock" } },
+    roles: { writer: { provider: "slow" }, continuist: { provider: "quick" }, director: { provider: "slow", timeoutMs: 1000 } }
+  });
+  assert.equal(roles.writer.timeoutMs, 600000);
+  assert.equal(roles.director.timeoutMs, 1000);
+  assert.equal(roles.continuist.timeoutMs, 180000);
 });

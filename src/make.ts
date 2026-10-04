@@ -9,6 +9,8 @@ import { c } from "./colors.ts";
 import { CRITIC_MODES } from "./types.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
 import type { CastMember } from "./cast.ts";
+import { GEMINI_MODES } from "./geminiBatch.ts";
+import type { GeminiMode } from "./geminiBatch.ts";
 
 // A story file holds everything about one story — the config, premise,
 // context files, step options and a fixed run directory — so `make` can run
@@ -34,6 +36,11 @@ export interface StoryFile {
     geminiVoices?: Record<string, string>;       // character id or "narrator" -> Gemini voice
     kokoroVoices?: { include?: string[]; exclude?: string[] };
     characterVoices?: Record<string, string>;  // character id -> Kokoro voice
+    geminiMode?: GeminiMode;                     // "line" (default), "palette" or "speaker"
+    paletteSize?: number;                        // palette mode: tones per speaker (default 4)
+    geminiRpm?: number;                          // Gemini TTS requests per minute (default 9)
+    geminiFallback?: "kokoro" | "gemini";        // a Gemini line that keeps failing (default: gemini if all-Gemini)
+    pauseScale?: number;                         // batched modes: scales the pauses between pieces (default 1)
   };
   video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
@@ -89,6 +96,10 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
   }
   if (config.critic !== undefined && !(CRITIC_MODES as readonly string[]).includes(config.critic)) {
     throw new Error(`${path}: "critic" must be one of ${CRITIC_MODES.join(", ")}`);
+  }
+  const mode = raw.audiobook?.geminiMode;
+  if (mode !== undefined && !(GEMINI_MODES as readonly string[]).includes(mode)) {
+    throw new Error(`${path}: audiobook "geminiMode" must be one of ${GEMINI_MODES.join(", ")}`);
   }
   checkDirection(config.direction);
   const contexts = raw.context === undefined ? [] : Array.isArray(raw.context) ? raw.context : [raw.context];
@@ -196,6 +207,7 @@ const defaultRunners: StepRunners = {
       narratorVoice: a.narratorVoice, language: a.language, characterGenders: a.voiceGenders,
       narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
       kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
+      geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
       config: s.config
     });
   },
