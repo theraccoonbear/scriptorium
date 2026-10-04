@@ -11,6 +11,8 @@ import { accounted, artStep, castPreviewStep, audiobookStep, storyStep, videoSte
 import { formatSummary, readLedger, summarize } from "./usage.ts";
 import { loadStoryFile, make, planSteps, STEP_ORDERS, storyPitch } from "./make.ts";
 import { setApproval } from "./approvals.ts";
+import { buildReview, REVIEW_KINDS } from "./reviewSheets.ts";
+import type { ReviewKind } from "./reviewSheets.ts";
 import { formatPitch } from "./pitch.ts";
 import type { StepOrder } from "./make.ts";
 import { GEMINI_MODES } from "./geminiBatch.ts";
@@ -29,6 +31,9 @@ const USAGE = `scriptorium <command> [options]
           voices       cast every speaker and render a sample of each (audiobook/samples/)
         [--redo character:<id>,voice:<id>,...] [--note "..."]
                        remake these references (with your corrections) or recast these voices
+  review <story.json> refs|shots|voices
+        build the review files for a phase in <run>/review/: a labeled contact sheet of the
+        portraits (or one per scene of shots), or one reel of every voice sample with a legend
   approve <story.json> <key>... [--revoke]
         sign off on images (art.json keys: character-nell, scene-01-03, cover) or voices
         (voice:nell, voice:narrator): approved work is never regenerated
@@ -229,6 +234,16 @@ async function main() {
     const events = await new EventLog(story.runDir).load();
     const steps = values.only ? planSteps(values.only) : undefined;
     console.log(formatPitch(storyPitch(story, events, steps), story.config.budget?.usd));
+    return;
+  }
+
+  if (command === "review") {
+    const [storyFile, kind] = positionals;
+    if (!storyFile || !(REVIEW_KINDS as readonly string[]).includes(kind)) throw new Error(`usage: review <story.json> ${REVIEW_KINDS.join("|")}`);
+    const story = await loadStoryFile(storyFile);
+    const out = await buildReview(story.runDir, kind as ReviewKind);
+    for (const f of out.files) console.log(f);
+    if (out.legend) console.log(`\n${out.legend}`);
     return;
   }
 
