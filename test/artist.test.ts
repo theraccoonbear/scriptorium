@@ -395,3 +395,17 @@ test("triage respects a hard cap (what the budget can buy), and skips images tha
   await renderArt(events, { runDir, backend, inspector, retakes: 1, maxRetakes: 1, shrink: async (img) => img, onProgress: (e) => { if (e.type === "triage") retakes = e.retakes; } });
   assert.equal(retakes, 1, "one retake allowed by the cap, though 1 per shot was asked for");
 });
+
+test("the triage cap can be worked out when triage starts (after the first pass)", async () => {
+  const runDir = await tmp();
+  const events = [ev(0, "scene_art", { sceneIndex: 0, prompt: "a", shots: ["a", "b", "c"].map((p, k) => ({ startParagraph: k, prompt: p })) })];
+  const inspector = { async inspect() { return { ok: false, severity: 8, issues: ["x"] }; } };
+  const backend = new MockImageBackend();
+  let asked = -1;
+  let firstPassDone = 0;
+  await renderArt(events, { runDir, backend, inspector, retakes: 1, shrink: async (img) => img,
+    maxRetakes: () => { firstPassDone = backend.calls.length; return 2; },
+    onProgress: (e) => { if (e.type === "triage") asked = e.retakes; } });
+  assert.equal(firstPassDone, 3, "asked after all three first takes");
+  assert.equal(asked, 2);
+});

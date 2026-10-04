@@ -21,7 +21,7 @@ import type { GeminiMode } from "./geminiBatch.ts";
 import { replay } from "./bible.ts";
 import { c } from "./colors.ts";
 import { accountantFor, readLedger, runAccounted, usd } from "./usage.ts";
-import { pitch, TYPICAL } from "./pitch.ts";
+import { TYPICAL } from "./pitch.ts";
 import type { Bible, SceneCommittedData, StoryConfig, StoryEvent } from "./types.ts";
 
 // The pipeline's steps — story, art, audiobook, video — as plain functions with
@@ -168,16 +168,27 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
   return accounted(runDir, config, "art", () => artStepInner(runDir, config, events, force));
 }
 
-// With a budget, triage retakes are capped at what's left after the first pass.
-function triageCap(runDir: string, config: StoryConfig, events: StoryEvent[]): { maxRetakes?: number } {
+// With a budget, triage retakes are capped at what's left — worked out when
+// triage starts, from what the first pass really cost (batch price included).
+function triageCap(runDir: string, config: StoryConfig, _events: StoryEvent[]): { maxRetakes?: () => number } {
   if (!config.budget) return {};
-  const ledger = readLedger(runDir);
-  const p = pitch({ events, ledger, scenes: events.filter((e) => e.type === "scene_committed").length, art: { retakes: 0 }, audio: { skip: true } });
-  const perImage = p.images.generations > 0 ? p.images.usd / p.images.generations : TYPICAL.imageUsd + TYPICAL.inspectionUsd;
-  const left = config.budget.usd - accountantFor(runDir).spent - p.images.usd;
-  const maxRetakes = Math.max(0, Math.floor(left / perImage));
-  console.error(`[scriptorium] ${c.dim(`triage: the budget leaves room for up to ${maxRetakes} retake${maxRetakes === 1 ? "" : "s"}`)}`);
-  return { maxRetakes };
+  const budget = config.budget.usd;
+  const batch = config.artist?.batch === true;
+  return {
+    maxRetakes: () => {
+      const ledger = readLedger(runDir);
+      const avg = (match: (e: { model: string; role: string }) => boolean) => {
+        const xs = ledger.filter((e) => match(e) && e.usd !== null);
+        return xs.length > 0 ? xs.reduce((a, e) => a + (e.usd ?? 0), 0) / xs.length : undefined;
+      };
+      // The ledger already holds batch calls at half price.
+      const perImage = (avg((e) => e.model.includes("image")) ?? TYPICAL.imageUsd * (batch ? 0.5 : 1)) + (avg((e) => e.role === "inspector") ?? TYPICAL.inspectionUsd);
+      const left = budget - accountantFor(runDir).spent;
+      const n = Math.max(0, Math.floor(left / perImage));
+      console.error(`[scriptorium] ${c.dim(`triage: ${usd(Math.max(0, left))} left in the budget — room for up to ${n} retake${n === 1 ? "" : "s"} at ${usd(perImage)} each`)}`);
+      return n;
+    }
+  };
 }
 
 async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined) {
