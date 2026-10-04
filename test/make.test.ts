@@ -157,7 +157,7 @@ test("a story file's shared cast list is found relative to the story file", asyn
   assert.deepEqual(s.audiobook.designVoices, ["osmagus"]);
 });
 
-test("make runs art and audio at the same time; the video waits for both, and a failure lets the other finish", async () => {
+test("in parallel, make runs art and audio at the same time; the video waits for both, and a failure lets the other finish", async () => {
   const { file, dir } = await storyDir({});
   await make(file, { only: "story" });
   const log: string[] = [];
@@ -167,10 +167,26 @@ test("make runs art and audio at the same time; the video waits for both, and a 
     log.push(`${name} end`);
     if (fail) throw new Error(`${name} broke`);
   };
-  await make(file, { from: "art", steps: { art: slow("art", 30), audiobook: slow("audiobook", 10), video: slow("video", 1) } });
+  await make(file, { from: "art", stepOrder: "parallel", steps: { art: slow("art", 30), audiobook: slow("audiobook", 10), video: slow("video", 1) } });
   assert.deepEqual(log, ["art start", "audiobook start", "audiobook end", "art end", "video start", "video end"]);
   log.length = 0;
-  await assert.rejects(make(file, { from: "art", steps: { art: slow("art", 5, true), audiobook: slow("audiobook", 20), video: slow("video", 1) } }), /art broke/);
+  await assert.rejects(make(file, { from: "art", stepOrder: "parallel", steps: { art: slow("art", 5, true), audiobook: slow("audiobook", 20), video: slow("video", 1) } }), /art broke/);
   assert.deepEqual(log, ["art start", "audiobook start", "art end", "audiobook end"], "audio finished; the video never started");
   void dir;
+});
+
+test("by default audio runs before art (cheap first: a rewrite costs no images); art-first and the story file can change it", async () => {
+  const { file } = await storyDir({});
+  await make(file, { only: "story" });
+  const order: string[] = [];
+  const steps = { art: async () => { order.push("art"); }, audiobook: async () => { order.push("audiobook"); }, video: async () => { order.push("video"); } };
+  await make(file, { from: "art", steps });
+  assert.deepEqual(order, ["audiobook", "art", "video"]);
+  order.length = 0;
+  await make(file, { from: "art", stepOrder: "art-first", steps });
+  assert.deepEqual(order, ["art", "audiobook", "video"]);
+  const parallel = await storyDir({ stepOrder: "parallel" });
+  assert.equal((await loadStoryFile(parallel.file)).stepOrder, "parallel");
+  const bad = await storyDir({ stepOrder: "sideways" });
+  await assert.rejects(loadStoryFile(bad.file), /"stepOrder" must be one of audio-first, art-first, parallel/);
 });

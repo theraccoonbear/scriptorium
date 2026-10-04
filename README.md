@@ -64,6 +64,11 @@ Story files can also steer each creative layer directly. `artStyle` fixes the ar
 
 The layers are `contextgate`, `worldbuilder`, `worldgate`, `creator`, `director`, `beatgate`, `writer`, `continuist`, `critic`, `archivist`, `patchgate`, `artdirector` and `artist`. `artist` notes go with every image request and inspection. A misspelled layer is an error rather than silently ignored. Use context files for story facts, and `direction` for how each layer should work.
 
+**Order and parallelism.** After the story, `make` runs **audio before art** by default (`"stepOrder": "audio-first"`). Voicing is cheap, and listening is where you find a story that needs a rewrite, before any image is paid for. `"art-first"` reverses that, and `"parallel"` runs both at once, which is fastest. `--step-order` overrides it per run, and the video always waits for both.
+- Within each step, `artist.concurrency` sets how many images render at once (default 4; 1 for one at a time).
+- `audiobook.geminiConcurrency` sets how many Gemini voice batches run at once (default 2), always within the per-minute limit.
+- Spending is tracked per run and per step even when steps overlap, so a budget covers everything running together.
+
 Re-running `make` finishes whatever's missing: the story resumes from its event log, and art, audio and video skip finished work. That covers a crash, running out of credits, or a deleted image you want regenerated. The run records its premise, setting, context and speaker tags, and `make` refuses to change them for a story already in progress unless you pass `--force`. Use a new `out` for a new story. `stories/mock.json` runs the whole pipeline offline; `stories/example.json` is a real one.
 
 The individual commands below still work for one-off steps.

@@ -173,6 +173,7 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
     inspector: artist.inspector ? makeInspector(artist.inspector) : undefined,
     maxAttempts: artist.maxAttempts,
     maxReferences: artist.maxReferences,
+    concurrency: artist.concurrency,
     referenceSize: artist.referenceSize,
     inspectSize: artist.inspectSize,
     direction: config.direction?.artist,
@@ -206,6 +207,7 @@ export interface AudiobookStepOptions {
   geminiRpm?: number;
   geminiFallback?: "kokoro" | "gemini";
   pauseScale?: number;
+  geminiConcurrency?: number;
   casting?: boolean;          // cast Gemini voices from the library (default true when Gemini speaks)
   castingFile?: string;       // a cast list shared across chapters
   designVoices?: string[];    // characters to give a designed voice
@@ -292,6 +294,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     geminiRpm: opts.geminiRpm,
     geminiFallback: opts.geminiFallback,
     pauseScale: opts.pauseScale,
+    geminiConcurrency: opts.geminiConcurrency,
     force: opts.force,
     onProgress: (event) => {
       if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);

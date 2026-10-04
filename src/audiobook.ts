@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { replay } from "./bible.ts";
 import { fileBatchCache, planBatches, voiceBatch } from "./geminiBatch.ts";
-import type { BatchCache, BatchPiece, GeminiMode } from "./geminiBatch.ts";
+import type { Batch, BatchCache, BatchPiece, GeminiMode } from "./geminiBatch.ts";
 import { paletteToneFor } from "./tagging.ts";
 import type { TonePaletteData } from "./tagging.ts";
 import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
@@ -340,6 +340,7 @@ export interface AudiobookOptions {
   geminiRpm?: number;          // Gemini TTS requests per minute (default 9; Tier 1 allows 10)
   geminiFallback?: "kokoro" | "gemini";  // see hybridVoicing
   pauseScale?: number;  // batched modes: scales the silences put back between pieces (default 1)
+  geminiConcurrency?: number;  // batched modes: batches in flight at once (default 2; 1 = one at a time)
   characterVoices?: Record<string, string>;  // character id -> Kokoro voice, chosen by the author
   // Kokoro voices to use or avoid (e.g. weak or overused ones), by id.
   kokoroVoices?: { include?: string[]; exclude?: string[] };
@@ -609,6 +610,7 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
   toneOf?: (scene: number, paragraph: number, speaker: string) => string | undefined;
   cache?: BatchCache;   // takes already paid for (see geminiBatch.ts)
   model?: string;
+  concurrency?: number; // batches in flight at once (default 1)
   onProgress: (event: AudiobookProgress) => void;
 }): Promise<Map<number, Float32Array>> {
   const pieces: BatchPiece[] = scenePieces(scene).flatMap((x, order) => {
@@ -621,8 +623,8 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
   let done = 0;
   // A batch that won't cut cleanly is halved and each half tried again (two
   // requests, not one per line); a single line that still fails is voiced in line mode.
-  while (queue.length > 0) {
-    const batch = queue.shift()!;
+  // Several batches can be in flight; the speaker paces the requests.
+  const voiceNext = async (batch: Batch) => {
     const i = done++;
     const batches = done + queue.length;
     const ch = p.bible.characters[batch.speaker];
@@ -642,6 +644,23 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
       queue.unshift(...halves);
       p.onProgress({ type: "batch_failed", sceneIndex: scene.index, speaker: batch.speaker, lines: batch.pieces.length, error: err instanceof Error ? err.message : String(err), split: halves.length > 0 });
     }
+  };
+  // Workers keep going while a halved batch adds work to the queue.
+  const running = new Set<Promise<void>>();
+  const limit = Math.max(1, p.concurrency ?? 1);
+  try {
+    while (queue.length > 0 || running.size > 0) {
+      while (queue.length > 0 && running.size < limit) {
+        const job = voiceNext(queue.shift()!).finally(() => running.delete(job));
+        running.add(job);
+      }
+      if (running.size > 0) await Promise.race(running);
+    }
+  } catch (err) {
+    // A budget or quota stop: let the batches in flight settle, then stop.
+    queue.length = 0;
+    await Promise.allSettled([...running]);
+    throw err;
   }
   return out;
 }
@@ -783,7 +802,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   for (const scene of todo) {
     const segments = scene.segments.length;
     onProgress({ type: "scene_start", index: scene.index, total: scenes.length, segments });
-    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak, toneOf, onProgress, cache: fileBatchCache(`${outDir}/batches`, SAMPLE_RATE), model: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL });
+    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak, toneOf, onProgress, cache: fileBatchCache(`${outDir}/batches`, SAMPLE_RATE), model: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, concurrency: opts.geminiConcurrency ?? 2 });
     const { audio, paragraphStarts } = await synthesizeScene(
       scene,
       voiceFor,

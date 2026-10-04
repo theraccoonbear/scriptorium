@@ -210,6 +210,7 @@ export interface ArtOptions {
   maxAttempts?: number;    // per image, default 3
   maxReferences?: number;  // earlier renders passed for continuity, default 3
   maxPortraits?: number;   // character portraits passed per image, default 3 (plus 1 location and 2 props)
+  concurrency?: number;    // images rendered at once, default 4
   force?: boolean;         // re-render even when the prompt is unchanged
   // Longest side, in px, of images sent as references (default 768) and of the
   // candidate sent for inspection (default 1024); 0 sends them full size. Files
@@ -267,8 +268,13 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const style = storyArtStyle(events);
   const direction = opts.direction?.trim() || undefined;
   const jobs = buildArtJobs(events);
-  const rendered: Image[] = [];                // scene shots and cover, in order
   const refs = new Map<string, Image>();       // refKey(kind, id) -> reference image
+  // Each scene's first shot is the style anchor for that scene's other shots,
+  // so those can render in parallel instead of each waiting for the last.
+  const anchors = new Map<number, Image>();    // sceneIndex -> its first shot
+  const firstShot = new Map<number, string>(); // sceneIndex -> that shot's key
+  for (const j of jobs) if (j.sceneIndex !== undefined && !firstShot.has(j.sceneIndex)) firstShot.set(j.sceneIndex, j.key);
+  const isAnchor = (job: ArtJob) => job.sceneIndex !== undefined && firstShot.get(job.sceneIndex) === job.key;
   const shrink = opts.shrink ?? ffmpegShrink;
   const referenceSize = opts.referenceSize ?? 768;
   const inspectSize = opts.inspectSize ?? 1024;
@@ -276,7 +282,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const keep = async (job: ArtJob, image: Image) => {
     const small = await shrink(image, referenceSize);
     if (job.ref) refs.set(refKey(job.ref.kind, job.ref.id), small);
-    else rendered.push(small);
+    else if (isAnchor(job)) anchors.set(job.sceneIndex!, small);
   };
   const castIds = new Set(Object.keys(castCharacters(events)));
   const refImages = (kind: VisualRefKind, ids: string[], limit: number): Image[] =>
@@ -293,19 +299,34 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     if (job.ref) {
       // A cast member's portrait is drawn from their photos.
       const photos = await Promise.all((job.photos ?? []).slice(0, 3).map(async (p) => ({ ...(await shrink(await loadImage(join(opts.runDir, p)), referenceSize)), label: CAST_PHOTO_LABEL })));
-      return [...photos, ...[...refs.values()].slice(-2).map((img) => ({ ...img, label: STYLE_LABEL }))];
+      // Style: the first reference (rendered on its own first), so references made in parallel still match.
+      const anchor = refs.values().next().value as Image | undefined;
+      return [...photos, ...(anchor ? [{ ...anchor, label: STYLE_LABEL }] : [])];
     }
     const canon = [
       ...refImages("character", job.characters ?? [], maxPortraits),
       ...refImages("location", job.location ? [job.location] : [], 1),
       ...refImages("prop", job.props ?? [], 2)
     ];
-    const style = rendered.slice(canon.length > 0 ? -1 : -maxReferences).map((img) => ({ ...img, label: SCENE_LABEL }));
+    // Style: a shot takes its scene's first shot. A scene's first shot without
+    // canon borrows the references, or (a run with none) the previous scene's
+    // first shot. The cover takes the latest scene, or several without canon.
+    const byScene = [...anchors.entries()].sort((a, b) => a[0] - b[0]);
+    const scene = (imgs: Image[]) => imgs.map((img) => ({ ...img, label: SCENE_LABEL }));
+    let style: Image[];
+    if (job.sceneIndex === undefined) style = scene(byScene.slice(canon.length > 0 ? -1 : -maxReferences).map(([, img]) => img));
+    else if (!isAnchor(job)) style = scene(anchors.has(job.sceneIndex) ? [anchors.get(job.sceneIndex)!] : []);
+    else if (canon.length > 0) style = [];
+    else if (refs.size > 0) style = [...refs.values()].slice(0, maxReferences).map((img) => ({ ...img, label: STYLE_LABEL }));
+    else style = scene(byScene.filter(([i]) => i < job.sceneIndex!).slice(-maxReferences).map(([, img]) => img));
     return [...canon, ...style];
   };
   const result: ArtResult = { outDir, rendered: 0, skipped: 0, failed: 0, manifest };
+  // Concurrent images write the manifest one at a time.
+  let saving = Promise.resolve();
+  const saveManifest = () => (saving = saving.then(() => writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8")));
 
-  for (const [index, job] of jobs.entries()) {
+  const one = async (job: ArtJob, index: number) => {
     const prior = manifest[job.key];
     if (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && prior.photos === job.photoKey && existing.has(prior.file)) {
       // Same image, but keep its placement current in case the shot's anchor moved.
@@ -314,7 +335,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       emit({ type: "job_skipped", key: job.key, file: prior.file });
       await keep(job, { data: await readFile(join(outDir, prior.file)), mimeType: mimeFor(prior.file) });
       result.skipped++;
-      continue;
+      return;
     }
     emit({ type: "job_start", key: job.key, index, total: jobs.length });
     const references = await referencesFor(job);
@@ -338,7 +359,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         issues: entry.issues
       };
       // Persist after every image so an interrupted render resumes where it stopped.
-      await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+      await saveManifest();
       await keep(job, entry.image);
       result.rendered++;
       emit({ type: "job_done", key: job.key, file, attempts: entry.attempts, accepted: entry.accepted });
@@ -347,9 +368,37 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       result.failed++;
       emit({ type: "job_failed", key: job.key, error: err instanceof Error ? err.message : String(err) });
     }
+  };
+
+  // References first (every shot uses them), then each scene's first shot (the
+  // anchors), then every other shot, then the cover — each stage in parallel.
+  const indexed = jobs.map((job, index) => ({ job, index }));
+  const refJobs = indexed.filter(({ job }) => job.ref);
+  const stages = [
+    refJobs.slice(0, 1),
+    refJobs.slice(1),
+    indexed.filter(({ job }) => isAnchor(job)),
+    indexed.filter(({ job }) => !job.ref && !isAnchor(job) && job.sceneIndex !== undefined),
+    indexed.filter(({ job }) => !job.ref && job.sceneIndex === undefined)
+  ];
+  // A run with no references chains each scene's first shot to the one before
+  // (as it always did), so those render one at a time.
+  for (const [n, stage] of stages.entries()) {
+    const limit = n === 2 && refs.size === 0 ? 1 : opts.concurrency ?? 4;
+    await inParallel(stage, limit, ({ job, index }) => one(job, index));
   }
-  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  await saveManifest();
   return result;
+}
+
+// Runs fn over items, at most `limit` at a time. A budget stop ends the run;
+// other failures are fn's to handle.
+export async function inParallel<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await fn(items[next++]);
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
 }
 
 // Generate → inspect → regenerate with a revised prompt, up to maxAttempts.
@@ -403,10 +452,22 @@ function imagePart(img: Image): GeminiPart {
   return { inline_data: { mime_type: img.mimeType, data: img.data.toString("base64") } };
 }
 
-async function geminiGenerate(spec: GeminiSpec, role: string, body: unknown): Promise<any> {
+// With several images in flight a rate limit (429) is likely: wait it out
+// (about two minutes in all) rather than lose the image.
+const RATE_LIMIT_WAITS_MS = [10000, 20000, 30000, 60000];
+
+async function geminiGenerate(spec: GeminiSpec, role: string, body: unknown, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Promise<any> {
   const headers = { "x-goog-api-key": requireKey(spec.apiKeyEnv || "GEMINI_API_KEY") };
   const url = `${spec.baseUrl || GEMINI_BASE}/models/${spec.model}:generateContent`;
-  return postJson(url, headers, body, { type: "gemini", model: spec.model, role, timeoutMs: spec.timeoutMs, retries: spec.retries });
+  for (let wait = 0; ; wait++) {
+    try {
+      return await postJson(url, headers, body, { type: "gemini", model: spec.model, role, timeoutMs: spec.timeoutMs, retries: spec.retries });
+    } catch (err) {
+      if (isBudgetError(err) || !/\b429\b|RESOURCE_EXHAUSTED/.test(err instanceof Error ? err.message : String(err)) || wait >= RATE_LIMIT_WAITS_MS.length) throw err;
+      console.error(`[scriptorium]   ${role}: rate limit — waiting ${RATE_LIMIT_WAITS_MS[wait] / 1000}s`);
+      await sleep(RATE_LIMIT_WAITS_MS[wait]);
+    }
+  }
 }
 
 export class GeminiImageBackend implements ImageBackend {

@@ -313,6 +313,7 @@ export interface ArtistConfig {
   maxReferences?: number;
   referenceSize?: number;  // longest side (px) of reference images sent; default 768, 0 = full size
   inspectSize?: number;    // longest side (px) of the image sent for inspection; default 1024
+  concurrency?: number;    // images rendered at once (default 4)
 }
 
 // A structured role call: the model output plus the exact inputs that produced it.

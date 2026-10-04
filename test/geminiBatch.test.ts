@@ -283,3 +283,31 @@ test("batched pieces get natural pauses back: a beat between turns, less within 
   const none = await synthesizeScene(scene, () => "v", second, () => {}, () => {}, naturalGaps(1, () => false));
   assert.equal(none.audio.length, plain.audio.length, "pieces that weren't batched keep their own padding");
 });
+
+test("voice batches run in parallel up to the limit, halving included; the limiter spaces requests that start together", async () => {
+  const { slotLimiter } = await import("../src/geminiTts.ts");
+  const prose = Array.from({ length: 6 }, (_, i) => `${["narrator", "nell", "edrick"][i % 3]}: ${i % 3 ? `"Line ${i}."` : `Narration ${i}.`}`).join("\n\n");
+  const scene = parseScene(0, prose, new Set(["nell", "edrick"]));
+  let inFlight = 0;
+  let peak = 0;
+  let firstNarrator = true;
+  const speak = async (prompt: string) => {
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 10));
+    inFlight--;
+    const lines = prompt.split("#### TRANSCRIPT\n")[1].split("\n\n");
+    // The narrator's first batch (two lines) runs together, three times: it gets halved.
+    const together = lines.length > 1 && prompt.startsWith("# AUDIO PROFILE: Narrator") && firstNarrator;
+    return { samples: audio(together ? [{ sound: 4 }] : lines.flatMap((_, i) => (i ? [{ silence: 2 }, { sound: 1 }] : [{ sound: 1 }]))), sampleRate: RATE };
+  };
+  const bible = emptyBible();
+  const out = await voiceSceneBatches(scene, "speaker", { bible, voiceFor: (s) => `gemini:${s}`, speak, concurrency: 2, onProgress: (e) => { if (e.type === "batch_failed") firstNarrator = false; } });
+  assert.equal(out.size, scenePieces(scene).length, "every piece voiced");
+  assert.equal(peak, 2, "two batches in flight, never more");
+
+  // Three requests booked at t=0 go out at 0, 7s and 14s.
+  const waits: number[] = [];
+  const reserve = slotLimiter(7000, async (ms) => { waits.push(ms); }, () => 0);
+  await Promise.all([reserve(), reserve(), reserve()]);
+  assert.deepEqual(waits, [7000, 14000]);
+});
