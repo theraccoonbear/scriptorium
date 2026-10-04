@@ -18,7 +18,8 @@
     "video": "node src/cli.ts video",
     "cast": "node --env-file-if-exists=.env src/cli.ts cast",
     "pitch": "node --env-file-if-exists=.env src/cli.ts pitch",
-    "approve": "node src/cli.ts approve"
+    "approve": "node src/cli.ts approve",
+    "review": "node src/cli.ts review"
   },
   "engines": {
     "node": ">=20"
