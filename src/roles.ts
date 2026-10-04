@@ -44,7 +44,7 @@ Output ONLY JSON with this shape:
   "premise":string,
   "tone":string,
   "art_style":string,
-  "characters":[{"id":string,"name":string,"traits":string,"goal":string,"voice":string,"gender":"female"|"male"|""}],
+  "characters":[{"id":string,"name":string,"traits":string,"goal":string,"voice":string,"vocal":string,"gender":"female"|"male"|""}],
   "locations":[{"id":string,"name":string,"description":string}],
   "objects":[{"id":string,"name":string,"description":string,"owner":characterId}],
   "threads":[{"id":string,"title":string,"status":"open"}],
@@ -52,6 +52,7 @@ Output ONLY JSON with this shape:
 }
 art_style: how this world is portrayed in pictures, decided with the tone — one or two sentences naming the medium and rendering (e.g. gouache illustration, ink and watercolor, oil painting, woodcut), palette, light, line quality, level of detail, and mood. Specific enough that two illustrators would produce images that look like the same book. Suited to this story's genre and tone; never name a living artist.
 Each character needs a distinct voice that will guide the Writer.
+vocal: how the character SOUNDS, for casting the audiobook — apparent age, pitch, texture, pace, and accent, in one line (e.g. "fifties, low and gravelly, unhurried, a hill-country burr"). Make the main characters sound clearly different from each other.
 objects: the story's KEY OBJECTS — signature items a character carries or uses, or things the plot turns on (an instrument, a relic, a letter). Usually 0-3. The description is canon for every later scene and image, so make it physically exact and true to what that kind of object really is: overall size AND width or thickness at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"), shape, materials, and how it is held or used. A real-world kind of object (an alpenhorn, a longbow) must have that object's real form and handling unless the premise deliberately changes it.
 Give each character's gender as "female" or "male" when the story has one in mind; use "" for unspecified, non-binary, or genderless characters. It picks their audiobook narration voice.
 The beat is the first scene. Payoffs must be empty (no prior setups exist).
@@ -225,7 +226,7 @@ ${ISSUE_RULES}
 
 export const ARCHIVIST_SYSTEM = `You are the Archivist, the only role allowed to change the story bible.
 Read the committed scene and output ONLY a JSON patch:
-{"upsertCharacters":[{"id":string,"name"?:string,"traits"?:string,"goal"?:string,"voice"?:string,"status"?:string,"gender"?:"female"|"male"|""}],
+{"upsertCharacters":[{"id":string,"name"?:string,"traits"?:string,"goal"?:string,"voice"?:string,"vocal"?:string,"status"?:string,"gender"?:"female"|"male"|""}],
 "upsertLocations":[{"id":string,"name"?:string,"description"?:string}],
 "upsertObjects":[{"id":string,"name"?:string,"description"?:string,"owner"?:characterId}],
 "upsertThreads":[{"id":string,"title"?:string,"status"?:string}],
@@ -234,6 +235,7 @@ Read the committed scene and output ONLY a JSON patch:
 "resolveDecisions":[string],
 "timeline":"one line summary of what happened"}
 Only record facts established in the scene.
+vocal: for a NEW character who speaks, one line on how they sound for the audiobook — apparent age, pitch, texture, pace, accent. Never rewrite an existing character's vocal.
 gender: set it ("female"/"male") for a NEW character when the scene establishes it (pronouns, terms like "mother" or "king"). Never change an existing character's recorded gender; omit the field when it is unclear.
 upsertObjects: add a KEY OBJECT (a signature item that recurs or drives the plot) when a scene introduces one, with a physically exact description: size AND width at its key points, shape, materials, how it is held or used — true to what that kind of object really is. Never rewrite an existing object's description.
 resolveDecisions: choices or commitments that CLOSED in this scene — decisions the characters will not re-make without new pressure. List only what the scene actually settles; an open or deferred choice does not belong here.`;
@@ -418,7 +420,7 @@ interface CreatorFoundation {
   premise?: string;
   tone?: string;
   art_style?: string;
-  characters?: { id?: string; name?: string; traits?: string; goal?: string; voice?: string; gender?: string }[];
+  characters?: { id?: string; name?: string; traits?: string; goal?: string; voice?: string; vocal?: string; gender?: string }[];
   locations?: { id?: string; name?: string; description?: string }[];
   objects?: { id?: string; name?: string; description?: string; owner?: string }[];
   threads?: { id?: string; title?: string; status?: string }[];
@@ -434,6 +436,7 @@ function applyBibleData(data: CreatorFoundation): Bible {
     if (c.id) {
       bible.characters[c.id] = { id: c.id, name: c.name || c.id, traits: c.traits || "", goal: c.goal || "", voice: c.voice || "", status: "active" };
       if (c.gender) bible.characters[c.id].gender = c.gender;
+      if (c.vocal) bible.characters[c.id].vocal = c.vocal;
     }
   }
   for (const l of data.locations || []) {
@@ -874,6 +877,72 @@ export async function designPalettes(role: Role, params: { script: string; cast:
     prompt = `${prompt}\n\nYour last reply was unusable: ${problem}. Reply again.`;
   }
   throw new Error(`tone palettes failed: ${problem}`);
+}
+
+export const CASTING_SYSTEM = `You are the casting director for an audiobook. Choose a voice from the VOICE LIBRARY for each character listed, and for the NARRATOR if asked.
+
+Output ONLY JSON:
+{"narrator":voiceId|null,"characters":{"<character id>":voiceId},"reasons":{"<character id or narrator>":string}}
+
+Casting rules:
+- Match gender exactly when the character's gender is given.
+- Match how the character SOUNDS (their vocal line, else their traits): apparent age, pitch, texture, energy. The library descriptions give each voice's age and manner.
+- Accents should suit the story's world and stay coherent: family members and people from one place should share a regional accent; a stranger from far away may differ.
+- Keep the main characters clearly distinct from each other — different pitch or texture, never two near-identical voices — and distinct from the narrator.
+- The narrator should be a storyteller or narrator voice that suits the story's tone, with clear diction for long reading.
+- Every voice may be used once. reasons: a few words per pick.`;
+
+export interface CastingPick { narrator?: string; characters: Record<string, string>; reasons: Record<string, string> }
+
+// Picks a library voice per character (and the narrator); code checks every pick.
+export async function castVoices(role: Role, params: {
+  characters: { id: string; name: string; gender?: string; vocal?: string; traits?: string; voice?: string }[];
+  narrator: boolean;
+  tone?: string;
+  library: { id: string; gender?: string; line: string }[];
+  taken?: string[];  // voices already cast in this story (kept from earlier chapters)
+}): Promise<RoleOutput<CastingPick>> {
+  const { characters, narrator, tone, library } = params;
+  const taken = new Set(params.taken ?? []);
+  const byId = new Map(library.map((v) => [v.id, v]));
+  let prompt = [
+    tone ? `STORY TONE: ${tone}` : "",
+    `CHARACTERS TO CAST:\n${characters.map((c) => `- ${c.id} (${c.name}${c.gender ? `, ${c.gender}` : ""}): ${c.vocal ? `sounds: ${c.vocal}` : `traits: ${c.traits ?? ""}`}${c.voice ? ` | talks: ${c.voice}` : ""}`).join("\n")}`,
+    narrator ? "Also cast the NARRATOR." : "The narrator is already cast; return narrator null.",
+    taken.size ? `ALREADY TAKEN (don't reuse): ${[...taken].join(", ")}` : "",
+    `VOICE LIBRARY (id | gender | pitch | accent | persona | description):\n${library.map((v) => v.line).join("\n")}`
+  ].filter(Boolean).join("\n\n");
+  let problem = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const out = await callJson(role, { role: "voicedirector", system: CASTING_SYSTEM, prompt, ctx: { task: "cast", characterIds: characters.map((c) => c.id), narrator, libraryIds: library.map((v) => v.id) } });
+    const r = (out.result ?? {}) as { narrator?: unknown; characters?: Record<string, unknown>; reasons?: Record<string, unknown> };
+    const pick: CastingPick = {
+      ...(narrator && typeof r.narrator === "string" ? { narrator: r.narrator } : {}),
+      characters: Object.fromEntries(Object.entries(r.characters ?? {}).map(([k, v]) => [k, String(v)])),
+      reasons: Object.fromEntries(Object.entries(r.reasons ?? {}).map(([k, v]) => [k, String(v)]))
+    };
+    problem = castingProblem(pick, characters, narrator, byId, taken) ?? "";
+    if (!problem) return { ...out, result: pick };
+    prompt = `${prompt}\n\nYour last reply was unusable: ${problem}. Reply again.`;
+  }
+  throw new Error(`voice casting failed: ${problem}`);
+}
+
+export function castingProblem(pick: CastingPick, characters: { id: string; gender?: string }[], narrator: boolean, library: Map<string, { gender?: string }>, taken: Set<string>): string | undefined {
+  if (narrator && !pick.narrator) return "no narrator voice";
+  if (pick.narrator && !library.has(pick.narrator)) return `narrator voice "${pick.narrator}" is not in the library`;
+  const used = new Set(taken);
+  if (pick.narrator) { if (used.has(pick.narrator)) return `"${pick.narrator}" is already taken`; used.add(pick.narrator); }
+  for (const c of characters) {
+    const v = pick.characters[c.id];
+    if (!v) return `no voice for ${c.id}`;
+    const voice = library.get(v);
+    if (!voice) return `"${v}" (for ${c.id}) is not in the library`;
+    if ((c.gender === "female" || c.gender === "male") && voice.gender && voice.gender !== c.gender && voice.gender !== "neutral") return `${c.id} is ${c.gender} but "${v}" is ${voice.gender}`;
+    if (used.has(v)) return `"${v}" is used twice (or already taken)`;
+    used.add(v);
+  }
+  return undefined;
 }
 
 // Context shared by the two prose gates. Same inputs, different prompts.

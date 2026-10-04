@@ -590,6 +590,15 @@ export function hybridVoicing(p: {
   return { voiceFor, synth };
 }
 
+// Cast or chosen Gemini voices over the automatic assignment. Any voice id is
+// accepted — one of the 30 prebuilt voices, a library voice (en-gb-advisor-9),
+// or a designed voice (voice_...).
+export function applyGeminiVoices(auto: { narrator: string; characters: Record<string, string> }, chosen: Record<string, string>): { narrator: string; characters: Record<string, string> } {
+  const characters = { ...auto.characters };
+  for (const [id, v] of Object.entries(chosen)) if (id !== "narrator" && v) characters[id] = v;
+  return { narrator: chosen.narrator || auto.narrator, characters };
+}
+
 // Voices a scene's Gemini pieces in batches (palette or speaker mode), returning
 // each piece's audio by its number. A batch that fails is left out, and its lines
 // are voiced one by one as in line mode.
@@ -736,11 +745,8 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   }
   const assignment: VoiceAssignment = assignVoices(Object.keys(bible.characters), voiceIds, opts.narratorVoice, { genders, voiceGenders, pinned });
   if (usesGemini) {
-    const g = assignVoices(Object.keys(bible.characters), Object.keys(GEMINI_VOICES), opts.geminiVoices?.narrator ?? "Charon", { genders, voiceGenders: GEMINI_VOICES });
-    for (const [id, v] of Object.entries(opts.geminiVoices ?? {})) {
-      if (id !== "narrator" && GEMINI_VOICES[v]) g.characters[id] = v;
-    }
-    assignment.gemini = { narrator: g.narrator, characters: g.characters };
+    const g = assignVoices(Object.keys(bible.characters), Object.keys(GEMINI_VOICES), "Charon", { genders, voiceGenders: GEMINI_VOICES });
+    assignment.gemini = applyGeminiVoices(g, opts.geminiVoices ?? {});
   }
   manifest.voices = assignment;
 

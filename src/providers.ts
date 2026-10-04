@@ -73,6 +73,12 @@ export class MockProvider {
       case "editor":
         return ctx.prose ?? "";
       case "voicedirector": {
+        if (ctx.task === "cast") {
+          // Each character takes the next unused library voice, in order.
+          const lib: string[] = ctx.libraryIds ?? [];
+          const ids: string[] = ctx.characterIds ?? [];
+          return JSON.stringify({ narrator: ctx.narrator ? lib[0] : null, characters: Object.fromEntries(ids.map((id, i) => [id, lib[i + 1]])), reasons: {} });
+        }
         if (ctx.task === "palette") {
           // Two tones for every cast member.
           const ids: string[] = ctx.castIds ?? [];

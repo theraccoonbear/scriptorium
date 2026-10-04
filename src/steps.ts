@@ -13,6 +13,7 @@ import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
 import { designRun, needsTagging, sceneTags, tagRun } from "./tagging.ts";
+import { castVoiceRun } from "./casting.ts";
 import type { TonePaletteData } from "./tagging.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 import { replay } from "./bible.ts";
@@ -207,6 +208,9 @@ export interface AudiobookStepOptions {
   geminiRpm?: number;
   geminiFallback?: "kokoro" | "gemini";
   pauseScale?: number;
+  casting?: boolean;          // cast Gemini voices from the library (default true when Gemini speaks)
+  castingFile?: string;       // a cast list shared across chapters
+  designVoices?: string[];    // characters to give a designed voice
   force?: boolean;
   config?: StoryConfig;  // for spend accounting (pricing, budget)
 }
@@ -256,6 +260,24 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     events = log.events;
   }
   events = await tagStep(runDir, events, opts.config, palette);
+  // Casting: a voice from Gemini's library (or a designed one) for every speaker.
+  let geminiVoices = opts.geminiVoices;
+  const geminiSpeaks = opts.narration === "gemini" || opts.dialogue === "gemini";
+  if (geminiSpeaks && opts.casting !== false) {
+    const roles = opts.config ? buildRoleProviders(opts.config) : undefined;
+    const role = roles?.voicedirector ?? roles?.continuist;
+    if (role) {
+      geminiVoices = await castVoiceRun({
+        events, role, runDir, language: opts.language ?? "en",
+        ...(opts.castingFile ? { castingFile: opts.castingFile } : {}),
+        ...(opts.designVoices ? { designVoices: opts.designVoices } : {}),
+        pinned: opts.geminiVoices ?? {},
+        log: (m) => console.error(m)
+      });
+    } else {
+      console.error(`[scriptorium] ${c.retry("no config — Gemini voices assigned by gender, not cast (pass --config)")}`);
+    }
+  }
   const result = await generateAudiobook(events, {
     runDir,
     narratorVoice: opts.narratorVoice,
@@ -264,7 +286,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     narration: opts.narration,
     dialogue: opts.dialogue,
     geminiModel: opts.geminiModel,
-    geminiVoices: opts.geminiVoices,
+    geminiVoices,
     kokoroVoices: opts.kokoroVoices,
     characterVoices: opts.characterVoices,
     geminiMode: opts.geminiMode,

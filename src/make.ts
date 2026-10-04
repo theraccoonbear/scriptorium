@@ -41,6 +41,9 @@ export interface StoryFile {
     geminiRpm?: number;                          // Gemini TTS requests per minute (default 9)
     geminiFallback?: "kokoro" | "gemini";        // a Gemini line that keeps failing (default: gemini if all-Gemini)
     pauseScale?: number;                         // batched modes: scales the pauses between pieces (default 1)
+    casting?: boolean;                           // cast Gemini voices from the library (default true)
+    castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
+    designVoices?: string[];                     // character ids to give a designed voice
   };
   video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
@@ -124,7 +127,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     scenes: raw.scenes,
     maxAttempts: attempts,
     speakerTags: raw.speakerTags,
-    audiobook: raw.audiobook ?? {},
+    audiobook: raw.audiobook?.castingFile ? { ...raw.audiobook, castingFile: at(raw.audiobook.castingFile) } : raw.audiobook ?? {},
     video: raw.video ?? {}
   };
 }
@@ -208,6 +211,7 @@ const defaultRunners: StepRunners = {
       narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
       kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
       geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
+      casting: a.casting, castingFile: a.castingFile, designVoices: a.designVoices,
       config: s.config
     });
   },
