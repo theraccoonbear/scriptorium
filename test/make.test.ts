@@ -149,3 +149,10 @@ test("story files list a cast with photos relative to the file; a changed cast i
   assert.deepEqual(settingChanges({ ...base }, { ...base, cast: null }), [], "stories made before casts stay valid");
   assert.deepEqual(settingChanges({ ...base, cast: "h1" }, { ...base, cast: "h2" }), ["cast"]);
 });
+
+test("a story file's shared cast list is found relative to the story file", async () => {
+  const { dir, file } = await storyDir({ audiobook: { castingFile: "../casts/osmagus.json", designVoices: ["osmagus"] } });
+  const s = await loadStoryFile(file);
+  assert.equal(s.audiobook.castingFile, join(dir, "../casts/osmagus.json"));
+  assert.deepEqual(s.audiobook.designVoices, ["osmagus"]);
+});

@@ -30,6 +30,10 @@ export interface Character {
   // "female", "male", or absent/"" when unknown or unspecified. Drives the
   // audiobook's voice choice; anything else is treated as unspecified.
   gender?: string;
+  // How the character SOUNDS, for audiobook casting: apparent age, pitch,
+  // texture, accent (e.g. "fifties, low and gravelly, unhurried, a hill-country burr").
+  // `voice` is how they TALK (register, word choice) and guides the writer.
+  vocal?: string;
 }
 
 export interface Location {
