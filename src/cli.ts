@@ -9,7 +9,8 @@ import { replay } from "./bible.ts";
 import { parseVoiceGenders } from "./audiobook.ts";
 import { accounted, artStep, castPreviewStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
 import { formatSummary, readLedger, summarize } from "./usage.ts";
-import { loadStoryFile, make } from "./make.ts";
+import { loadStoryFile, make, STEP_ORDERS } from "./make.ts";
+import type { StepOrder } from "./make.ts";
 import { GEMINI_MODES } from "./geminiBatch.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 import { c } from "./colors.ts";
@@ -163,6 +164,7 @@ async function main() {
       "exclude-voices": { type: "string" },
       "character-voice": { type: "string" },
       "gemini-mode": { type: "string" },
+      "step-order": { type: "string" },
       "palette-size": { type: "string" },
       force: { type: "boolean" },
       redo: { type: "string" },
@@ -209,8 +211,10 @@ async function main() {
 
   if (command === "make") {
     const storyFile = positionals[0];
-    if (!storyFile) throw new Error("usage: make <story.json> [--only <steps>] [--from <step>] [--force]");
-    await make(storyFile, { only: values.only, from: values.from, force: values.force });
+    if (!storyFile) throw new Error("usage: make <story.json> [--only <steps>] [--from <step>] [--step-order audio-first|art-first|parallel] [--force]");
+    const order = values["step-order"];
+    if (order !== undefined && !(STEP_ORDERS as readonly string[]).includes(order)) throw new Error(`--step-order must be one of ${STEP_ORDERS.join(", ")}`);
+    await make(storyFile, { only: values.only, from: values.from, force: values.force, ...(order ? { stepOrder: order as StepOrder } : {}) });
     return;
   }
 

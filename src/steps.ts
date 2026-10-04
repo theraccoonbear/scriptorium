@@ -18,7 +18,7 @@ import type { TonePaletteData } from "./tagging.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 import { replay } from "./bible.ts";
 import { c } from "./colors.ts";
-import { Accountant, currentAccountant, LEDGER_FILE, setAccountant, usd } from "./usage.ts";
+import { accountantFor, runAccounted, usd } from "./usage.ts";
 import type { Bible, SceneCommittedData, StoryConfig, StoryEvent } from "./types.ts";
 
 // The pipeline's steps — story, art, audiobook, video — as plain functions with
@@ -26,21 +26,19 @@ import type { Bible, SceneCommittedData, StoryConfig, StoryEvent } from "./types
 // Each step resumes or skips finished work, so re-running one is always safe.
 
 // Runs a paid step with spend accounting: every API call is logged to the run's
-// usage.jsonl, the budget is enforced, and the step's spend is printed. Reuses
-// the active accountant when one is already open for this run (make).
+// usage.jsonl, the budget is enforced, and the step's spend is printed. Every
+// step of a run shares one accountant (so steps running at once — art and
+// audio — see each other's spend against the budget), and each carries its own
+// step label through its async work.
 export async function accounted<T>(runDir: string, config: StoryConfig | undefined, step: string, fn: () => Promise<T>): Promise<T> {
-  const active = currentAccountant();
-  const acc = active && active.file === join(runDir, LEDGER_FILE)
-    ? active
-    : new Accountant(runDir, { pricing: config?.pricing, budgetUsd: config?.budget?.usd });
-  const previous = setAccountant(acc);
-  acc.setStep(step);
+  const acc = accountantFor(runDir, { pricing: config?.pricing, budgetUsd: config?.budget?.usd });
+  const before = acc.spentIn(step);
   try {
-    return await fn();
+    return await runAccounted(acc, step, fn);
   } finally {
+    const spent = acc.spentIn(step) - before;
     const budget = acc.budgetUsd !== undefined ? ` of ${usd(acc.budgetUsd)} budget` : "";
-    if (acc.stepSpent > 0) console.error(`[scriptorium] ${c.dim(`spend: ${step} ${usd(acc.stepSpent)} · run total ${usd(acc.spent)}${budget}`)}`);
-    setAccountant(previous);
+    if (spent > 0) console.error(`[scriptorium] ${c.dim(`spend: ${step} ${usd(spent)} · run total ${usd(acc.spent)}${budget}`)}`);
   }
 }
 
@@ -175,6 +173,7 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
     inspector: artist.inspector ? makeInspector(artist.inspector) : undefined,
     maxAttempts: artist.maxAttempts,
     maxReferences: artist.maxReferences,
+    concurrency: artist.concurrency,
     referenceSize: artist.referenceSize,
     inspectSize: artist.inspectSize,
     direction: config.direction?.artist,
@@ -208,6 +207,7 @@ export interface AudiobookStepOptions {
   geminiRpm?: number;
   geminiFallback?: "kokoro" | "gemini";
   pauseScale?: number;
+  geminiConcurrency?: number;
   casting?: boolean;          // cast Gemini voices from the library (default true when Gemini speaks)
   castingFile?: string;       // a cast list shared across chapters
   designVoices?: string[];    // characters to give a designed voice
@@ -294,6 +294,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     geminiRpm: opts.geminiRpm,
     geminiFallback: opts.geminiFallback,
     pauseScale: opts.pauseScale,
+    geminiConcurrency: opts.geminiConcurrency,
     force: opts.force,
     onProgress: (event) => {
       if (event.type === "model_loading") console.error(`[scriptorium] ${c.dim("loading Kokoro model (first run downloads it — this can take a while)...")}`);

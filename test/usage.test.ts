@@ -50,3 +50,26 @@ test("the ledger spans sessions, the budget stops further calls, unpriced models
   assert.deepEqual(Object.keys(s.byStep).sort(), ["art", "story"]);
   assert.match(formatSummary(s, 0.5), /^total \$0\.50 of \$0\.50 budget over 3 calls \(1 unpriced\)/);
 });
+
+test("steps running at once each get their own spend, and share the run's budget", async () => {
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { accounted } = await import("../src/steps.ts");
+  const { currentAccountant, readLedger, isBudgetError } = await import("../src/usage.ts");
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-par-"));
+  const config = { providers: {}, roles: {}, budget: { usd: 0.05 }, pricing: { m: { input: 0, output: 1_000_000 } } } as never;
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  // Each "call" costs $0.01: interleaved art and audiobook calls.
+  const call = async () => { currentAccountant()!.check(); await tick(); currentAccountant()!.record("x", "m", { usage: { input_tokens: 0, output_tokens: 0.01 } }); };
+  const results = await Promise.allSettled([
+    accounted(runDir, config, "art", async () => { for (let i = 0; i < 4; i++) await call(); }),
+    accounted(runDir, config, "audiobook", async () => { for (let i = 0; i < 4; i++) await call(); })
+  ]);
+  const ledger = readLedger(runDir);
+  const by = (step: string) => ledger.filter((e) => e.step === step).length;
+  assert.ok(by("art") > 0 && by("audiobook") > 0, "both steps attributed");
+  assert.equal(by("art") + by("audiobook"), ledger.length, "no spend mislabelled");
+  assert.ok(ledger.length <= 6, `the shared budget stopped both (${ledger.length} calls for $0.05)`);
+  assert.ok(results.some((r) => r.status === "rejected" && isBudgetError(r.reason)));
+});

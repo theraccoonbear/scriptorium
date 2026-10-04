@@ -97,6 +97,18 @@ export function speechConfigFor(voice: string): Record<string, unknown> {
     : { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } };
 }
 
+// Pacing that holds with requests in flight at once: each request books the
+// next free slot (intervalMs after the last one booked) before it goes out.
+export function slotLimiter(intervalMs: number, sleep: (ms: number) => Promise<void>, now: () => number = Date.now): () => Promise<void> {
+  let nextSlot = 0;
+  return async () => {
+    const t = now();
+    const at = Math.max(t, nextSlot);
+    nextSlot = at + intervalMs;
+    if (at > t) await sleep(at - t);
+  };
+}
+
 // Gemini TTS rate limits ran out after waiting: the per-minute or (more often)
 // the per-day cap. It stops the audiobook — never a reason to retake, re-cut,
 // or fall back to another engine. Finished scenes are kept; re-run later.
@@ -118,12 +130,10 @@ const RATE_LIMIT_WAITS_MS = [15000, 20000, 30000, 30000, 30000];
 export function geminiSpeaker(spec: GeminiTtsSpec = {}, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Speak {
   const model = spec.model ?? DEFAULT_GEMINI_TTS_MODEL;
   const call = geminiCall(spec, model);
-  let last = 0;
+  const reserve = slotLimiter(spec.minIntervalMs ?? 0, sleep);
   return async (prompt, voice) => {
     for (let wait = 0; ; wait++) {
-      const gap = (spec.minIntervalMs ?? 0) - (Date.now() - last);
-      if (gap > 0) await sleep(gap);
-      last = Date.now();
+      await reserve();
       try {
         return await call(prompt, voice);
       } catch (err) {

@@ -42,12 +42,17 @@ export interface StoryFile {
     geminiFallback?: "kokoro" | "gemini";        // a Gemini line that keeps failing (default: gemini if all-Gemini)
     pauseScale?: number;                         // batched modes: scales the pauses between pieces (default 1)
     casting?: boolean;                           // cast Gemini voices from the library (default true)
+    geminiConcurrency?: number;                  // batched modes: voice batches at once (default 2; 1 = one at a time)
     castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
     designVoices?: string[];                     // character ids to give a designed voice
   };
   video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
   budget?: { usd: number };            // stop before spending more than this on the run
+  // How art and audio run: "audio-first" (default: voicing is cheap and listening
+  // can send a story back for a rewrite before images are paid for),
+  // "art-first", or "parallel" (fastest).
+  stepOrder?: StepOrder;
   maxDraftsPerScene?: number;          // hard stop for a scene that won't settle (default 20)
   pricing?: StoryConfig["pricing"];    // per-model USD per million tokens, over the defaults
   artStyle?: string;                   // prescriptive art style; overrides the Creator's
@@ -70,9 +75,12 @@ export interface ResolvedStory {
   audiobook: NonNullable<StoryFile["audiobook"]>;
   video: NonNullable<StoryFile["video"]>;
   cast: CastMember[];
+  stepOrder: StepOrder;
 }
 
 export const STEPS = ["story", "art", "audiobook", "video"] as const;
+export const STEP_ORDERS = ["audio-first", "art-first", "parallel"] as const;
+export type StepOrder = (typeof STEP_ORDERS)[number];
 export type Step = (typeof STEPS)[number];
 
 // Paths in a story file are relative to the story file's own directory.
@@ -115,10 +123,14 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     if (!m?.name || !m.photos || (Array.isArray(m.photos) && m.photos.length === 0)) throw new Error(`${path}: every cast member needs a "name" and at least one photo in "photos"`);
     return { name: m.name, photos: (Array.isArray(m.photos) ? m.photos : [m.photos]).map(at), ...(m.notes ? { notes: m.notes } : {}) };
   });
+  if (raw.stepOrder !== undefined && !(STEP_ORDERS as readonly string[]).includes(raw.stepOrder)) {
+    throw new Error(`${path}: "stepOrder" must be one of ${STEP_ORDERS.join(", ")}`);
+  }
   return {
     file: path,
     config,
     cast,
+    stepOrder: raw.stepOrder ?? "audio-first",
     configPath,
     runDir: at(raw.out),
     premise: raw.premise,
@@ -184,6 +196,7 @@ export interface MakeOptions {
   only?: string;
   from?: string;
   force?: boolean;  // allow changed story settings for a story already in progress
+  stepOrder?: StepOrder;  // overrides the story file's
   steps?: Partial<StepRunners>;  // injectable for tests
 }
 
@@ -211,7 +224,7 @@ const defaultRunners: StepRunners = {
       narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
       kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
       geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
-      casting: a.casting, castingFile: a.castingFile, designVoices: a.designVoices,
+      casting: a.casting, geminiConcurrency: a.geminiConcurrency, castingFile: a.castingFile, designVoices: a.designVoices,
       config: s.config
     });
   },
@@ -219,6 +232,13 @@ const defaultRunners: StepRunners = {
 };
 
 const SETTINGS_FILE = "story-settings.json";
+
+// Pipeline position of a step, with art and audio in the chosen order.
+function rank(step: Step, order: StepOrder): number {
+  if (step === "art") return order === "art-first" ? 1 : 2;
+  if (step === "audiobook") return order === "art-first" ? 2 : 1;
+  return step === "story" ? 0 : 3;
+}
 
 export async function make(storyPath: string, opts: MakeOptions = {}): Promise<Step[]> {
   const story = await loadStoryFile(storyPath);
@@ -243,9 +263,20 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   }
 
   console.error(`[scriptorium] ${c.dim(`make ${storyPath} → ${story.runDir} (${steps.join(" → ")})`)}`);
-  for (const step of steps) {
-    console.error(`[scriptorium] ${c.blue(c.bold(`== ${step} ==`))}`);
-    if (step === "story") {
+  // Art and audio don't depend on each other: they run in the story's order
+  // (audio first by default), or at the same time. The video waits for both.
+  const order = opts.stepOrder ?? story.stepOrder;
+  const stages: Step[][] = order === "parallel"
+    ? steps.reduce<Step[][]>((acc, step) => {
+        const last = acc.at(-1);
+        if (last && (step === "audiobook" || step === "art") && (last.includes("art") || last.includes("audiobook"))) last.push(step);
+        else acc.push([step]);
+        return acc;
+      }, [])
+    : [...steps].sort((a, b) => rank(a, order) - rank(b, order)).map((step) => [step]);
+  for (const stage of stages) {
+    console.error(`[scriptorium] ${c.blue(c.bold(`== ${stage.join(" + ")} ==`))}`);
+    if (stage[0] === "story") {
       await run.story(story);
       continue;
     }
@@ -254,7 +285,10 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
     if (!events.some((e) => e.type === "scene_committed")) {
       throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
     }
-    await run[step](story, events);
+    // Both finish (or fail) before the first failure is reported.
+    const results = await Promise.allSettled(stage.map((step) => run[step as Exclude<Step, "story">](story, events)));
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failed) throw failed.reason;
   }
   console.error(`[scriptorium] ${c.ok(`done: ${steps.join(", ")}`)}`);
   const ledger = readLedger(story.runDir);

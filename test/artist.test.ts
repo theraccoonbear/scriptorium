@@ -315,3 +315,36 @@ test("portraits fix a character's look, not their pose; the inspector flags stif
   assert.ok(INSPECTOR_SYSTEM.includes("STAGING"));
   assert.ok(INSPECTOR_SYSTEM.includes("make the action and camera angle explicit"));
 });
+
+test("images render in parallel (up to the limit), each scene's shots anchored on its first shot, the manifest complete", async () => {
+  const runDir = await tmp();
+  const events = [
+    ev(0, "visual_ref", { kind: "character", id: "nell", appearance: "a", prompt: "portrait nell" }),
+    ev(1, "visual_ref", { kind: "character", id: "edrick", appearance: "b", prompt: "portrait edrick" }),
+    ev(2, "visual_ref", { kind: "location", id: "inn", appearance: "c", prompt: "place inn" }),
+    ev(3, "scene_art", { sceneIndex: 0, prompt: "a1", shots: [1, 2, 3, 4].map((k) => ({ startParagraph: k, prompt: `a${k}`, characters: k === 1 ? ["nell"] : [] })) }),
+    ev(4, "scene_art", { sceneIndex: 1, prompt: "b1", shots: [1, 2, 3].map((k) => ({ startParagraph: k, prompt: `b${k}`, characters: [] })) }),
+    ev(5, "cover_art", { sceneCount: 2, prompt: "cover" })
+  ];
+  let inFlight = 0;
+  let peak = 0;
+  const backend = new MockImageBackend();
+  const real = backend.generate.bind(backend);
+  backend.generate = async (req) => {
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 15));
+    inFlight--;
+    return real(req);
+  };
+  const result = await renderArt(events, { runDir, backend, concurrency: 3, shrink: async (img) => img });
+  assert.equal(result.rendered, 11);
+  assert.equal(peak, 3, "three at a time, never more");
+  const manifest: ArtManifest = JSON.parse(await readFile(join(runDir, "art", "art.json"), "utf8"));
+  assert.equal(Object.keys(manifest).length, 11, "concurrent writes lost nothing");
+  const call = (p: string) => backend.calls.find((c) => c.prompt === p)!;
+  // a2..a4 and b2..b3 take their own scene's first shot for style; first shots without canon borrow a reference.
+  assert.deepEqual(call("a3").references.map((r) => r.label), [SCENE_LABEL]);
+  assert.deepEqual(call("b2").references.map((r) => r.label), [SCENE_LABEL]);
+  assert.ok(call("b1").references.length > 0, "a first shot without canon still gets a style anchor");
+  assert.ok(backend.calls.findIndex((c) => c.prompt === "a1") < backend.calls.findIndex((c) => c.prompt === "a2"), "anchors first");
+});

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -107,6 +108,7 @@ export class Accountant {
   step = "run";
   spent: number;       // whole run, including earlier sessions
   stepSpent = 0;
+  private byStep = new Map<string, number>();  // this session, per step label
   private unpriced = new Set<string>();
 
   constructor(runDir: string, opts: { pricing?: Record<string, Price>; budgetUsd?: number } = {}) {
@@ -135,12 +137,38 @@ export class Accountant {
       console.error(`[scriptorium] no price for model "${model}" — its tokens are logged but not costed (add it to config.pricing)`);
     }
     const usd = price ? costOf(usage, price) : null;
-    const entry: LedgerEntry = { ts: new Date().toISOString(), step: this.step, role, model, ...usage, usd };
+    // Steps can run at once (art and audio): the step is the caller's, not the last one set.
+    const step = context.getStore()?.step ?? this.step;
+    const entry: LedgerEntry = { ts: new Date().toISOString(), step, role, model, ...usage, usd };
     appendFileSync(this.file, JSON.stringify(entry) + "\n");
     this.spent += usd ?? 0;
     this.stepSpent += usd ?? 0;
+    this.byStep.set(step, (this.byStep.get(step) ?? 0) + (usd ?? 0));
     return entry;
   }
+
+  // What `step` has spent in this session.
+  spentIn(step: string): number {
+    return this.byStep.get(step) ?? 0;
+  }
+}
+
+// Steps that run at the same time each carry their own accountant and step
+// label through their async work, so spend is attributed to the right step.
+const context = new AsyncLocalStorage<{ acc: Accountant; step: string }>();
+
+export function runAccounted<T>(acc: Accountant, step: string, fn: () => Promise<T>): Promise<T> {
+  return context.run({ acc, step }, fn);
+}
+
+// One accountant per run, shared by every step of it — so steps running at
+// once see each other's spend against the budget.
+const byFile = new Map<string, Accountant>();
+export function accountantFor(runDir: string, opts: { pricing?: Record<string, Price>; budgetUsd?: number } = {}): Accountant {
+  const file = join(runDir, LEDGER_FILE);
+  let acc = byFile.get(file);
+  if (!acc) { acc = new Accountant(runDir, opts); byFile.set(file, acc); }
+  return acc;
 }
 
 // The accountant postJson reports to; null outside a run (tests, one-off calls).
@@ -151,7 +179,7 @@ export function setAccountant(a: Accountant | null): Accountant | null {
   return previous;
 }
 export function currentAccountant(): Accountant | null {
-  return current;
+  return context.getStore()?.acc ?? current;
 }
 
 export interface SpendSummary {
