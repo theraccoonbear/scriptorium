@@ -204,7 +204,7 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
     maxAttempts: artist.maxAttempts,
     maxReferences: artist.maxReferences,
     concurrency: batch ? 10000 : artist.concurrency,
-    ...(artist.retakes !== undefined ? { retakes: artist.retakes, ...triageCap(runDir, config, events) } : {}),
+    ...(artist.retakes !== undefined ? { retakes: artist.retakes, retakeAbove: artist.retakeAbove, ...triageCap(runDir, config, events) } : {}),
     referenceSize: artist.referenceSize,
     inspectSize: artist.inspectSize,
     direction: config.direction?.artist,

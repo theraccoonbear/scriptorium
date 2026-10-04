@@ -409,3 +409,17 @@ test("the triage cap can be worked out when triage starts (after the first pass)
   assert.equal(firstPassDone, 3, "asked after all three first takes");
   assert.equal(asked, 2);
 });
+
+// Gallows Inn: most images scored 3 ("usable"), and 16 of 20 retakes came back no better.
+test("triage only retakes images with a clear mistake (severity 5 by default, configurable)", async () => {
+  const events = [ev(0, "scene_art", { sceneIndex: 0, prompt: "a", shots: [{ startParagraph: 0, prompt: "a" }, { startParagraph: 1, prompt: "b" }, { startParagraph: 2, prompt: "c" }] })];
+  const scores: Record<string, number> = { a: 3, b: 4, c: 6 };
+  const inspector = { async inspect(req: { prompt: string }) { const s = scores[req.prompt.split("\n")[0]] ?? 0; return { ok: s < 3, severity: s, issues: [] }; } };
+  const triaged = async (opts: { retakeAbove?: number }) => {
+    let n = -1;
+    await renderArt(events, { runDir: await tmp(), backend: new MockImageBackend(), inspector, retakes: 1, shrink: async (img) => img, ...opts, onProgress: (e) => { if (e.type === "triage") n = e.retakes; } });
+    return n;
+  };
+  assert.equal(await triaged({}), 1, "only the 6: a 3 and a 4 are usable");
+  assert.equal(await triaged({ retakeAbove: 3 }), 3);
+});

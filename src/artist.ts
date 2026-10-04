@@ -226,6 +226,7 @@ export interface ArtOptions {
   // A cap on triage retakes, e.g. what the budget can buy — a function is asked
   // when triage starts, so it can use what the first pass really cost.
   maxRetakes?: number | (() => number);
+  retakeAbove?: number;    // only images scored at least this severity are retaken (default 5)
   force?: boolean;         // re-render even when the prompt is unchanged
   // Longest side, in px, of images sent as references (default 768) and of the
   // candidate sent for inspection (default 1024); 0 sends them full size. Files
@@ -415,7 +416,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const share = Math.max(0, opts.retakes ?? 0);
     const cap = typeof opts.maxRetakes === "function" ? opts.maxRetakes() : opts.maxRetakes;
     const allowed = Math.min(Math.round(share * scored.size), cap ?? Infinity);
-    const worst = [...scored.values()].filter((s) => s.severity >= 3).sort((a, b) => b.severity - a.severity).slice(0, allowed);
+    const worst = [...scored.values()].filter((s) => s.severity >= (opts.retakeAbove ?? 5)).sort((a, b) => b.severity - a.severity).slice(0, allowed);
     emit({ type: "triage", scored: scored.size, retakes: worst.length });
     await inParallel(worst, opts.concurrency ?? 4, async ({ job, severity, retakePrompt }) => {
       try {
