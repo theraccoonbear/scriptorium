@@ -161,7 +161,7 @@ async function castPreviewInner(opts: CastPreviewOptions) {
       { key: `cast-${slug(e.name)}`, prompt, ref: { kind: "character", id: slug(e.name) } },
       references, backend, inspector, artist.maxAttempts ?? 3,
       (ev) => { if (ev.type === "attempt_rejected") console.error(`[scriptorium]   ${c.retry(`attempt ${ev.attempt} rejected: ${ev.issues.join("; ")}`)}`); },
-      style, (img) => shrink(img, artist.inspectSize ?? 1024), direction
+      style, (img) => shrink(img, artist.inspectSize ?? 1024), direction, e.name.split(/\s+/).filter((w) => w.length >= 3)
     );
     const file = join(outDir, `${slug(e.name)}.${extensionFor(out.image.mimeType)}`);
     await writeFile(file, out.image.data);
@@ -256,6 +256,7 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
       else if (event.type === "job_done") console.error(`[scriptorium] ${event.accepted ? c.ok(`${event.key} written`) : c.retry(`${event.key} kept after ${event.attempts} rejected attempts`)} ${c.dim(event.file)}`);
       else if (event.type === "job_failed") console.error(`[scriptorium] ${c.fail(`${event.key} failed: ${event.error}`)}`);
       else if (event.type === "triage") console.error(`[scriptorium] ${c.blue(c.bold(`triage: ${event.scored} images scored — retaking the worst ${event.retakes}`))}`);
+      else if (event.type === "names_removed") console.error(`[scriptorium]   ${c.retry(`${event.key}: removed names from the image prompt: ${event.names.join(", ")}`)}`);
       else if (event.type === "retake_done") console.error(`[scriptorium]   ${event.kept ? c.ok(`${event.key}: retake kept (severity ${event.before} → ${event.after})`) : c.dim(`${event.key}: retake no better (${event.before} → ${event.after}) — kept the first`)}`);
     }
   });

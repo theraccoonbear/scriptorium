@@ -89,7 +89,7 @@ RULES:
 - ok: true if the image is usable as-is. Minor stylistic drift is fine — only flag what a viewer would notice.
 - severity: how far the image falls short, 0-10, judged as a viewer would notice it. 0 = matches everything; 1-2 = small drift a viewer wouldn't notice; 3-4 = noticeable but usable (a slightly off color, a stiff pose); 5-6 = a clear mistake (wrong object shape, wrong hair, ignored camera angle); 7-8 = wrong in a way that breaks the story (wrong character, a key object wrong, a real-person likeness, text in the image); 9-10 = unusable (broken anatomy, the wrong scene). Score every image, ok or not; the worst images across a story are retaken first.
 - issues: one short sentence per problem; empty when ok.
-- revised_prompt: when ok is false, rewrite the ORIGINAL prompt to fix the issues (make the missed detail explicit, restate character appearance, make the action and camera angle explicit for a STAGING issue, add "no text"). Keep the same scene and moment. When ok is true, return "".`;
+- revised_prompt: when ok is false, rewrite the ORIGINAL prompt to fix the issues (make the missed detail explicit, restate character appearance, make the action and camera angle explicit for a STAGING issue, add "no text"). Keep the same scene and moment. NEVER name any real person, actor or celebrity in it, not even to say "not like them": the image model draws toward any name it reads. For a REAL PERSON issue, describe a clearly different original face instead (bone structure, age, distinctive features). When ok is true, return "".`;
 
 export interface ArtJob {
   key: string;            // "character-<id>", "scene-01-03" (scene 1, shot 3), "scene-01" (pre-shots events) or "cover"
@@ -215,7 +215,8 @@ export type ArtProgress =
   | { type: "job_done"; key: string; file: string; attempts: number; accepted: boolean }
   | { type: "job_failed"; key: string; error: string }
   | { type: "triage"; scored: number; retakes: number }
-  | { type: "retake_done"; key: string; before: number; after: number; kept: boolean };
+  | { type: "retake_done"; key: string; before: number; after: number; kept: boolean }
+  | { type: "names_removed"; key: string; names: string[] };
 
 export interface ArtOptions {
   runDir: string;
@@ -277,6 +278,8 @@ export interface ArtResult {
 }
 
 export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise<ArtResult> {
+  // Every character's and place's name, for the gate before the image model.
+  const names = storyNames(events);
   const outDir = join(opts.runDir, "art");
   await mkdir(outDir, { recursive: true });
   const manifestPath = join(outDir, "art.json");
@@ -371,7 +374,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const references = await referencesFor(job);
     try {
       const forInspection = (img: Image) => shrink(img, inspectSize);
-      const entry = await renderOne(job, references, opts.backend, opts.inspector, triage && !job.ref ? 1 : maxAttempts, emit, style, forInspection, direction);
+      const entry = await renderOne(job, references, opts.backend, opts.inspector, triage && !job.ref ? 1 : maxAttempts, emit, style, forInspection, direction, names);
       if (triage && !job.ref && entry.severity !== undefined) scored.set(job.key, { job, severity: entry.severity, ...(entry.retakePrompt ? { retakePrompt: entry.retakePrompt } : {}) });
       const file = `${job.key}.${extensionFor(entry.image.mimeType)}`;
       await writeFile(join(outDir, file), entry.image.data);
@@ -435,7 +438,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     await inParallel(worst, opts.concurrency ?? 4, async ({ job, severity, retakePrompt }) => {
       try {
         const references = await referencesFor(job);
-        const again = await renderOne({ ...job, prompt: retakePrompt ?? job.prompt }, references, opts.backend, opts.inspector, 1, emit, style, (img) => shrink(img, inspectSize), direction);
+        const again = await renderOne({ ...job, prompt: retakePrompt ?? job.prompt }, references, opts.backend, opts.inspector, 1, emit, style, (img) => shrink(img, inspectSize), direction, names);
         const after = again.severity ?? severity;
         const kept = after < severity;
         if (kept) {
@@ -478,7 +481,8 @@ export async function renderOne(
   emit: (event: ArtProgress) => void,
   style?: string,
   forInspection: (img: Image) => Promise<Image> = async (img) => img,
-  direction?: string
+  direction?: string,
+  names: Array<StoryName | string> = []
 ): Promise<{ image: Image; finalPrompt: string; attempts: number; accepted: boolean; issues: string[]; severity?: number; retakePrompt?: string }> {
   let prompt = job.prompt;
   let image: Image | undefined;
@@ -488,7 +492,10 @@ export async function renderOne(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // A failed generation (timeout, blocked or empty reply) uses up an attempt rather than the whole image.
     try {
-      image = await backend.generate({ prompt, references, ...(style ? { style } : {}), ...(direction ? { direction } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : {}) });
+      // The last gate before the image model: no names, ever (see stripNames).
+      const gated = stripNames(prompt, names);
+      if (gated.removed.length) emit({ type: "names_removed", key: job.key, names: gated.removed });
+      image = await backend.generate({ prompt: gated.text, references, ...(style ? { style } : {}), ...(direction ? { direction } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : {}) });
     } catch (err) {
       if (isBudgetError(err)) throw err;
       issues = [`generation failed: ${err instanceof Error ? err.message : String(err)}`];
@@ -502,11 +509,70 @@ export async function renderOne(
     if (verdict.ok) return { image, finalPrompt: prompt, attempts: attempt, accepted: true, issues: [], ...(severity !== undefined ? { severity } : {}) };
     issues = verdict.issues;
     emit({ type: "attempt_rejected", key: job.key, attempt, issues });
-    retakePrompt = verdict.revisedPrompt?.trim()
-      || `${job.prompt}\n\nFix these problems from the previous attempt:\n${issues.map((i) => `- ${i}`).join("\n")}`;
+    retakePrompt = retakeFor(job.prompt, verdict.revisedPrompt, issues);
     if (attempt < maxAttempts) prompt = retakePrompt;
   }
   return { image: image!, finalPrompt: prompt, attempts: maxAttempts, accepted: false, issues, ...(severity !== undefined ? { severity } : {}), ...(retakePrompt ? { retakePrompt } : {}) };
+}
+
+// Names never reach the image model: it draws toward any name it reads, even in
+// "not resembling X". A rejection for a real-person likeness names the person,
+// so the retake prompt is checked for every name the issues mention: a revised
+// prompt that repeats one is thrown out, and issues go in with names removed.
+const NAME = /\b[A-Z][a-z'’-]+(?:\s+(?:[A-Z][a-z'’-]+|[a-z]{1,3}))*\s+[A-Z][a-z'’-]+\b/g;
+export function namesIn(issues: string[]): string[] {
+  return [...new Set(issues.flatMap((i) => i.match(NAME) ?? []))];
+}
+const ORIGINAL_FACE = "Every face is entirely original: an ordinary, distinctive person who resembles no actor, celebrity or real person.";
+export function retakeFor(original: string, revised: string | undefined, issues: string[]): string {
+  const names = namesIn(issues);
+  const named = (text: string) => names.some((n) => text.includes(n)) || /\b(actor|actress|celebrity)\b/i.test(text) && names.length > 0;
+  if (revised?.trim() && !named(revised)) return revised.trim();
+  const clean = issues.map((i) => (names.some((n) => i.includes(n)) ? "A face resembled a real person." : i));
+  const lookalike = clean.length !== issues.filter((i) => !names.some((n) => i.includes(n))).length;
+  return [
+    original,
+    `Fix these problems from the previous attempt:\n${clean.map((i) => `- ${i}`).join("\n")}`,
+    ...(lookalike ? [ORIGINAL_FACE] : [])
+  ].join("\n\n");
+}
+
+// A name is no use to an image model: it can only guess a face from it, or
+// reach for a real person who shares it. Every prompt is checked right before
+// it goes out, whatever wrote it (the art director, the inspector's rewrite, a
+// retake): the story's character and place names come out, and so does any
+// real person named as an actor or celebrity, or after "resembling".
+const NAME_STOPWORDS = new Set(["Unknown", "Woman", "Man", "Elf", "Half-Orc", "Orc", "Student", "Mathematics", "University", "From", "Of", "The", "And", "Troll", "Los", "Prados", "Gnacien"]);
+export interface StoryName { name: string; kind: "person" | "place" }
+export function storyNames(events: StoryEvent[]): StoryName[] {
+  const bible = replay(events);
+  const out = new Map<string, StoryName["kind"]>();
+  for (const c of Object.values(bible.characters)) {
+    if (/^unknown\b/i.test(c.name)) continue;
+    const words = c.name.split(/\s+/).filter(Boolean);
+    if (!words.every((w) => NAME_STOPWORDS.has(w))) out.set(c.name, "person");
+    // A first or last name alone ("Liam", "McPoyle") is a name too.
+    if (words.length > 1) for (const w of words) if (/^[A-Z]/.test(w) && w.length >= 3 && !NAME_STOPWORDS.has(w)) out.set(w, "person");
+  }
+  for (const l of Object.values(bible.locations)) if (/^[A-Z]/.test(l.name)) out.set(l.name.replace(/^The\s+/, ""), "place");
+  return [...out].map(([name, kind]) => ({ name, kind })).sort((a, b) => b.name.length - a.name.length);
+}
+
+const REAL_PERSON = /\b(?:(?:strictly\s+)?not\s+)?(?:resembl\w*|look(?:s|ing)?\s+like|lookalike\s+of|(?:real\s+)?(?:actor|actress|celebrity))\s+(?:(?:real\s+)?(?:actor|actress|celebrity)\s+)?[A-Z][a-z'’-]+(?:\s+[A-Z][a-z'’-]+)+/g;
+export function stripNames(text: string, names: Array<StoryName | string>): { text: string; removed: string[] } {
+  const removed: string[] = [];
+  let out = text.replace(REAL_PERSON, (m) => { removed.push(m); return "with an original face"; });
+  for (const entry of names) {
+    const { name, kind } = typeof entry === "string" ? { name: entry, kind: "person" as const } : entry;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(\\b[Tt]he\\s+)?\\b${escaped}(['’]s)?\\b`, "g");
+    out = out.replace(re, (m: string, _the: string | undefined, poss: string | undefined) => {
+      removed.push(m.replace(/^the\s+/i, ""));
+      if (poss) return kind === "place" ? "the place's" : "their";
+      return kind === "place" ? "the place" : "the figure";
+    });
+  }
+  return { text: out.replace(/[ \t]{2,}/g, " "), removed: [...new Set(removed)] };
 }
 
 // ---- Gemini ----
