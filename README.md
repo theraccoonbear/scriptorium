@@ -232,6 +232,13 @@ Output goes to `<run>/art/`: `character-<id>`, `location-<id>`, `prop-<id>`, `sc
 
 **Fixing a bad reference:** run `artdirect --redo prop:<id> --note "what's wrong and what it should be"`. The note is passed to the art director as a correction from you.
 
+**Your own drawing of a character:** give their entry on the character sheet (`<run>/characters.json`) a `"reference"`: a `.png`, `.jpg` or `.webp` path, relative to `characters.json`. For example, `"reference": "../../contexts/rantouls-mushrooms/Lemuel-drawing.png"`.
+- **Portrait:** their portrait is drawn with the image as your design. It keeps the face, hair, colouring, clothing and gear, but redraws them in the story's art style.
+- **Checking:** the inspector checks the portrait follows the drawing, and never mistakes the drawing for a real person.
+- **Copy:** the image is copied into the run (`references/<id>.<ext>`), so the run stands on its own.
+- **Changes:** a new image, even at the same path, remakes that portrait on the next `--only refs`, unless you've approved the portrait.
+- **Description:** keep a written `appearance` too. The art director writes every shot from text, so the words carry the look into scenes.
+
 ## Video
 
 `video` turns a run's art and audiobook into:

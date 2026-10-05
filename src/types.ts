@@ -38,6 +38,14 @@ export interface Character {
   // the history the story leaves out. Canon for portraits and casting.
   appearance?: string;
   background?: string;
+  // The author's own drawing or design of the character, copied into the run
+  // (run-relative) with a hash of its bytes. Their portrait is drawn from it.
+  reference?: SheetReference;
+}
+
+export interface SheetReference {
+  file: string;   // run-relative copy, e.g. references/lemuel.png
+  hash: string;   // of the image's bytes: a new image at the same path is a new design
 }
 
 // One character on the author's sheet. Filled fields override the generated
@@ -49,11 +57,16 @@ export interface SheetCharacter {
   background?: string;
   vocal?: string;
   portrait?: boolean;
+  // The author's drawing or design of the character: a .png, .jpg or .webp,
+  // relative to characters.json (or absolute). Their portrait follows it.
+  reference?: string;
 }
 
-// author_characters event: the sheet as the author last saved it (newest wins).
+// author_characters event: the sheet as the author last saved it (newest wins),
+// with each reference image as copied into the run.
 export interface AuthorCharactersData {
   characters: Record<string, SheetCharacter>;
+  references?: Record<string, SheetReference>;
 }
 
 export interface Location {
