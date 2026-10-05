@@ -155,7 +155,7 @@ test("voice samples read each speaker's own first lines, and are only remade whe
 });
 
 test("review phases run only when asked for, before the steps they feed", () => {
-  assert.deepEqual(planSteps(), ["story", "art", "audiobook", "video"]);
+  assert.deepEqual(planSteps(), ["story", "art", "audiobook", "music", "video"]);
   assert.deepEqual(planSteps("voices,refs,characters"), ["characters", "refs", "voices"]);
   assert.deepEqual(planSteps("refs,art"), ["refs", "art"]);
   assert.throws(() => planSteps(undefined, "refs"), /review phase/);

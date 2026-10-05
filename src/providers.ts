@@ -88,6 +88,9 @@ export class MockProvider {
         const castIds: string[] = ctx.castIds ?? [];
         return JSON.stringify({ paragraphs: (ctx.paragraphs ?? []).map((p: string, n: number) => ({ n: n + 1, speaker: p.includes('"') && castIds[0] ? castIds[0] : "narrator", delivery: "" })), newSpeakers: [] });
       }
+      case "musicdirector":
+        // A plain chamber cue for every scene.
+        return JSON.stringify({ style: "Chamber strings and felt piano", theme: "Solo cello motif, 60 BPM, D minor", scenes: (ctx.scenes ?? []).map((n: number) => ({ scene: n, music: "Sparse low strings, 60 BPM, D minor" })) });
       case "archivist":
         return JSON.stringify(this.archive(ctx));
       case "beatgate":
@@ -550,7 +553,7 @@ export async function listModels(spec: ProviderSpec): Promise<string[]> {
 
 // Adaptive timeouts per role. Floor set from observed minimums, ceiling from P99 + safety.
 const roleTimings: Record<string, number[]> = {};
-const ROLE_FLOORS: Record<string, number> = { worldbuilder: 180000, director: 180000, writer: 180000, continuist: 180000, critic: 180000, archivist: 180000, beatgate: 180000, patchgate: 180000, worldgate: 180000, contextgate: 180000, artdirector: 180000, editor: 180000 };
+const ROLE_FLOORS: Record<string, number> = { worldbuilder: 180000, director: 180000, writer: 180000, continuist: 180000, critic: 180000, archivist: 180000, beatgate: 180000, patchgate: 180000, worldgate: 180000, contextgate: 180000, artdirector: 180000, editor: 180000, musicdirector: 180000 };
 const TIMEOUT_CEILING_MS = 120000;
 const TIMEOUT_SAFETY = 1.5;
 
@@ -575,7 +578,7 @@ export function timeoutForRole(roleName: string): number {
 // "artist" is the image model, handled by the art step.
 export const DIRECTION_LAYERS = [
   "contextgate", "worldbuilder", "worldgate", "creator", "director", "beatgate",
-  "writer", "editor", "voicedirector", "continuist", "critic", "archivist", "patchgate", "artdirector", "artist"
+  "writer", "editor", "voicedirector", "continuist", "critic", "archivist", "patchgate", "artdirector", "artist", "musicdirector"
 ] as const;
 
 export function checkDirection(direction: Record<string, string> | undefined): void {

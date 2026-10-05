@@ -22,7 +22,11 @@ export const TYPICAL = {
   paragraphsPerScene: 50,
   imageSeconds: 20,        // one generation + inspection
   ttsSecondsPerRequest: 12,
-  ttsPerDay: 100           // Tier 1 daily cap per model
+  ttsPerDay: 100,          // Tier 1 daily cap per model
+  musicUsdPerCue: 0.08,    // Lyria 3.5, flat per cue
+  musicTakesPerCue: 2,     // Lyria often adds a voice to a bed: Gallows Inn took 8 takes for 4 cues
+  musicCheckUsd: 0.009,    // listening to one take for voices (Gemini Flash, 20 s at a time)
+  musicSecondsPerCue: 30   // one generation + its check
 };
 
 export interface PitchInput {
@@ -37,6 +41,8 @@ export interface PitchInput {
   budgetUsd?: number;
   artManifest?: Record<string, { prompt: string }>;  // art/art.json: images already rendered
   scenesVoiced?: number;                             // scenes whose audio is already rendered
+  // The score: a theme plus one cue per scene (`cues`), `made` of them already clean.
+  music?: { skip?: boolean; cues?: number; made?: number };
 }
 
 export interface Pitch {
@@ -45,6 +51,7 @@ export interface Pitch {
   story: { scenesToWrite: number; usd: number };
   images: { references: number; shots: number; cover: number; generations: number; retakes: number; usd: number; minutes: number };
   audio: { seconds: number; geminiRequests: number; usd: number; minutes: number; days: number };
+  music: { cues: number; usd: number; minutes: number };
   spentUsd: number;
   totalUsd: number;
   warnings: string[];
@@ -133,7 +140,11 @@ export function pitch(input: PitchInput): Pitch {
 
   const storyUsd = toWrite * TYPICAL.storyUsdPerScene;
   const spentUsd = ledger.reduce((a, e) => a + (e.usd ?? 0), 0);
-  const totalUsd = storyUsd + imagesUsd + audioUsd;
+  const music = input.music ?? { skip: true };
+  const cuesToMake = music.skip ? 0 : Math.max(0, (music.cues ?? input.scenes + 1) - (music.made ?? 0));
+  const musicUsd = cuesToMake * TYPICAL.musicTakesPerCue * (TYPICAL.musicUsdPerCue + TYPICAL.musicCheckUsd);
+  const musicMinutes = (cuesToMake * TYPICAL.musicTakesPerCue * TYPICAL.musicSecondsPerCue) / 60;
+  const totalUsd = storyUsd + imagesUsd + audioUsd + musicUsd;
   const warnings: string[] = [];
   // Batch Mode and samples don't count against the live daily cap.
   if (days > 1 && !batchVoice && !audio.samplesOnly) warnings.push(`${geminiRequests} Gemini voice requests is ${days} days of the 100-a-day cap — try geminiMode "palette" or "speaker"`);
@@ -144,6 +155,7 @@ export function pitch(input: PitchInput): Pitch {
     story: { scenesToWrite: toWrite, usd: storyUsd },
     images: { references: art.skip ? 0 : references, shots: art.skip ? 0 : shotsToRender, cover: art.skip ? 0 : cover, generations, retakes, usd: imagesUsd, minutes: imageMinutes },
     audio: { seconds, geminiRequests, usd: audioUsd, minutes: audioMinutes, days },
+    music: { cues: cuesToMake, usd: musicUsd, minutes: musicMinutes },
     spentUsd, totalUsd, warnings
   };
 }
@@ -166,6 +178,7 @@ export function formatPitch(p: Pitch, budgetUsd?: number): string {
     p.audio.seconds === 0
       ? "voice: nothing to voice"
       : `voice${est(p.exact.voicing)}: ~${Math.round(p.audio.seconds / 60)} min of audio, ${p.audio.geminiRequests} Gemini requests${p.audio.geminiRequests ? ` (${p.audio.days} day${p.audio.days === 1 ? "" : "s"} of quota)` : ""}, ~${usd(p.audio.usd)}, ~${m(p.audio.minutes)}`,
+    ...(p.music.cues > 0 ? [`music: ${p.music.cues} cue${p.music.cues === 1 ? "" : "s"} to make (Lyria, ${usd(TYPICAL.musicUsdPerCue)} a cue, retakes for any with a voice included), ~${usd(p.music.usd)}, ~${m(p.music.minutes)}`] : []),
     `total: ~${usd(p.totalUsd)} still to spend${p.spentUsd > 0 ? ` (${usd(p.spentUsd)} spent so far)` : ""}${budgetUsd !== undefined ? ` · budget ${usd(budgetUsd)}` : ""}`,
     ...(p.batch.images || p.batch.voice ? [`batch mode (${[p.batch.images && "images", p.batch.voice && "voice"].filter(Boolean).join(" and ")}): half price, but results can take minutes to hours`] : []),
     ...p.warnings.map((w) => `⚠ ${w}`)

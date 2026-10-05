@@ -7,7 +7,7 @@ import { checkDirection } from "./providers.ts";
 import { formatSummary, readLedger, summarize, usd } from "./usage.ts";
 import { pitch } from "./pitch.ts";
 import type { Pitch } from "./pitch.ts";
-import { artStep, audiobookStep, loadRun, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
+import { artStep, audiobookStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
 import type { AudiobookStepOptions } from "./steps.ts";
 import { portraitIds, recordedSheet, syncCharacterSheet } from "./characterSheet.ts";
 import { staleCharacterRefs } from "./engine.ts";
@@ -18,6 +18,7 @@ import { CRITIC_MODES } from "./types.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
 import type { CastMember } from "./cast.ts";
 import type { TitleSettings } from "./titles.ts";
+import type { MusicSettings } from "./music.ts";
 import { GEMINI_MODES } from "./geminiBatch.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 
@@ -59,6 +60,7 @@ export interface StoryFile {
     castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
     designVoices?: string[];                     // character ids to give a designed voice
   };
+  music?: MusicSettings | false;       // the score (off unless present): { style, duck, volume, model, maxTakes }
   video?: {
     encoder?: "auto" | "nvenc" | "x264";
     parallel?: number;
@@ -95,15 +97,16 @@ export interface ResolvedStory {
   speakerTags?: boolean;
   audiobook: NonNullable<StoryFile["audiobook"]>;
   video: NonNullable<StoryFile["video"]>;
+  music?: MusicSettings;
   cast: CastMember[];
   stepOrder: StepOrder;
 }
 
-export const STEPS = ["story", "art", "audiobook", "video"] as const;
+export const STEPS = ["story", "art", "audiobook", "music", "video"] as const;
 // Review phases, run on their own with --only before the steps they feed:
 // the character sheet, reference portraits, and cast voices with samples.
 export const PHASES = ["characters", "refs", "voices"] as const;
-const ALL_STEPS = ["story", "characters", "refs", "voices", "art", "audiobook", "video"] as const;
+const ALL_STEPS = ["story", "characters", "refs", "voices", "art", "audiobook", "music", "video"] as const;
 export const STEP_ORDERS = ["audio-first", "art-first", "parallel"] as const;
 export type StepOrder = (typeof STEP_ORDERS)[number];
 export type Step = (typeof ALL_STEPS)[number];
@@ -150,6 +153,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     return { name: m.name, photos: (Array.isArray(m.photos) ? m.photos : [m.photos]).map(at), ...(m.notes ? { notes: m.notes } : {}) };
   });
   checkVideoTitles(path, raw);
+  checkMusic(path, raw);
   if (raw.stepOrder !== undefined && !(STEP_ORDERS as readonly string[]).includes(raw.stepOrder)) {
     throw new Error(`${path}: "stepOrder" must be one of ${STEP_ORDERS.join(", ")}`);
   }
@@ -170,8 +174,23 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     maxAttempts: attempts,
     speakerTags: raw.speakerTags,
     audiobook: raw.audiobook?.castingFile ? { ...raw.audiobook, castingFile: at(raw.audiobook.castingFile) } : raw.audiobook ?? {},
-    video: raw.video ?? {}
+    video: raw.video ?? {},
+    ...(raw.music ? { music: raw.music } : {})
   };
+}
+
+function checkMusic(path: string, raw: StoryFile) {
+  const m = raw.music;
+  if (m === undefined || m === false) return;
+  if (typeof m !== "object" || m === null) throw new Error(`${path}: "music" must be false or { style, duck, volume, model, maxTakes }`);
+  for (const k of ["duck", "volume"] as const) {
+    if (m[k] !== undefined && typeof m[k] !== "number") throw new Error(`${path}: music "${k}" must be a number of dB`);
+  }
+  if (m.duck !== undefined && (m.duck < 0 || m.duck > 40)) throw new Error(`${path}: music "duck" is dB under the voice, 0-40`);
+  if (m.maxTakes !== undefined && !(Number.isInteger(m.maxTakes) && m.maxTakes > 0)) throw new Error(`${path}: music "maxTakes" must be a positive integer`);
+  for (const k of ["style", "model"] as const) {
+    if (m[k] !== undefined && typeof m[k] !== "string") throw new Error(`${path}: music "${k}" must be text`);
+  }
 }
 
 function checkVideoTitles(path: string, raw: StoryFile) {
@@ -266,6 +285,7 @@ export interface StepRunners {
   voices: (story: ResolvedStory, events: StoryEvent[], redo: string[]) => Promise<void>;
   art: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   audiobook: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
+  music: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   video: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
 }
 
@@ -289,13 +309,19 @@ const defaultRunners: StepRunners = {
   // make never re-renders finished work; the individual commands take --force for that.
   art: async (s, events) => { await artStep(s.runDir, s.config, events, false); },
   audiobook: async (s, events) => { await audiobookStep(s.runDir, events, audiobookOptions(s)); },
+  // Off unless the story file has a "music" block.
+  music: async (s) => {
+    if (!s.music) { console.error(`[scriptorium] ${c.dim("no music in the story file — skipping")}`); return; }
+    await musicStep(s.runDir, s.config, s.music);
+  },
   video: async (s, events) => {
     await videoStep(s.runDir, events, false, {
       ...s.video,
       title: s.title, subtitle: s.subtitle, series: s.series,
       contextPaths: s.contextPaths, base: dirname(resolve(s.file)),
       gemini: s.audiobook.narration === "gemini" || s.audiobook.dialogue === "gemini" ? true : undefined,
-      geminiModel: s.audiobook.geminiModel
+      geminiModel: s.audiobook.geminiModel,
+      music: s.music
     });
   }
 };
@@ -334,6 +360,11 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     },
     ...(story.config.budget ? { budgetUsd: story.config.budget.usd } : {}),
     ...readJson<Record<string, { prompt: string }>>(join(story.runDir, "art", "art.json"), (m) => ({ artManifest: m })),
+    music: {
+      skip: !steps.includes("music") || !story.music,
+      cues: (story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length) + 1,
+      ...readJson<Record<string, { clean?: boolean }>>(join(story.runDir, "music", "cues.json"), (m) => ({ made: Object.values(m).filter((c) => c.clean).length }))
+    },
     scenesVoiced: existsSync(join(story.runDir, "audiobook")) ? readdirSync(join(story.runDir, "audiobook")).filter((f) => /^scene-\d+\.wav$/.test(f)).length : 0
   });
 }
@@ -360,6 +391,8 @@ function rank(step: Step, order: StepOrder): number {
   if (step === "characters") return 0.1;
   if (step === "refs") return 0.2;
   if (step === "voices") return 0.3;
+  // The cue sheet reads each scene's length from the audiobook's timings.
+  if (step === "music") return 2.5;
   return step === "story" ? 0 : 3;
 }
 
@@ -394,7 +427,7 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   console.error(`[scriptorium] ${c.dim(`make ${storyPath} → ${story.runDir} (${steps.join(" → ")})`)}`);
   // The pitch, before anything is spent (the full breakdown: npm run pitch).
   const p = storyPitch(story, await loadRun(story.runDir), steps);
-  console.error(`[scriptorium] ${c.dim(`pitch: ~${usd(p.totalUsd)} to spend (images ~${usd(p.images.usd)}, voice ~${usd(p.audio.usd)}, ${p.audio.geminiRequests} Gemini voice requests)${story.config.budget ? ` · budget ${usd(story.config.budget.usd)}` : ""}`)}`);
+  console.error(`[scriptorium] ${c.dim(`pitch: ~${usd(p.totalUsd)} to spend (images ~${usd(p.images.usd)}, voice ~${usd(p.audio.usd)}${p.music.cues ? `, music ~${usd(p.music.usd)}` : ""}, ${p.audio.geminiRequests} Gemini voice requests)${story.config.budget ? ` · budget ${usd(story.config.budget.usd)}` : ""}`)}`);
   for (const w of p.warnings) console.error(`[scriptorium] ${c.retry(w)}`);
   // Art and audio don't depend on each other: they run in the story's order
   // (audio first by default), or at the same time. The video waits for both.
@@ -427,7 +460,7 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
       throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
     }
     // Both finish (or fail) before the first failure is reported.
-    const results = await Promise.allSettled(stage.map((step) => run[step as "art" | "audiobook" | "video"](story, events)));
+    const results = await Promise.allSettled(stage.map((step) => run[step as "art" | "audiobook" | "music" | "video"](story, events)));
     const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
     if (failed) throw failed.reason;
   }

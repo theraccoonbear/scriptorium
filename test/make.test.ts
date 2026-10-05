@@ -33,9 +33,9 @@ test("story files resolve paths from their own directory and normalize options",
 });
 
 test("steps: all by default, --only picks, --from continues", () => {
-  assert.deepEqual(planSteps(), ["story", "art", "audiobook", "video"]);
+  assert.deepEqual(planSteps(), ["story", "art", "audiobook", "music", "video"]);
   assert.deepEqual(planSteps("video,art"), ["art", "video"]);
-  assert.deepEqual(planSteps(undefined, "audiobook"), ["audiobook", "video"]);
+  assert.deepEqual(planSteps(undefined, "audiobook"), ["audiobook", "music", "video"]);
   assert.throws(() => planSteps("art,dance"), /unknown step "dance"/);
   assert.throws(() => planSteps("art", "video"), /not both/);
 });
@@ -54,7 +54,7 @@ test("make runs the pipeline into the fixed run dir; re-running finishes only wh
     audiobook: async () => { calls.push("audiobook"); },
     video: async () => { calls.push("video"); }
   };
-  assert.deepEqual(await make(file, { steps }), ["story", "art", "audiobook", "video"]);
+  assert.deepEqual(await make(file, { steps }), ["story", "art", "audiobook", "music", "video"]);
   const runDir = join(dir, "run");
   const events = (await readFile(join(runDir, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(events.filter((e: StoryEvent) => e.type === "scene_committed").length, 2);

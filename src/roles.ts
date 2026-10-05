@@ -882,6 +882,62 @@ export async function designPalettes(role: Role, params: { script: string; cast:
   throw new Error(`tone palettes failed: ${problem}`);
 }
 
+// Words that invite a music model to add voices. A cue description must never
+// use them, even to say "no" to them: Lyria 3.5 is a song model, and a cue asked
+// to sit "beneath spoken narration" came back with whispered spoken word.
+export const VOICE_WORDS = /\b(voices?|vocals?|vocali[sz]\w*|sing|sings|singing|singers?|sung|songs?|lyrics?|lyrical|choirs?|choral|chants?|chanted|chanting|hums?|hummed|humming|whisper\w*|speech|spoken|speak\w*|narrat\w*|words?|poems?|poetry|recit\w*|dialogue|talk\w*|story|stories)\b/gi;
+
+export function voiceWords(text: string): string[] {
+  return [...new Set((text.match(VOICE_WORDS) ?? []).map((w) => w.toLowerCase()))];
+}
+
+export const MUSICDIRECTOR_SYSTEM = `You are the composer and music supervisor for a narrated film. You write the cue sheet: a short brief for each piece of music, which a music model will generate. The music plays quietly under a narrator, so it must leave room: sparse, low intensity, nothing busy in the midrange.
+
+Output ONLY JSON:
+{"style":string,"theme":string,"scenes":[{"scene":number,"music":string|null}]}
+
+- style: the score's one consistent sound for the whole film, in one sentence — instrumentation, ensemble, harmonic colour, recording feel (e.g. "Intimate chamber ensemble: solo cello, low strings, felt piano, a distant bell; dark modal harmony; close, warm recording"). If STYLE is given, use it verbatim.
+- theme: the main title theme, 30-45 seconds: a simple, memorable motif on one lead instrument, in the style. Give the motif's character, tempo (BPM) and key.
+- scenes: one entry per SCENE, by its number. music: the underscore for that scene, in the style, in 2-4 sentences — mood, tempo (BPM), key, which instruments carry it, texture and dynamics (it may quote the theme's motif softly). Each underscore is a LOOP of the length given, repeated under the whole scene: describe one steady texture, never an arc, timed events or minute marks. Match the scene's TENSION: 1-3 near-still, 4-6 restless, 7-10 driving but still under the narrator. Use null only where silence serves the scene better than any music.
+- Describe MUSIC ONLY, in musical terms. Never mention people, names, places, objects or events from the story, and never mention any kind of human voice, singing, speech, narration, lyrics or words — not even to exclude them (the generator adds what it reads). Write "instrumental" if anything.
+- Not even as a metaphor: the generator takes "whispering strings" or "a singing melody" literally and adds a voice. These words are refused anywhere in your reply: voice, vocal, sing, sung, song, lyric, lyrical, choir, choral, chant, hum, whisper, speech, spoken, speak, narration, word, poem, poetry, recite, dialogue, talk, story. Use musical terms instead: hushed, sul tasto, breathy bowing, murmuring tremolo, expressive.`;
+
+export interface MusicSceneInput { scene: number; tension: number; mood: string; seconds: number; loopSeconds?: number }
+export interface CueSheet { style: string; theme: string; scenes: Array<{ scene: number; music: string | null }> }
+
+// The cue sheet: one style, a theme, and an underscore (or silence) per scene.
+export async function directMusic(role: Role, params: { tone: string; artStyle?: string; style?: string; scenes: MusicSceneInput[] }): Promise<RoleOutput<CueSheet>> {
+  let prompt = [
+    `TONE: ${params.tone}`,
+    ...(params.artStyle ? [`ART STYLE (the look of the film, for the score's mood): ${params.artStyle}`] : []),
+    ...(params.style ? [`STYLE (the author's; use verbatim): ${params.style}`] : []),
+    `SCENES:\n${params.scenes.map((s) => `- scene ${s.scene} (a ${s.loopSeconds ?? 120}-second loop under ${Math.round(s.seconds / 60)} min, tension ${s.tension}/10): ${s.mood}`).join("\n")}`
+  ].join("\n\n");
+  let problem = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const out = await callJson(role, { role: "musicdirector", system: MUSICDIRECTOR_SYSTEM, prompt, ctx: { task: "cues", scenes: params.scenes.map((s) => s.scene) } });
+    const r = (out.result ?? {}) as { style?: unknown; theme?: unknown; scenes?: Array<{ scene?: unknown; music?: unknown }> };
+    const sheet: CueSheet = {
+      style: params.style ?? String(r.style ?? "").trim(),
+      theme: String(r.theme ?? "").trim(),
+      scenes: params.scenes.map((s) => {
+        const e = (r.scenes ?? []).find((x) => Number(x.scene) === s.scene);
+        return { scene: s.scene, music: e?.music === null ? null : e?.music !== undefined ? String(e.music).trim() : "" };
+      })
+    };
+    const missing = sheet.scenes.filter((s) => s.music === "").map((s) => s.scene);
+    const said = voiceWords([sheet.style, sheet.theme, ...sheet.scenes.map((s) => s.music ?? "")].join(" "));
+    problem = !sheet.style ? "no style"
+      : !sheet.theme ? "no theme"
+      : missing.length ? `no entry for scene ${missing.join(", ")}`
+      : said.length ? `it uses ${said.map((w) => `"${w}"`).join(", ")} — describe music only, never voices or the story`
+      : "";
+    if (!problem) return { ...out, result: sheet };
+    prompt = `${prompt}\n\nYour last reply was unusable: ${problem}. Reply again.`;
+  }
+  throw new Error(`music cue sheet failed: ${problem}`);
+}
+
 export const CASTING_SYSTEM = `You are the casting director for an audiobook. Choose a voice from the VOICE LIBRARY for each character listed, and for the NARRATOR if asked.
 
 Output ONLY JSON:

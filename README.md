@@ -280,6 +280,28 @@ The narrated title needs the audiobook's Gemini narrator, and is cached in `vide
 
 **Rendering:** the plan is written to `video/timeline.json` first, along with warnings, such as images the inspector never accepted. Each scene renders in one ffmpeg pass, several scenes at once (`--parallel`, default 3). Encoding uses NVIDIA's hardware encoder (NVENC) when available, about 3× faster than x264 at the same size and quality, and falls back to x264 (`--encoder auto|nvenc|x264`; a story file's `video` block takes the same options). Intermediate files go in `video/parts/` and are cached: a changed scene title re-renders that one card, then the join.
 
+## Music
+
+Optional, and off unless the story file has a `music` block. When it's on, the `music` step (between the audiobook and the video) scores the story:
+
+- **The music director** writes a cue sheet: one consistent sound for the whole story, a title theme, and an underscore per scene matched to its tension. It may also leave a scene silent. Every description is in musical terms only. A sheet that mentions a voice, singing, speech or the story (even as a metaphor, like "whispering strings") is sent back, because the generator adds whatever it reads.
+- **Lyria 3.5** generates each cue: a 40-second theme, and a loop of up to 2½ minutes per scene.
+- **Every cue is checked for voices.** Gemini listens 20 seconds at a time for singing, humming, choir, whispering or speech. A take with any voice is set aside in `music/rejected/` and retaken. After `maxTakes` it falls back to the 30-second Clip model. If a filter refuses a prompt, the plainer style-only brief is tried instead, never the same words again. Lyria has no API switch for instrumental output, so expect about two takes per cue.
+- **Cost:** Lyria bills a flat $0.08 per cue, and that's what the spend log records. The pitch counts about two takes per cue plus the checks: roughly $1.25 for a theme and six scenes. Cues are cached in `music/cues.json` and only remade when their brief changes.
+
+The video lays the score under the narration. The theme plays under the opening and again under "The End" and the credits. Each scene's bed is looped to length with crossfades, fades in after the scene card, and dips under the narrator's speech. The scene cards are silent. Levels are measured against the narrator, so `duck` means the same in every story. This mix is free and re-renders on its own when you change a level.
+
+```jsonc
+"music": {
+  "duck": 19,          // dB under the narrator's voice while someone speaks (default 19)
+  "volume": 0,         // dB up or down for all the music, theme included
+  "style": "Solo cello and felt piano, close and dry",  // optional: the score's sound, used verbatim
+  "maxTakes": 3        // Lyria 3.5 takes per cue before the 30-second fallback
+}
+```
+
+`npm run review -- <story.json> music` builds `review/music.mp3`, every cue a second apart, with a legend in `music.txt`. The music director is the config's `musicdirector` role if there is one, else the continuist's model, and it takes author direction (`direction.musicdirector`).
+
 ## Configure
 
 A config file names the providers and maps each role to one. `story.config.json` is all-mock; `story.opencode-go.config.json` is the real setup.

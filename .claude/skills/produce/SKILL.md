@@ -17,15 +17,17 @@ You are the interface to Scriptorium's pipeline. The author reviews and signs of
 | 3 | Voices | `npm run make -- <story.json> --only voices` | `npm run review -- <story.json> voices` | cents |
 | 4 | Shots + cover | `npm run make -- <story.json> --only art` | `npm run review -- <story.json> shots` | ~$0.05/image (batch) |
 | 5 | Audiobook | `npm run make -- <story.json> --only audiobook` | `<run>/audiobook/scene-NN.mp3` | ~$0.01/min (batch) |
+| 5½ | Music (optional) | `npm run make -- <story.json> --only music` | `npm run review -- <story.json> music` | ~$0.18/cue incl. retakes (theme + 1 per scene) |
 | 6 | Video | `npm run make -- <story.json> --only video` | `<run>/video/story.mp4`, `<run>/video/titles.json` | free (local); a narrated title is one Gemini TTS line |
 
 `<run>` is the story file's `"out"`. Every phase resumes and skips finished work, so re-running is safe.
 
 ## Review files
 
-`npm run review -- <story.json> refs|shots|voices` builds them in `<run>/review/` (free):
+`npm run review -- <story.json> refs|shots|voices|music` builds them in `<run>/review/` (free):
 - `refs.jpg`: every reference, labeled with its key (`✓` = approved)
 - `shots-scene-NN.jpg` (one per scene) and `cover.jpg`
+- `music.mp3`: every music cue, theme first, with its legend (`music.txt`)
 - `voices.mp3`: every voice sample, a second apart, narrator first. The legend (`voices.txt`, also printed) says who speaks at what time, with which voice.
 
 Send these files to the author. They're often on their phone, so don't just paste paths. Include the legend with the reel.
@@ -65,6 +67,8 @@ After `--only voices`, build the reel (`npm run review -- <story.json> voices`) 
 ## Phases 5–6
 
 The audiobook and video need no review loop; send a scene MP3 or the video path when done.
+
+Music is off unless the story file has a `music` block. Pitch it like any paid phase, then send the music reel (`review … music`). Cues with a voice in them are retaken automatically; any cue that never came out clean is listed in the run's output and left out of the mix. The author sets how far the music sits under the narrator with `music.duck` (dB, default 19); changing it only re-mixes, free.
 
 Before the video, check the story file has a `title` (and `subtitle`, and `series` for a chapter); without one, the opening has no text. After it, show the author the scene titles the run printed (from `<run>/video/titles.json`). To change one, edit its `title` there and re-run `--only video`: only that card and the join are redone. `video.titles.narrate` makes a paid TTS call, so pitch it before turning it on.
 
