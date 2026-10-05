@@ -86,8 +86,9 @@ export function applyPatch(bible: Bible, patch: Patch | undefined, index: number
 export function replay(events: StoryEvent[]): Bible {
   let bible = emptyBible();
   let sheet: Record<string, SheetCharacter> | undefined;
+  let references: AuthorCharactersData["references"];
   for (const e of events) {
-    if (e.type === "author_characters") sheet = (e.data as AuthorCharactersData).characters;
+    if (e.type === "author_characters") ({ characters: sheet, references } = e.data as AuthorCharactersData);
     if (e.type === "scene_committed") {
       const data = e.data as { bible?: Partial<Bible>; patch?: Patch; index: number };
       // First scene may carry the initial bible state from createAndDirect.
@@ -98,12 +99,12 @@ export function replay(events: StoryEvent[]): Bible {
       bible = applyPatch(bible, data.patch, data.index);
     }
   }
-  return sheet ? { ...bible, characters: withSheet(bible.characters, sheet) } : bible;
+  return sheet ? { ...bible, characters: withSheet(bible.characters, sheet, references) } : bible;
 }
 
 // The author's sheet over the generated characters: every filled field wins,
 // whatever the archivist recorded before or after.
-export function withSheet(characters: Record<string, Character>, sheet: Record<string, SheetCharacter>): Record<string, Character> {
+export function withSheet(characters: Record<string, Character>, sheet: Record<string, SheetCharacter>, references: AuthorCharactersData["references"] = {}): Record<string, Character> {
   const out = { ...characters };
   for (const [id, s] of Object.entries(sheet)) {
     const c = out[id];
@@ -115,7 +116,8 @@ export function withSheet(characters: Record<string, Character>, sheet: Record<s
       ...(filled(s.gender) ? { gender: filled(s.gender) } : {}),
       ...(filled(s.vocal) ? { vocal: filled(s.vocal) } : {}),
       ...(filled(s.appearance) ? { appearance: filled(s.appearance) } : {}),
-      ...(filled(s.background) ? { background: filled(s.background) } : {})
+      ...(filled(s.background) ? { background: filled(s.background) } : {}),
+      ...(filled(s.reference) && references[id] ? { reference: references[id] } : {})
     };
   }
   return out;

@@ -830,7 +830,10 @@ export async function planReferences({ config, log, roles, runDir, redo = [], no
   const isApproved = (r: string) => approved.has(r.replace(":", "-"));
   for (const r of redo) if (isApproved(r)) throw new Error(`${r} is approved — revoke the approval before remaking it`);
   if (notes && redo.length === 0) throw new Error("--note only applies with --redo");
-  const stale = staleCharacterRefs(log.events).map((id) => `character:${id}`).filter((r) => !isApproved(r) && !redo.includes(r));
+  const changed = staleCharacterRefs(log.events).map((id) => `character:${id}`);
+  // An approved portrait stays as it is, even when its sheet entry changes: say so.
+  for (const r of changed.filter(isApproved)) console.error(`[scriptorium] ${c.retry(`${r}'s sheet entry changed, but its portrait is approved and stays — revoke the approval to remake it`)}`);
+  const stale = changed.filter((r) => !isApproved(r) && !redo.includes(r));
   const bible = replay(log.events);
   const known = new Set(Object.keys(bible.characters));
   const storyText = log.events.filter((e) => e.type === "scene_committed").flatMap((e) => sceneParagraphs((e.data as SceneCommittedData).prose, known));

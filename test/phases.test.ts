@@ -8,7 +8,7 @@ import { renderBible, replay } from "../src/bible.ts";
 import { draftSheet, portraitIds, recordedSheet, SHEET_FILE, syncCharacterSheet } from "../src/characterSheet.ts";
 import { planReferences, staleCharacterRefs } from "../src/engine.ts";
 import { buildRoleProviders } from "../src/providers.ts";
-import { MockImageBackend, renderArt } from "../src/artist.ts";
+import { AUTHOR_DESIGN_LABEL, INSPECTOR_SYSTEM, MockImageBackend, buildArtJobs, renderArt } from "../src/artist.ts";
 import { parseApprovalTarget, readApprovals, setApproval } from "../src/approvals.ts";
 import { renderVoiceSamples, sampleText } from "../src/voiceSamples.ts";
 import { planSteps } from "../src/make.ts";
@@ -171,4 +171,59 @@ test("the pitch for a phase covers just that phase", async () => {
   assert.ok(voices.audio.usd < 0.05 && voices.images.generations === 0);
   const batch = pitch({ events: log.events, scenes: 40, art: { skip: true }, audio: { narration: "gemini", dialogue: "gemini", geminiMode: "palette", geminiBatch: true } });
   assert.ok(!batch.warnings.some((w) => /100-a-day/.test(w)), "batch voice has its own limits");
+});
+
+// The author's own drawing of a character: copied into the run, their portrait
+// drawn from it, checked against it, and remade only when the drawing changes.
+test("a sheet reference image: copied and hashed, drives the portrait, and a new drawing remakes only that portrait", async () => {
+  const { runDir, log } = await run();
+  const config = JSON.parse(await readFile(new URL("../story.config.json", import.meta.url), "utf8"));
+  const roles = buildRoleProviders(config);
+  const art = join(runDir, "..", `drawing-${Date.now()}.png`);
+  await writeFile(art, "lemuel drawing v1");
+  await syncCharacterSheet(runDir, log);
+  await planReferences({ config, log, roles });
+  assert.deepEqual(staleCharacterRefs(log.events), []);
+
+  // Relative to characters.json.
+  await editSheet(runDir, (s) => { s.characters.lemuel.reference = join("..", art.split("/").pop()!); });
+  assert.equal((await syncCharacterSheet(runDir, log)).recorded, true);
+  const lemuel = replay(log.events).characters.lemuel;
+  assert.equal(lemuel.reference?.file, "references/lemuel.png");
+  assert.equal(await readFile(join(runDir, "references/lemuel.png"), "utf8"), "lemuel drawing v1", "copied into the run");
+  assert.deepEqual(staleCharacterRefs(log.events), ["lemuel"], "a new reference makes the portrait stale");
+  const planned = await planReferences({ config, log, roles });
+  assert.deepEqual(planned.made.filter((r) => r.startsWith("character:")), ["character:lemuel"]);
+
+  // The portrait is drawn from the drawing, labelled as the author's design.
+  const job = buildArtJobs(log.events).find((j) => j.key === "character-lemuel")!;
+  assert.deepEqual([job.photos, job.design], [["references/lemuel.png"], true]);
+  const shrink = async (img: { data: Buffer; mimeType: string }) => img;
+  const backend = new MockImageBackend();
+  await renderArt(log.events, { runDir, backend, shrink, only: "references" });
+  const call = backend.calls.find((c) => c.prompt === job.prompt)!;
+  assert.equal(call.references[0].label, AUTHOR_DESIGN_LABEL);
+  assert.equal(call.references[0].data.toString(), "lemuel drawing v1");
+  assert.ok(INSPECTOR_SYSTEM.includes("DESIGN MATCH") && INSPECTOR_SYSTEM.includes("An AUTHOR'S DESIGN is a drawing, not a real person"));
+
+  // Same file, same drawing: nothing to record, nothing stale, nothing re-rendered.
+  assert.equal((await syncCharacterSheet(runDir, log)).recorded, false);
+  assert.deepEqual(staleCharacterRefs(log.events), []);
+  const quiet = new MockImageBackend();
+  await renderArt(log.events, { runDir, backend: quiet, shrink, only: "references" });
+  assert.deepEqual(quiet.calls, []);
+
+  // A new drawing at the same path is an edit: that portrait (only) is stale again.
+  await writeFile(art, "lemuel drawing v2");
+  assert.equal((await syncCharacterSheet(runDir, log)).recorded, true);
+  assert.deepEqual(staleCharacterRefs(log.events), ["lemuel"]);
+  // ...unless it's approved: then it stays, with a warning.
+  const out = await planReferences({ config, log, roles, approved: new Set(["character-lemuel"]) });
+  assert.ok(!out.made.includes("character:lemuel"));
+
+  // Bad references are refused with the path explained.
+  await editSheet(runDir, (s) => { s.characters.lemuel.reference = "nowhere.png"; });
+  await assert.rejects(syncCharacterSheet(runDir, log), /lemuel's reference nowhere\.png not found \(paths are relative to/);
+  await editSheet(runDir, (s) => { s.characters.lemuel.reference = "notes.txt"; });
+  await assert.rejects(syncCharacterSheet(runDir, log), /must be a \.png, \.jpg or \.webp image/);
 });

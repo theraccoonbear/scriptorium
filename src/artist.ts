@@ -5,6 +5,7 @@ import { postJson, requireKey } from "./providers.ts";
 import { parseJson } from "./roles.ts";
 import type { ArtistBackendSpec, ArtistConfig, CoverArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
 import { readVisualRefs, refKey, storyArtStyle } from "./visualrefs.ts";
+import { replay } from "./bible.ts";
 import { isBudgetError } from "./usage.ts";
 import { microBatcher } from "./batchJobs.ts";
 import type { BatchJobs } from "./batchJobs.ts";
@@ -37,6 +38,7 @@ export const LOCATION_LABEL = "The place where this image is set — keep its la
 export const PROP_LABEL = "A key object that appears in this image — match its shape, materials, colors and markings exactly:";
 export const CAST_PHOTO_LABEL = "Real photo of the person or animal this character IS — the portrait must be unmistakably them (same face and features, build, skin, hair; for an animal, breed, coat and markings), redrawn in the story's art style and dressed as the description says, not as in the photo:";
 export const CAST_PORTRAIT_LABEL = "Canonical look of a character who appears in this image — a real cast member, so this likeness is intended: match their face, build, hair, colors and clothing exactly, but NOT the reference's pose, expression or framing: pose and move them exactly as this image's description says:";
+export const AUTHOR_DESIGN_LABEL = "The author's own drawing of this character — their design: follow its face, hair and facial hair, colouring, build, clothing and gear exactly, but redraw it in the story's art style (not the drawing's medium or line), posed as the description says. A drawing, not a real person:";
 export const SCENE_LABEL = "Earlier image from the same story — match its art style, not its composition or poses:";
 export const STYLE_LABEL = "Reference image of something ELSE from the same story — match only its art style, not its subject:";
 
@@ -75,7 +77,8 @@ CHECK FOR:
 - PROMPT MISMATCH: the main subject, action, or setting described in the prompt is missing or wrong.
 - REFERENCE MATCH: each character must match their CHARACTER PORTRAIT (face, build, hair and facial hair color, clothing); the setting must keep the LOCATION reference's landmarks, architecture and materials (any camera angle is fine); each key object must match its PROP reference (shape, materials, colors, markings). A different-looking person, place or object in their stead is an issue.
 - CONTINUITY: the overall art style must match the other reference images.
-- REAL PERSON: any figure that looks like a recognizable real person, actor, or celebrity — EXCEPT a real cast member: a character given as a REAL PHOTO or a CAST MEMBER PORTRAIT is meant to look like that person. For those, check the opposite: they must be recognizably the person (or animal) in the reference — face and features, build, coloring; for an animal, breed, coat and markings. A likeness that drifts away from them is an issue.
+- REAL PERSON: any figure that looks like a recognizable real person, actor, or celebrity — EXCEPT a real cast member: a character given as a REAL PHOTO or a CAST MEMBER PORTRAIT is meant to look like that person. For those, check the opposite: they must be recognizably the person (or animal) in the reference — face and features, build, coloring; for an animal, breed, coat and markings. A likeness that drifts away from them is an issue. An AUTHOR'S DESIGN is a drawing, not a real person: matching it is intended.
+- DESIGN MATCH: a portrait given an AUTHOR'S DESIGN must follow it — hair and facial hair, colouring, face, build, clothing and its colours, and gear — redrawn in the ART STYLE. A missing signature feature (a beard, bare feet, a weapon), a wrong colour, or copying the drawing's own medium and line instead of the ART STYLE is an issue.
 - AUTHOR DIRECTION: if given, the image must satisfy it (it is the author's explicit instruction for every image).
 - STYLE: if an ART STYLE is given, the image must be rendered in it (medium, palette, line, level of realism). A different medium or a jump in realism is an issue.
 - STAGING: the prompt describes motion or a decisive action, but the figures are stiff — standing still, posed, facing the camera like a portrait, or copying a reference portrait's pose — or the shot ignores the camera angle the prompt names. A flat, lifeless version of an action prompt is an issue.
@@ -96,6 +99,7 @@ export interface ArtJob {
   ref?: { kind: VisualRefKind; id: string };  // set for canonical reference images
   photos?: string[];      // a cast member's portrait: their photos (run-relative), passed as input images
   photoKey?: string;      // what the photos are (the cast hash) — a skip key
+  design?: boolean;       // the photos are the author's drawing of the character, not a real person
   // What the image shows, whose references to pass (shots and cover).
   characters?: string[];
   location?: string;
@@ -118,13 +122,16 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
   }
   const order: Record<VisualRefKind, number> = { character: 0, location: 1, prop: 2 };
   const cast = castCharacters(events);
+  const characters = replay(events).characters;
   const refJobs: ArtJob[] = readVisualRefs(events)
     .sort((a, b) => order[a.kind] - order[b.kind] || a.id.localeCompare(b.id))
     .map((r) => {
       const member = r.kind === "character" ? cast[r.id] : undefined;
+      // A real cast member's photos win over a drawing.
+      const design = r.kind === "character" && !member ? characters[r.id]?.reference : undefined;
       return {
         key: refKey(r.kind, r.id), prompt: r.prompt, ref: { kind: r.kind, id: r.id },
-        ...(member ? { photos: member.photos, photoKey: member.hash } : {})
+        ...(member ? { photos: member.photos, photoKey: member.hash } : design ? { photos: [design.file], photoKey: `design:${design.hash}`, design: true } : {})
       };
     });
   const refIds = (kind: VisualRefKind) => new Set(refJobs.filter((j) => j.ref!.kind === kind).map((j) => j.ref!.id));
@@ -317,8 +324,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   // gets two earlier references, for style only.
   const referencesFor = async (job: ArtJob): Promise<Image[]> => {
     if (job.ref) {
-      // A cast member's portrait is drawn from their photos.
-      const photos = await Promise.all((job.photos ?? []).slice(0, 3).map(async (p) => ({ ...(await shrink(await loadImage(join(opts.runDir, p)), referenceSize)), label: CAST_PHOTO_LABEL })));
+      // A cast member's portrait is drawn from their photos; a designed character's from the author's drawing.
+      const photos = await Promise.all((job.photos ?? []).slice(0, 3).map(async (p) => ({ ...(await shrink(await loadImage(join(opts.runDir, p)), referenceSize)), label: job.design ? AUTHOR_DESIGN_LABEL : CAST_PHOTO_LABEL })));
       // Style: the first reference (rendered on its own first), so references made in parallel still match.
       const anchor = refs.values().next().value as Image | undefined;
       return [...photos, ...(anchor ? [{ ...anchor, label: STYLE_LABEL }] : [])];
@@ -598,6 +605,7 @@ export class GeminiInspector implements Inspector {
       const kind = ref.label === PORTRAIT_LABEL ? "CHARACTER PORTRAIT"
         : ref.label === CAST_PORTRAIT_LABEL ? "CHARACTER PORTRAIT — CAST MEMBER (a real person; likeness intended)"
         : ref.label === CAST_PHOTO_LABEL ? "REAL PHOTO of the cast member this portrait must depict"
+        : ref.label === AUTHOR_DESIGN_LABEL ? "AUTHOR'S DESIGN — the author's drawing of this character; the portrait must follow it (not a real person)"
         : ref.label === LOCATION_LABEL ? "LOCATION" : ref.label === PROP_LABEL ? "PROP" : "art style only";
       parts.push({ text: `REFERENCE IMAGE — ${kind}:` });
       parts.push(imagePart(ref));
