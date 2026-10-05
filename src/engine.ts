@@ -604,6 +604,16 @@ export function storyMentions(bible: Bible, events: StoryEvent[], ids: string[],
 // returns, so later batches see the looks already set and a failure keeps them.
 const REF_BATCH = 3;
 
+// Canonical looks minus the references being remade ("kind:id" in redo).
+export function withoutRemade(looks: RefAppearances, redo: ReadonlySet<string>): RefAppearances {
+  const drop = (kind: string, rec: Record<string, unknown>) => Object.fromEntries(Object.entries(rec).filter(([id]) => !redo.has(`${kind}:${id}`)));
+  return {
+    characters: drop("character", looks.characters) as RefAppearances["characters"],
+    locations: drop("location", looks.locations) as RefAppearances["locations"],
+    props: drop("prop", looks.props) as RefAppearances["props"]
+  };
+}
+
 async function directReferences(
   role: Role,
   bible: Bible,
@@ -646,7 +656,9 @@ async function directReferences(
       mentions: storyMentions(bible, log.events, ids),
       // The full text is only needed to find props; the other batches get mentions.
       storyText: b.props ? storyText : [],
-      appearances: refAppearances(log.events),
+      // A reference being remade is not held to its old look: the author's sheet
+      // (and the story) decide it now, or a sheet edit could never change a face.
+      appearances: withoutRemade(refAppearances(log.events), redo),
       cast: castCharacters(log.events),
       artStyle: storyArtStyle(log.events)
     });
