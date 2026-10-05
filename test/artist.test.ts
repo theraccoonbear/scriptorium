@@ -473,3 +473,17 @@ test("no name reaches the image model: the story's people and places, and anyone
   assert.ok(!/Liam|McPoyle|Howling|Dinklage/.test(backend.calls[0].prompt), "the image model never sees a name");
   assert.equal(seen.length, 1, "and the run says what it removed");
 });
+
+test("a changed art style reaches prompts written before the change: the old style text is swapped for the current one", async () => {
+  const { buildArtJobs } = await import("../src/artist.ts");
+  const events = [
+    { seq: 0, type: "art_style", ts: "t", data: { style: "Photoreal, real actors in costume.", source: "author" } },
+    { seq: 1, type: "visual_ref", ts: "t", data: { kind: "character", id: "carbert", appearance: "a", prompt: "Portrait of a porter. Photoreal, real actors in costume." } },
+    { seq: 2, type: "art_style", ts: "t", data: { style: "Photoreal, ordinary people with original faces.", source: "author" } },
+    { seq: 3, type: "visual_ref", ts: "t", data: { kind: "character", id: "liam", appearance: "a", prompt: "Portrait of a halfling. Photoreal, ordinary people with original faces." } }
+  ];
+  const jobs = buildArtJobs(events as never);
+  assert.equal(jobs.find((j) => j.key === "character-carbert")!.prompt, "Portrait of a porter. Photoreal, ordinary people with original faces.");
+  assert.equal(jobs.find((j) => j.key === "character-liam")!.prompt, "Portrait of a halfling. Photoreal, ordinary people with original faces.");
+  assert.ok(jobs.every((j) => !j.prompt.includes("real actors")));
+});

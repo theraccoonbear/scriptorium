@@ -168,7 +168,23 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
       ...(props.length > 0 ? { props } : {})
     });
   }
-  return [...refJobs, ...jobs];
+  return withCurrentStyle([...refJobs, ...jobs], events);
+}
+
+// The art director writes the art style verbatim into every prompt. When the
+// style changes, a prompt written before the change still carries the old
+// text, which would fight the new one. Swap any earlier style for the current
+// one, so a style change reaches every image that isn't approved.
+export function withCurrentStyle(jobs: ArtJob[], events: StoryEvent[]): ArtJob[] {
+  const styles = events.filter((e) => e.type === "art_style").map((e) => (e.data as { style?: string }).style?.trim()).filter((x): x is string => Boolean(x));
+  const current = styles.at(-1);
+  const old = [...new Set(styles.slice(0, -1))].filter((x) => x !== current).sort((a, b) => b.length - a.length);
+  if (!current || old.length === 0) return jobs;
+  return jobs.map((j) => {
+    let prompt = j.prompt;
+    for (const o of old) if (prompt.includes(o)) prompt = prompt.split(o).join(current);
+    return prompt === j.prompt ? j : { ...j, prompt };
+  });
 }
 
 export function extensionFor(mimeType: string): string {
