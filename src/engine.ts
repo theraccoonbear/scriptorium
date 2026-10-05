@@ -1,6 +1,5 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
-import { mulberry32, pick } from "./rng.ts";
 import type { ArtDirection } from "./roles.ts";
 import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
 import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./audiobook.ts";
@@ -33,22 +32,28 @@ import type {
 import { CRITIC_MODES } from "./types.ts";
 import { castCharacters } from "./cast.ts";
 
-export const COMPLICATIONS = [
-  "An ally withholds a crucial fact.",
-  "A resource runs out at the worst moment.",
-  "Someone arrives who should not be here.",
-  "A plan works, but with a cost nobody priced in.",
-  "An old promise is called in.",
-  "The environment turns hostile.",
-  "A secret is exposed to the wrong person.",
-  "Two goals collide and only one can be served."
-];
-
-// Rise to a peak around 75% of the story, then fall toward resolution. Returns 1..10.
+// The fallback arc, used only where neither the author nor the creator set a
+// scene's tension: rise to a peak around 75% of the story, then fall. 1..10.
 export function tensionAt(index: number, total: number): number {
   const x = (index + 0.5) / total;
   const level = x < 0.75 ? x / 0.75 : 1 - ((x - 0.75) / 0.25) * 0.6;
   return Math.max(1, Math.round(1 + level * 9));
+}
+
+// Each scene's tension target: the author's pin, else the creator's arc, else the fallback.
+export function planArc(total: number, pins: ReadonlyArray<number | null> | undefined, planned: ReadonlyArray<number | null> | undefined): number[] {
+  return Array.from({ length: total }, (_, i) => pins?.[i] ?? planned?.[i] ?? tensionAt(i, total));
+}
+
+// The turns the story has already made, scene by scene (a run written before
+// turns has the complication each scene was given instead).
+export function storyTurns(events: StoryEvent[]): string[] {
+  return events
+    .filter((e) => e.type === "scene_committed")
+    .map((e) => e.data as SceneCommittedData)
+    .sort((a, b) => a.index - b.index)
+    .map((d) => d.beat?.turn?.trim() || d.complication || "")
+    .filter(Boolean);
 }
 
 // Each role's prompt and response, numbered in order, go in the run's threads/
@@ -173,12 +178,12 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
 
   while (bible.sceneCount < total) {
     const i = bible.sceneCount;
-    const rng = mulberry32((config.rngSeed ?? 1) * 1000 + i);
     const isFinal = i === total - 1;
-    const tension = tensionAt(i, total);
-    const complication = isFinal
-      ? "Resolve the central conflict. No new complications."
-      : pick(COMPLICATIONS, rng);
+    // Scene 1's tension comes from the arc the creator is about to plan (unless the author pinned it).
+    const creating = i === 0 && bible.sceneCount === 0;
+    let tension = planArc(total, config.tension, bible.arc)[i];
+    const turn = config.turns?.[i]?.trim() || undefined;
+    const earlierTurns = storyTurns(log.events);
     // With an author's plan, setups are paid where the plan pays them: an
     // unexplained detail may stay unexplained on purpose, so none is overdue.
     const overdue = config.context
@@ -187,7 +192,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       ? bible.ledger
       : bible.ledger.filter((s) => i - s.openedAt >= overdueAfter);
 
-    console.error(`[scriptorium] ${c.blue(c.bold(`scene ${i + 1}/${total}`))} tension=${c.yellow(String(tension))}`);
+    console.error(`[scriptorium] ${c.blue(c.bold(`scene ${i + 1}/${total}`))} tension=${c.yellow(creating && config.tension?.[0] == null ? "from the creator's arc" : String(tension))}${turn ? c.dim(` · the author's turn: ${turn}`) : ""}`);
     let t0 = Date.now();
     let beat!: RoleOutput<Beat>;
     let createdBible: Bible | null = null;
@@ -249,14 +254,17 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         gen: async (issues, fresh, generation) => {
           t0 = Date.now();
           if (i === 0 && bible.sceneCount === 0) {
-            const out = await createAndDirect(roles.director, { sceneIndex: i, total, tension, complication, world, premise: config.premise || undefined, context: config.context, issues, fresh });
+            const out = await createAndDirect(roles.director, { sceneIndex: i, total, arc: config.tension, turn, world, premise: config.premise || undefined, context: config.context, issues, fresh });
             createdBible = out.bible;
             bible = { ...baseBible, ...createdBible };
+            const arc = planArc(total, config.tension, createdBible.arc);
+            tension = arc[0];
+            console.error(`[scriptorium]   ${c.dim(`arc: ${arc.join(" ")}`)}`);
             beat = { result: out.beat, prompt: out.prompt, system: out.system, raw: out.raw };
             recordTiming("director", Date.now() - t0);
             if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "creator" : `creator-g${generation}`, beat);
           } else {
-            beat = await direct(roles.director, { bible, sceneIndex: i, total, tension, complication, overdue, context: config.context, issues, fresh });
+            beat = await direct(roles.director, { bible, sceneIndex: i, total, tension, turn, earlierTurns, overdue, context: config.context, issues, fresh });
             recordTiming("director", Date.now() - t0);
             if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "director" : `director-g${generation}`, beat);
           }
@@ -264,7 +272,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         },
         gate: async (beatOut) => {
           t0 = Date.now();
-          const g = await reviewBeat(beatGateRole, { bible, beat: beatOut.result, sceneIndex: i, total, tension, complication, overdue, context: config.context });
+          const g = await reviewBeat(beatGateRole, { bible, beat: beatOut.result, sceneIndex: i, total, tension, turn, earlierTurns, overdue, context: config.context });
           recordTiming("beatgate", Date.now() - t0);
           if (runDir) await writeRoleOutput(runDir, ++seq, "beatgate", g);
           return { ok: g.result.ok, issueList: g.result.issues };
@@ -491,7 +499,6 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       const data: SceneCommittedData = {
         index: i,
         tension,
-        complication,
         beat: beat.result,
         prose,
         patch: archOut.result,

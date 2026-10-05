@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BATCH_PAUSE_NOTE, batchPrompt, planBatches, splitOnSilences, splitProblem, voiceBatch } from "../src/geminiBatch.ts";
 import { parseScene, scenePieces, voiceSceneBatches } from "../src/audiobook.ts";
-import { designRun, paletteToneFor, tagRun, sceneTags, proseHash, NARRATOR_TONES } from "../src/tagging.ts";
+import { designRun, paletteToneFor, tagRun, sceneTags, proseHash } from "../src/tagging.ts";
+import { PALETTE_SYSTEM } from "../src/roles.ts";
 import { EventLog } from "../src/eventlog.ts";
 import { emptyBible } from "../src/bible.ts";
 import type { Role } from "../src/types.ts";
@@ -109,7 +110,7 @@ test("palettes are designed from the whole script; tagging picks each line's ton
     const task = (req.ctx as { task: string }).task;
     assert.equal(req.role, "voicedirector");
     prompts[task].push(req.prompt);
-    if (task === "palette") return JSON.stringify({ palettes: { nell: ["low, furious", "pleading"], corin: ["bright, deflecting"] } });
+    if (task === "palette") return JSON.stringify({ palettes: { narrator: ["dry, unhurried", "close and low"], nell: ["low, furious", "pleading"], corin: ["bright, deflecting"] } });
     const n = (req.ctx as { paragraphs: string[] }).paragraphs.length;
     // Scene 1: Corin (tone 0), Nell (tone 0), narration tagged nell by mistake (tone 1). Scene 2: Nell pleading.
     return JSON.stringify({ paragraphs: n === 3
@@ -118,7 +119,8 @@ test("palettes are designed from the whole script; tagging picks each line's ton
   } } };
   const palette = await designRun(log, role, 2);
   assert.match(prompts.palette[0], /=== SCENE 1 ===[\s\S]*=== SCENE 2 ===/, "the whole script, in one call");
-  assert.deepEqual(palette.speakers, { narrator: { tones: NARRATOR_TONES }, nell: { tones: ["low, furious", "pleading"] }, corin: { tones: ["bright, deflecting"] } });
+  assert.deepEqual(palette.speakers, { narrator: { tones: ["dry, unhurried", "close and low"] }, nell: { tones: ["low, furious", "pleading"] }, corin: { tones: ["bright, deflecting"] } }, "the narrator's palette is designed from the script too");
+  assert.ok(PALETTE_SYSTEM.includes(`"narrator"`) && PALETTE_SYSTEM.includes("home register"));
   assert.equal(await designRun(log, role, 2), palette, "designed once per script");
   assert.equal(prompts.palette.length, 1);
 
@@ -129,8 +131,8 @@ test("palettes are designed from the whole script; tagging picks each line's ton
   assert.equal(tone(0, 1, "nell"), "low, furious");
   assert.equal(tone(1, 0, "nell"), "pleading");
   assert.equal(tone(0, 2, "nell"), undefined, "the quote check made the third paragraph narrator, so Nell's tone index is dropped");
-  assert.equal(tone(0, 2, "narrator"), NARRATOR_TONES[0], "narration reads in the narrator's neutral tone");
-  assert.equal(tone(0, 1, "narrator"), NARRATOR_TONES[0], "narration around Nell's quote doesn't take her tone");
+  assert.equal(tone(0, 2, "narrator"), "dry, unhurried", "narration reads in the narrator's home register");
+  assert.equal(tone(0, 1, "narrator"), "dry, unhurried", "narration around Nell's quote doesn't take her tone");
   assert.equal(sceneTags(log.events).get(0)!.palette, palette.source);
 
   // A scene tagged without this palette is tagged again for it.

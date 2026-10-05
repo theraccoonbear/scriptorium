@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventLog } from "../src/eventlog.ts";
 import { buildRoleProviders } from "../src/providers.ts";
-import { redirectArt, runStory, tensionAt } from "../src/engine.ts";
+import { planArc, redirectArt, runStory, storyTurns, tensionAt } from "../src/engine.ts";
 import { replay } from "../src/bible.ts";
 import type { CoverArtData, SceneArtData, SceneCommittedData, VisualRefData } from "../src/types.ts";
 
@@ -52,7 +52,7 @@ test("fork copies a prefix and diverges cleanly", async () => {
   await runStory({ config, log: src, roles: buildRoleProviders(config) });
   const dst = await EventLog.fork(src.dir, 3, await tmp());
   assert.equal(replay(dst.events).sceneCount, 3);
-  await runStory({ config: { ...config, rngSeed: 99 }, log: dst, roles: buildRoleProviders(config), scenes: 5 });
+  await runStory({ config, log: dst, roles: buildRoleProviders(config), scenes: 5 });
   const a = src.events.filter((e) => e.type === "scene_committed");
   const b = dst.events.filter((e) => e.type === "scene_committed");
   for (let i = 0; i < 3; i++) {
@@ -70,11 +70,49 @@ test("resume continues where a run stopped", async () => {
   assert.equal(bible.sceneCount, 6);
 });
 
-test("tension arc rises then falls", () => {
+test("the fallback tension curve rises then falls", () => {
   const curve = Array.from({ length: 8 }, (_, i) => tensionAt(i, 8));
   const peak = curve.indexOf(Math.max(...curve));
   assert.ok(peak >= 4 && peak <= 6);
   assert.ok(curve[7] < curve[peak]);
+});
+
+// Issue #90: the arc and the turns are the story's own, and the author's pins win.
+test("the arc: the author's pins, else the creator's plan, else the fallback curve", () => {
+  assert.deepEqual(planArc(4, [2, null, null, null], [5, 6, null, 3]), [2, 6, tensionAt(2, 4), 3]);
+  assert.deepEqual(planArc(3, undefined, undefined), [0, 1, 2].map((i) => tensionAt(i, 3)));
+});
+
+test("a run follows the creator's arc and the director's turns; pinned tension and turns win; no stock complications", async () => {
+  const config = await loadConfig({ scenes: 4, tension: [null, 9, null, null], turns: [null, null, "The lamp goes out for good.", null] });
+  const log = new EventLog(await tmp());
+  const prompts: Record<string, string[]> = {};
+  const roles = buildRoleProviders(config);
+  for (const r of Object.values(roles)) {
+    if (!r) continue;
+    const inner = r.provider;
+    r.provider = { complete: async (req) => { (prompts[req.role] ??= []).push(req.prompt); return inner.complete(req); } };
+  }
+  await runStory({ config, log, roles });
+  const scenes = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);
+  // The mock creator plans 3, 5, 7, 9; the author pinned scene 2 at 9.
+  assert.deepEqual(scenes.map((d) => d.tension), [3, 9, 7, 9]);
+  assert.deepEqual(replay(log.events).arc, [3, 9, 7, 9], "the creator planned around the author's pin, and the bible keeps the arc");
+  assert.equal(scenes[2].beat.turn, "The lamp goes out for good.");
+  assert.ok(prompts.director.some((p) => p.includes("TURN (the author's, for this scene — deliver it): The lamp goes out for good.")));
+  assert.ok(prompts.director.some((p) => p.includes("EARLIER TURNS (never repeat one, even reworded):\n- scene 1: The letter is in Ada's own handwriting.")));
+  assert.ok(prompts.director.at(-1)!.includes("TURN: this is the final scene."));
+  assert.ok(Object.values(prompts).flat().every((p) => !/COMPLICATION/.test(p)), "no stock complication in any prompt");
+  assert.ok(scenes.every((d) => d.complication === undefined));
+  assert.deepEqual(storyTurns(log.events).length, 4);
+});
+
+test("an older run's turns are the complications it was given", () => {
+  const events = [
+    { seq: 0, type: "scene_committed", ts: "t", data: { index: 1, complication: "An old promise is called in.", beat: {} } },
+    { seq: 1, type: "scene_committed", ts: "t", data: { index: 0, complication: "Someone arrives.", beat: { turn: "Ada finds the letter." } } }
+  ];
+  assert.deepEqual(storyTurns(events as never), ["Ada finds the letter.", "An old promise is called in."]);
 });
 
 test("art director emits one scene_art per scene and one cover_art, without touching canon", async () => {
