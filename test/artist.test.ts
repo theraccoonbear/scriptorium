@@ -423,3 +423,53 @@ test("triage only retakes images with a clear mistake (severity 5 by default, co
   assert.equal(await triaged({}), 1, "only the 6: a 3 and a 4 are usable");
   assert.equal(await triaged({ retakeAbove: 3 }), 3);
 });
+
+// A lookalike rejection names the real person; that name must never reach the
+// image model, which draws toward any name it reads ("not resembling X" included).
+test("retake prompts never name a real person: a revised prompt that does is dropped, and issues go in with names removed", async () => {
+  const { retakeFor, namesIn, INSPECTOR_SYSTEM: SYSTEM } = await import("../src/artist.ts");
+  const issues = ["The figure strongly resembles real actor Mads Mikkelsen.", "Only five legs are visible."];
+  assert.deepEqual(namesIn(issues), ["Mads Mikkelsen"]);
+  const dropped = retakeFor("Portrait of a porter.", "Portrait of a porter strictly not resembling Mads Mikkelsen.", issues);
+  assert.ok(!dropped.includes("Mikkelsen"), "the revised prompt that names him is thrown out");
+  assert.ok(dropped.startsWith("Portrait of a porter.") && dropped.includes("- A face resembled a real person.") && dropped.includes("- Only five legs are visible."));
+  assert.ok(dropped.includes("Every face is entirely original"));
+  assert.equal(retakeFor("P", "A gaunt, narrow, freckled face; seven legs.", issues), "A gaunt, narrow, freckled face; seven legs.", "a clean revision is kept");
+  const fallback = retakeFor("P", undefined, ["The face closely resembles actor Peter Dinklage, violating the direction."]);
+  assert.ok(!fallback.includes("Dinklage"));
+  assert.ok(!retakeFor("P", undefined, ["The background is wood, not plain."]).includes("entirely original"), "no lookalike, no extra line");
+  assert.ok(SYSTEM.includes("NEVER name any real person"));
+});
+
+test("renderArt: a lookalike rejection's name never reaches the next generation", async () => {
+  const { renderArt, MockImageBackend } = await import("../src/artist.ts");
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-names-"));
+  const events = [{ seq: 0, type: "visual_ref", ts: "t", data: { kind: "character", id: "liam", appearance: "a", prompt: "Portrait of a small pale man." } }];
+  let n = 0;
+  const inspector = { calls: [] as unknown[], inspect: async () => (++n === 1
+    ? { ok: false, severity: 8, issues: ["The face closely resembles actor Peter Dinklage."], revisedPrompt: "Portrait of a small pale man, not resembling Peter Dinklage." }
+    : { ok: true, severity: 0, issues: [] }) };
+  const backend = new MockImageBackend();
+  await renderArt(events as never, { runDir, backend, inspector, maxAttempts: 3, only: "references" });
+  assert.equal(backend.calls.length, 2);
+  assert.ok(backend.calls.every((c) => !c.prompt.includes("Dinklage")), "no generation ever sees the name");
+});
+
+test("no name reaches the image model: the story's people and places, and anyone named as a lookalike, are stripped from every prompt", async () => {
+  const { stripNames, storyNames, renderArt, MockImageBackend } = await import("../src/artist.ts");
+  const events = [
+    { seq: 0, type: "scene_committed", ts: "t", data: { index: 0, bible: { characters: { liam: { id: "liam", name: "Liam McPoyle" }, x: { id: "x", name: "Unknown Elf Woman" }, troll: { id: "troll", name: "Troll" } }, locations: { hen: { id: "hen", name: "The Howling Hen" } } } } },
+    { seq: 1, type: "visual_ref", ts: "t", data: { kind: "character", id: "liam", appearance: "a", prompt: "Liam McPoyle stands in the Howling Hen, strictly not resembling Peter Dinklage." } }
+  ];
+  const names = storyNames(events as never);
+  assert.deepEqual(names.map((n) => n.name), ["Liam McPoyle", "Howling Hen", "McPoyle", "Liam"], "full names and name parts; generic entries skipped");
+  const out = stripNames("Liam's bathrobe. Liam McPoyle stands in the Howling Hen, strictly not resembling Peter Dinklage.\n\nA troll.", names);
+  assert.equal(out.text, "their bathrobe. the figure stands in the place, with an original face.\n\nA troll.");
+  assert.deepEqual(out.removed.sort(), ["Howling Hen", "Liam McPoyle", "Liam's", "strictly not resembling Peter Dinklage"].sort());
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-gate-"));
+  const backend = new MockImageBackend();
+  const seen: string[][] = [];
+  await renderArt(events as never, { runDir, backend, only: "references", onProgress: (e) => { if (e.type === "names_removed") seen.push(e.names); } });
+  assert.ok(!/Liam|McPoyle|Howling|Dinklage/.test(backend.calls[0].prompt), "the image model never sees a name");
+  assert.equal(seen.length, 1, "and the run says what it removed");
+});

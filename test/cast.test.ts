@@ -141,7 +141,8 @@ test("cast preview describes the cast into the run and renders one portrait each
     ["Biscuit", "cast/preview/biscuit.png", true]
   ]);
   assert.deepEqual(backend.calls.map((c) => c.references.map((r) => r.label)), [[CAST_PHOTO_LABEL], [CAST_PHOTO_LABEL, CAST_PHOTO_LABEL]]);
-  assert.match(backend.calls[0].prompt, /Don Smith: mock appearance.*Dressed and equipped for the story as: a dwarf in chainmail\./);
+  assert.match(backend.calls[0].prompt, /mock appearance.*Dressed and equipped for the story as: a dwarf in chainmail\./);
+  assert.ok(!/Don|Smith/.test(backend.calls[0].prompt), "a cast member's name never reaches the image model");
   assert.equal(backend.calls[0].style, "Oil painting.");
   assert.equal(backend.calls[0].aspectRatio, "3:4");
   // The casting is recorded in the run, so the story reuses it instead of describing everyone again.
