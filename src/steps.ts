@@ -10,6 +10,8 @@ import { geminiSpeaker } from "./geminiTts.ts";
 import { renderVoiceSamples } from "./voiceSamples.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
+import { prepareTitles } from "./titles.ts";
+import type { TitleSettings } from "./titles.ts";
 import type { EncoderChoice } from "./video.ts";
 import { BatchImageBackend, CAST_PHOTO_LABEL, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig } from "./artist.ts";
 import type { ImageBackend, Inspector, Shrink } from "./artist.ts";
@@ -421,14 +423,36 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
 export interface VideoStepOptions {
   encoder?: EncoderChoice;
   parallel?: number;
+  titles?: TitleSettings | false;   // false: the plain cut, no cards
+  title?: string;
+  subtitle?: string;
+  series?: { next?: string };
+  contextPaths?: string[];          // the author's plan, for scene titles
+  base?: string;                    // where relative font paths resolve
+  gemini?: boolean;                 // the audiobook spoke with Gemini voices
+  geminiModel?: string;             // for the narrated title
 }
 
 export async function videoStep(runDir: string, events: StoryEvent[], force: boolean | undefined, opts: VideoStepOptions = {}) {
+  const titles = opts.titles === false ? undefined : await prepareTitles(events, {
+    runDir,
+    title: opts.title,
+    subtitle: opts.subtitle,
+    series: opts.series,
+    settings: opts.titles,
+    contextPaths: opts.contextPaths,
+    gemini: opts.gemini,
+    base: opts.base,
+    speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}) }),
+    onNote: (m) => console.error(`[scriptorium] ${c.dim(m)}`)
+  });
+  if (titles?.sceneCards) console.error(`[scriptorium] ${c.dim(`scene titles: ${Object.values(titles.sceneTitles).map((t) => t || "—").join(" · ")} (edit ${join(runDir, "video", "titles.json")})`)}`);
   const result = await renderVideo(events, {
     runDir,
     force,
     encoder: opts.encoder,
     parallel: opts.parallel,
+    titles,
     onProgress: (event) => {
       if (event.type === "encoder") console.error(`[scriptorium] ${c.dim(`encoding with ${event.encoder === "nvenc" ? "NVENC (GPU)" : "x264 (CPU)"}, ${event.parallel} scene${event.parallel === 1 ? "" : "s"} at a time`)}`);
       else if (event.type === "warning") console.error(`[scriptorium] ${c.retry(event.message)}`);

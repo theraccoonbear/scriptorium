@@ -244,11 +244,41 @@ It needs `ffmpeg` on the `PATH`.
 
 **Timing:** each shot comes on screen when the narration reaches its paragraph, and holds until the next one. A shot held longer than 25 seconds gets several moves on its image. Shots that would show for under 6 seconds are dropped.
 
-**Movement:** each shot gets an eased Ken Burns move: a zoom in or out, a pan, or a push toward one side. Consecutive shots never repeat a move, and shots crossfade over 1.5 seconds. The cover opens the video for 6 seconds, and a 1.5-second black pause separates scenes.
+**Movement:** each shot gets an eased Ken Burns move: a zoom in or out, a pan, or a push toward one side. Consecutive shots never repeat a move, and shots crossfade over 1.5 seconds.
 
-**Sync:** everything is frame-exact at 30 fps, so the pictures can't drift from the voice.
+**Titles and cards:** the video opens on the cover, slowly pushing in, with the story's title fading up over it (8 seconds). Each scene fades to black, then gets a card ("II" over "The Howling Hen"), then fades up. The last shot holds after the narration ends. The video closes on "The End" (or "To be continued" for a series chapter), credit cards naming each speaking character and their voice, and a "Next:" card for a series. Text is drawn in EB Garamond, with Cinzel for the title and the ending; both are bundled in `assets/fonts/` under the SIL Open Font License.
 
-**Rendering:** the plan is written to `video/timeline.json` first, along with warnings, such as images the inspector never accepted. Each scene renders in one ffmpeg pass, several scenes at once (`--parallel`, default 3). Encoding uses NVIDIA's hardware encoder (NVENC) when available, about 3× faster than x264 at the same size and quality, and falls back to x264 (`--encoder auto|nvenc|x264`; a story file's `video` block takes the same options). Intermediate files go in `video/parts/` and are cached.
+**Scene titles:** the first source with a title wins:
+
+1. `video.titles.sceneTitles` in the story file.
+2. The author's plan: lines like `Scene 2 — The pardon (the cell, dawn)` in the context files.
+3. The title the director gave the scene's beat.
+
+A scene with no title gets its numeral alone. The titles in use are written to `video/titles.json`. Edit a `title` there and the edit sticks; untouched entries follow their sources.
+
+```jsonc
+{
+  "title": "Rantoul's Mushrooms",     // the opening; no title, no text over the cover
+  "subtitle": "Part 1",
+  "series": { "next": "Part 2" },     // a chapter: ends "To be continued", then "Next: Part 2"
+  "video": {
+    "titles": {                       // or false: the plain cut (cover, scenes, black pauses)
+      "narrate": false,               // the narrator reads the title (one Gemini TTS line; default off)
+      "sceneTitles": true,            // true (auto), false (no scene cards) or a list in scene order
+      "credits": true,
+      "ending": "The End",            // or false; default by "series"
+      "font": "EB Garamond",          // a bundled font, a system family or a .ttf/.otf path
+      "titleFont": "Cinzel"
+    }
+  }
+}
+```
+
+The narrated title needs the audiobook's Gemini narrator, and is cached in `video/title.wav` until the words or the voice change. The opening stretches to fit it.
+
+**Sync:** everything is laid out in whole frames at 30 fps from one list of parts (`video/timeline.json`), and the narration track and subtitles follow the same list, so the pictures can't drift from the voice. Each scene gets a short pad after its narration so its fade to black never clips the last words, and captions end with the narration. Before joining, every part's frame count is checked against the timeline. A part that comes out the wrong length stops the render and is redone on the next run. If the finished video's sound and picture end more than a frame apart, the render warns.
+
+**Rendering:** the plan is written to `video/timeline.json` first, along with warnings, such as images the inspector never accepted. Each scene renders in one ffmpeg pass, several scenes at once (`--parallel`, default 3). Encoding uses NVIDIA's hardware encoder (NVENC) when available, about 3× faster than x264 at the same size and quality, and falls back to x264 (`--encoder auto|nvenc|x264`; a story file's `video` block takes the same options). Intermediate files go in `video/parts/` and are cached: a changed scene title re-renders that one card, then the join.
 
 ## Configure
 

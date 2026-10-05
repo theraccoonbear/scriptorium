@@ -48,7 +48,7 @@ Output ONLY JSON with this shape:
   "locations":[{"id":string,"name":string,"description":string}],
   "objects":[{"id":string,"name":string,"description":string,"owner":characterId}],
   "threads":[{"id":string,"title":string,"status":"open"}],
-  "beat":{"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[]}
+  "beat":{"title":string,"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[]}
 }
 art_style: how this world is portrayed in pictures, decided with the tone — one or two sentences naming the medium and rendering (e.g. gouache illustration, ink and watercolor, oil painting, woodcut), palette, light, line quality, level of detail, and mood. Specific enough that two illustrators would produce images that look like the same book. Suited to this story's genre and tone; never name a living artist.
 Each character needs a distinct voice that will guide the Writer.
@@ -56,6 +56,7 @@ vocal: how the character SOUNDS, for casting the audiobook — apparent age, pit
 objects: the story's KEY OBJECTS — signature items a character carries or uses, or things the plot turns on (an instrument, a relic, a letter). Usually 0-3. The description is canon for every later scene and image, so make it physically exact and true to what that kind of object really is: overall size AND width or thickness at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"), shape, materials, and how it is held or used. A real-world kind of object (an alpenhorn, a longbow) must have that object's real form and handling unless the premise deliberately changes it.
 Give each character's gender as "female" or "male" when the story has one in mind; use "" for unspecified, non-binary, or genderless characters. It picks their audiobook narration voice.
 The beat is the first scene. Payoffs must be empty (no prior setups exist).
+The beat's title is the scene's title, shown on its title card in the video — two to five words, no spoilers. If the STORY CONTEXT names this scene ("Scene 1 — The ditch"), use that name.
 Create the premise, setting, and cast that make the best story — one character, five, whatever serves it.
 You will be given character names and location names — use them exactly, do not invent new ones.
 Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.
@@ -64,6 +65,7 @@ ${BEAT_CRAFT}`;
 export const DIRECTOR_SYSTEM = `You are the Director of a procedurally generated story. You never write prose.
 Plan the next scene as a beat spec. Output ONLY JSON with this shape:
 {"goal":string,"conflict":string,"pov":characterId,"location":string,"mustReveal":string,"constraints":[string],"payoffs":[setupId]}
+title: the scene's title, shown on its title card in the video — two to five words, no spoilers. If the STORY CONTEXT names this scene ("Scene 2 — The pardon"), use that name.
 Honor the tension target and the required complication. Every overdue setup must appear in payoffs.
 Never contradict the bible.
 Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.

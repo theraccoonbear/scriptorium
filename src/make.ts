@@ -17,6 +17,7 @@ import { c } from "./colors.ts";
 import { CRITIC_MODES } from "./types.ts";
 import type { StoryConfig, StoryEvent } from "./types.ts";
 import type { CastMember } from "./cast.ts";
+import type { TitleSettings } from "./titles.ts";
 import { GEMINI_MODES } from "./geminiBatch.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 
@@ -30,6 +31,9 @@ export interface StoryFile {
   out: string;                         // the run directory (fixed — no timestamp)
   premise?: string;
   setting?: string;
+  title?: string;                      // the story's title, for the video's opening ("Rantoul's Mushrooms")
+  subtitle?: string;                   // beneath it ("Part 1")
+  series?: { next?: string };          // a chapter of a series: ends "To be continued", and "Next: <next>"
   context?: string | string[];         // one or more context files
   scenes?: number;
   maxAttempts?: number | "unlimited";
@@ -55,7 +59,11 @@ export interface StoryFile {
     castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
     designVoices?: string[];                     // character ids to give a designed voice
   };
-  video?: { encoder?: "auto" | "nvenc" | "x264"; parallel?: number };
+  video?: {
+    encoder?: "auto" | "nvenc" | "x264";
+    parallel?: number;
+    titles?: TitleSettings | false;    // the cards: opening title, scene cards, ending, credits (default on)
+  };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
   budget?: { usd: number };            // stop before spending more than this on the run
   // How art and audio run: "audio-first" (default: voicing is cheap and listening
@@ -78,6 +86,9 @@ export interface ResolvedStory {
   runDir: string;
   premise?: string;
   setting?: string;
+  title?: string;
+  subtitle?: string;
+  series?: { next?: string };
   contextPaths: string[];
   scenes?: number;
   maxAttempts?: number;
@@ -138,6 +149,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     if (!m?.name || !m.photos || (Array.isArray(m.photos) && m.photos.length === 0)) throw new Error(`${path}: every cast member needs a "name" and at least one photo in "photos"`);
     return { name: m.name, photos: (Array.isArray(m.photos) ? m.photos : [m.photos]).map(at), ...(m.notes ? { notes: m.notes } : {}) };
   });
+  checkVideoTitles(path, raw);
   if (raw.stepOrder !== undefined && !(STEP_ORDERS as readonly string[]).includes(raw.stepOrder)) {
     throw new Error(`${path}: "stepOrder" must be one of ${STEP_ORDERS.join(", ")}`);
   }
@@ -150,6 +162,9 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     runDir: at(raw.out),
     premise: raw.premise,
     setting: raw.setting,
+    title: raw.title,
+    subtitle: raw.subtitle,
+    series: raw.series,
     contextPaths: contexts.map(at),
     scenes: raw.scenes,
     maxAttempts: attempts,
@@ -157,6 +172,28 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     audiobook: raw.audiobook?.castingFile ? { ...raw.audiobook, castingFile: at(raw.audiobook.castingFile) } : raw.audiobook ?? {},
     video: raw.video ?? {}
   };
+}
+
+function checkVideoTitles(path: string, raw: StoryFile) {
+  for (const k of ["title", "subtitle"] as const) {
+    if (raw[k] !== undefined && typeof raw[k] !== "string") throw new Error(`${path}: "${k}" must be a string`);
+  }
+  if (raw.series !== undefined && (typeof raw.series !== "object" || (raw.series.next !== undefined && typeof raw.series.next !== "string"))) {
+    throw new Error(`${path}: "series" must look like { "next": "Part 2" }`);
+  }
+  const t = raw.video?.titles;
+  if (t === undefined || t === false) return;
+  if (typeof t !== "object" || t === null) throw new Error(`${path}: video "titles" must be false or { opening, narrate, sceneTitles, credits, ending, font, titleFont }`);
+  for (const k of ["opening", "narrate", "credits"] as const) {
+    if (t[k] !== undefined && typeof t[k] !== "boolean") throw new Error(`${path}: video titles "${k}" must be true or false`);
+  }
+  if (t.sceneTitles !== undefined && typeof t.sceneTitles !== "boolean" && !(Array.isArray(t.sceneTitles) && t.sceneTitles.every((x) => typeof x === "string"))) {
+    throw new Error(`${path}: video titles "sceneTitles" must be true, false or a list of titles`);
+  }
+  if (t.ending !== undefined && t.ending !== false && typeof t.ending !== "string") throw new Error(`${path}: video titles "ending" must be text (e.g. "The End") or false`);
+  for (const k of ["font", "titleFont"] as const) {
+    if (t[k] !== undefined && typeof t[k] !== "string") throw new Error(`${path}: video titles "${k}" must be a font name or file`);
+  }
 }
 
 // Which steps to run: all of them, `--only a,b`, or `--from x` onward.
@@ -252,7 +289,15 @@ const defaultRunners: StepRunners = {
   // make never re-renders finished work; the individual commands take --force for that.
   art: async (s, events) => { await artStep(s.runDir, s.config, events, false); },
   audiobook: async (s, events) => { await audiobookStep(s.runDir, events, audiobookOptions(s)); },
-  video: async (s, events) => { await videoStep(s.runDir, events, false, s.video); }
+  video: async (s, events) => {
+    await videoStep(s.runDir, events, false, {
+      ...s.video,
+      title: s.title, subtitle: s.subtitle, series: s.series,
+      contextPaths: s.contextPaths, base: dirname(resolve(s.file)),
+      gemini: s.audiobook.narration === "gemini" || s.audiobook.dialogue === "gemini" ? true : undefined,
+      geminiModel: s.audiobook.geminiModel
+    });
+  }
 };
 
 function audiobookOptions(s: ResolvedStory): AudiobookStepOptions {

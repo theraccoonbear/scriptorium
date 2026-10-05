@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { audioFilterGraph, buildSrt, buildTimeline, kenBurnsFilter, moveFor, renderVideo, sceneFilterGraph } from "../src/video.ts";
-import type { Timings } from "../src/video.ts";
+import { audioFilterGraph, buildSrt, buildTimeline, cardFilterGraph, cardSpec, fitSize, kenBurnsFilter, moveFor, renderVideo, sceneFilterGraph } from "../src/video.ts";
+import type { Timeline, Timings } from "../src/video.ts";
+import type { TitleCards } from "../src/titles.ts";
 import type { ArtManifest, ManifestEntry } from "../src/artist.ts";
 import type { StoryEvent } from "../src/types.ts";
 
@@ -194,4 +195,162 @@ test("scenes render in parallel up to the limit, keep their order, and re-render
   await renderVideo(events, { runDir, run: recording, encoder: "x264", parallel: 3 });
   assert.equal(outputs.filter((o) => o.startsWith("scene-")).length, 5);
   assert.ok(outputs.includes("gap-45-x264.mp4"));
+});
+
+// ---- issue #78: cards ----
+
+const titles: TitleCards = {
+  title: "Rantoul's Mushrooms",
+  subtitle: "Part 1",
+  sceneCards: true,
+  sceneTitles: { 0: "The Ditch", 1: "" },
+  ending: "To be continued",
+  credits: [["Narrated by Algenib", "Lemuel — voiced by Achird"], ["Written, illustrated and narrated", "with Scriptorium"]],
+  next: "Next: Part 2",
+  font: "/fonts/EBGaramond.ttf",
+  titleFont: "/fonts/Cinzel.ttf"
+};
+
+test("with cards: opening, a card before each scene, a pad and a final hold, then ending, credits and next", () => {
+  const tl = buildTimeline(manifest, timings, { titles });
+  assert.deepEqual(tl.parts.map((p) => [p.kind, p.file, p.frames]), [
+    ["intro", "intro.mp4", 240],
+    ["card", "card-01.mp4", 120],
+    ["scene", "scene-01.mp4", 1800 + 23],
+    ["card", "card-02.mp4", 120],
+    ["scene", "scene-02.mp4", 600 + 23 + 60],
+    ["end", "end.mp4", 120],
+    ["credits", "credits-1.mp4", 150],
+    ["credits", "credits-2.mp4", 150],
+    ["next", "next.mp4", 105]
+  ]);
+  assert.equal(tl.totalFrames, tl.parts.reduce((n, p) => n + p.frames, 0));
+  // Every part is whole frames, and the shots still fill each scene exactly.
+  assert.ok(tl.parts.every((p) => Number.isInteger(p.frames)));
+  for (const s of tl.scenes) assert.equal(s.shots.reduce((n, x) => n + x.slotFrames, 0), s.frames);
+  assert.deepEqual(tl.scenes.map((s) => s.audioFrames), [1800, 600]);
+  // Scene cards off: the old black gap between scenes.
+  const noCards = buildTimeline(manifest, timings, { titles: { ...titles, sceneCards: false } });
+  assert.deepEqual(noCards.parts.slice(0, 4).map((p) => p.kind), ["intro", "scene", "gap", "scene"]);
+});
+
+// Where each scene's sound starts in the joined track: the frames of every part before it.
+function audioStarts(tl: Timeline): number[] {
+  const starts: number[] = [];
+  let at = 0;
+  for (const p of tl.parts) {
+    if (p.kind === "scene") starts.push(at / 30);
+    at += p.frames;
+  }
+  return starts;
+}
+
+test("sync: each scene's first caption starts exactly where its sound does, and captions end with the narration", () => {
+  const tl = buildTimeline(manifest, timings, { titles });
+  const srt = buildSrt(tl, timings, new Map([[0, ["One.", "a", "b", "c", "Last words."]], [1, ["Later.", "End."]]]));
+  const cues = srt.trim().split("\n\n").map((c) => c.split("\n")[1].split(" --> "));
+  const seconds = (t: string) => { const [h, m, rest] = t.split(":"); const [s, ms] = rest.split(","); return +h * 3600 + +m * 60 + +s + +ms / 1000; };
+  const [s1, s2] = audioStarts(tl);
+  // SRT keeps milliseconds: equal to within rounding.
+  const near = (a: number, b: number, msg?: string) => assert.ok(Math.abs(a - b) <= 0.0005, msg ?? `${a} != ${b}`);
+  near(seconds(cues[0][0]), s1);                 // 8 + 4
+  near(seconds(cues[5][0]), s2);                 // "Later."
+  assert.equal(s2, (240 + 120 + 1823 + 120) / 30);
+  near(seconds(cues[4][1]), s1 + 60, "scene 1's last caption ends with its narration, not the fade pad");
+  near(seconds(cues[6][1]), s2 + 20, "the last scene's captions end before the hold");
+
+  // The audio graph lays the same parts end to end, in the same order and lengths.
+  const graph = audioFilterGraph(tl);
+  assert.ok(graph.endsWith("[intro][card0][a0][card1][a1][end][credits1][credits2][next]concat=n=9:v=0:a=1[aout]"));
+  assert.ok(graph.includes("anullsrc=r=48000:cl=stereo,atrim=end=8[intro]"));
+  assert.ok(graph.includes("anullsrc=r=48000:cl=stereo,atrim=end=4[card1]"));
+  assert.ok(graph.includes(`[1:a]aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur=${1823 / 30},atrim=end=${1823 / 30}[a0]`));
+});
+
+test("a narrated title lengthens the opening to fit and plays under it, after the scenes' inputs", () => {
+  const narrated = { ...titles, narration: "video/title.wav" };
+  const short = buildTimeline(manifest, timings, { titles: narrated, narrationSec: 2 });
+  assert.equal(short.introFrames, 240, "a short reading fits the usual 8s");
+  const long = buildTimeline(manifest, timings, { titles: narrated, narrationSec: 6.1 });
+  assert.equal(long.introFrames, Math.ceil((1.8 + 6.1 + 2) * 30));
+  assert.equal(long.narration, "video/title.wav");
+  assert.ok(audioFilterGraph(long).includes(`[3:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=1800|1800,apad=whole_dur=${long.introFrames / 30}`));
+  // Without the WAV's length the opening stays silent.
+  assert.equal(buildTimeline(manifest, timings, { titles: narrated }).narration, undefined);
+});
+
+test("cards: what each says and when, drawn from text files, fading in and out", () => {
+  const tl = buildTimeline(manifest, timings, { titles });
+  const [intro, card1, , card2] = tl.parts;
+  const opening = cardSpec(intro, tl, titles);
+  assert.equal(opening.cover, true);
+  assert.deepEqual(opening.texts.map((t) => [t.text, t.font, t.in, t.out]), [["Rantoul's Mushrooms", "/fonts/Cinzel.ttf", 1.2, 6.8], ["Part 1", "/fonts/EBGaramond.ttf", 1.9, 6.8]]);
+  assert.deepEqual(cardSpec(card1, tl, titles).texts.map((t) => t.text), ["I", "The Ditch"]);
+  assert.deepEqual(cardSpec(card2, tl, titles).texts.map((t) => [t.text, t.y]), [["II", 540]], "no title: the numeral alone, centered");
+  const credits = cardSpec(tl.parts[6], tl, titles);
+  assert.deepEqual(credits.texts.map((t) => t.y), [500, 580]);
+
+  const files: string[] = [];
+  const graph = cardFilterGraph(opening, intro.frames, (text) => { files.push(text); return `/tmp/t/${files.length}.txt`; });
+  assert.deepEqual(files, ["Rantoul's Mushrooms", "Part 1"]);
+  assert.ok(graph.startsWith("[0:v]crop="), "the cover, pushing in");
+  assert.ok(graph.includes("drawbox=x=0:y=0:w=iw:h=ih:color=black@0.4:t=fill"), "dimmed under the title");
+  assert.ok(graph.includes("fontfile='/fonts/Cinzel.ttf':textfile='/tmp/t/1.txt':expansion=none"));
+  assert.ok(graph.includes("alpha='if(lt(t,1.2),0,if(lt(t,1.9),(t-1.2)/0.7,if(lt(t,6.1),1,if(lt(t,6.8),(6.8-t)/0.7,0))))'"));
+  assert.ok(graph.endsWith("fade=t=in:d=0.75,fade=t=out:st=7.25:d=0.75,trim=end_frame=240[out]"));
+  const black = cardFilterGraph(cardSpec(card1, tl, titles), card1.frames, () => "/tmp/x.txt");
+  assert.ok(black.startsWith("color=black:s=1920x1080:r=30:d=4,format=yuv420p,drawtext="));
+  // Long lines shrink to fit the frame.
+  assert.equal(fitSize("Short", 84, false), 84);
+  assert.ok(fitSize("Unknown Mathematics Student from Carem University — voiced by Authoritative Advisor 7", 52, false) < 52);
+});
+
+test("renderVideo with cards: renders them, joins every part in order, and checks every part's length", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-video-cards-"));
+  await mkdir(join(runDir, "art"), { recursive: true });
+  await writeFile(join(runDir, "art", "art.json"), JSON.stringify(manifest));
+  for (const e of Object.values(manifest)) await writeFile(join(runDir, "art", e.file), "img");
+  await mkdir(join(runDir, "audiobook"), { recursive: true });
+  await writeFile(join(runDir, "audiobook", "timings.json"), JSON.stringify(timings));
+  const events: StoryEvent[] = [
+    { seq: 0, type: "scene_committed", ts: "t", data: { index: 0, prose: "One." } },
+    { seq: 1, type: "scene_committed", ts: "t", data: { index: 1, prose: "Later." } }
+  ];
+  const tl = buildTimeline(manifest, timings, { titles });
+  const expected = new Map(tl.parts.map((p) => [p.file, p.frames]));
+  const outputs: string[] = [];
+  const run = async (args: string[]) => { outputs.push(args[args.length - 1].split("/").pop()!); await writeFile(args[args.length - 1], "out"); };
+  let short: string | undefined;
+  const probe = async (file: string) => {
+    const name = file.split("/").pop()!;
+    if (name === "story.mp4") return { frames: tl.totalFrames, audioSec: tl.totalFrames / 30 };
+    return { frames: expected.get(name)! - (name === short ? 1 : 0) };
+  };
+  await renderVideo(events, { runDir, run, probe, encoder: "x264", parallel: 1, titles });
+  assert.deepEqual(outputs.slice(0, 7), ["intro.mp4", "card-01.mp4", "card-02.mp4", "end.mp4", "credits-1.mp4", "credits-2.mp4", "next.mp4"]);
+  assert.equal(await readFile(join(runDir, "video", "parts", "parts.txt"), "utf8"),
+    ["intro", "card-01", "scene-01", "card-02", "scene-02", "end", "credits-1", "credits-2", "next"].map((p) => `file '${p}.mp4'`).join("\n") + "\n");
+  const textFiles = await readdir(join(runDir, "video", "parts", "text"));
+  assert.ok(textFiles.length >= 9);
+
+  // A changed scene title re-renders that one card; everything else is cached.
+  outputs.length = 0;
+  await renderVideo(events, { runDir, run, probe, encoder: "x264", parallel: 1, titles: { ...titles, sceneTitles: { 0: "The Ditch", 1: "The Howling Hen" } } });
+  assert.deepEqual(outputs, ["card-02.mp4", "story.mp4", "thumbnail.jpg"]);
+
+  // A part a frame short stops the join, and is redone next time.
+  short = "scene-02.mp4";
+  outputs.length = 0;
+  await assert.rejects(renderVideo(events, { runDir, run, probe, encoder: "x264", parallel: 1, titles }), /scene-02\.mp4 has 682 frames where the timeline needs 683/);
+  assert.ok(!outputs.includes("story.mp4"));
+  short = undefined;
+  outputs.length = 0;
+  await renderVideo(events, { runDir, run, probe, encoder: "x264", parallel: 1, titles });
+  assert.ok(outputs.includes("scene-02.mp4"));
+
+  // Picture and sound that don't end together are reported.
+  const warnings: string[] = [];
+  const drifting = async (file: string) => (file.endsWith("story.mp4") ? { frames: tl.totalFrames, audioSec: tl.totalFrames / 30 + 0.5 } : probe(file));
+  await renderVideo(events, { runDir, run, probe: drifting, encoder: "x264", parallel: 1, titles, onProgress: (e) => { if (e.type === "warning") warnings.push(e.message); } });
+  assert.ok(warnings.some((w) => w.includes("drifted apart")));
 });

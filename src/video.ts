@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,6 +6,9 @@ import { replay } from "./bible.ts";
 import { sceneParagraphs } from "./audiobook.ts";
 import type { SceneTiming } from "./audiobook.ts";
 import type { ArtManifest } from "./artist.ts";
+import { decodeWav } from "./geminiTts.ts";
+import { romanNumeral } from "./titles.ts";
+import type { TitleCards } from "./titles.ts";
 import type { SceneCommittedData, StoryEvent } from "./types.ts";
 
 // Turns a finished run (art shots + audiobook) into a narrated video: each
@@ -24,9 +27,18 @@ export interface VideoOptions {
   fadeSec?: number;     // crossfade between shots, default 1.5
   minShotSec?: number;  // shots on screen for less than this are dropped, default 6
   maxMoveSec?: number;  // a shot held longer than this gets several camera moves on its image, default 25
-  introSec?: number;    // cover card before the first scene, default 6
-  gapSec?: number;      // black pause between scenes, default 1.5
+  introSec?: number;    // cover card before the first scene, default 6 (8 with a title)
+  gapSec?: number;      // black pause between scenes without scene cards, default 1.5
+  // The cards (title, scene cards, ending, credits). Without them the video is
+  // the plain cut: cover, scenes, black between them.
+  titles?: TitleCards;
+  narrationSec?: number;  // length of the narrated title (titles.narration)
+  cardSec?: number;       // a scene card, black included, default 4
+  holdSec?: number;       // the last shot held after the narration ends, default 2
 }
+
+// When the narrated title starts within the opening.
+const NARRATION_AT = 1.8;
 
 export type Move = "zoom_in" | "zoom_out" | "pan_right" | "pan_left" | "zoom_in_left" | "zoom_in_right";
 const MOVES: Move[] = ["zoom_in", "pan_right", "zoom_out", "pan_left", "zoom_in_left", "zoom_in_right"];
@@ -44,8 +56,20 @@ export interface TimelineShot {
 export interface TimelineScene {
   index: number;
   audio: string;           // relative to the run dir
-  frames: number;          // scene length, frame-rounded from the audio
+  audioFrames: number;     // the narration, frame-rounded
+  frames: number;          // scene length: the narration plus a pad to fade out over (and the hold, last scene)
   shots: TimelineShot[];
+}
+
+// One clip of the finished video, in order. Every length is in whole frames,
+// and the picture, the sound and the subtitles are all laid out from this list.
+export type PartKind = "intro" | "gap" | "card" | "scene" | "end" | "credits" | "next";
+export interface TimelinePart {
+  kind: PartKind;
+  file: string;            // in video/parts/
+  frames: number;
+  scene?: number;          // scene: its position in scenes; card: the scene it introduces
+  page?: number;           // credits: which page
 }
 
 export interface Timeline {
@@ -53,8 +77,13 @@ export interface Timeline {
   fadeFrames: number;
   introFrames: number;
   gapFrames: number;
+  cardFrames: number;
+  padFrames: number;
+  holdFrames: number;
   cover?: string;
   scenes: TimelineScene[];
+  parts: TimelinePart[];
+  narration?: string;      // the narrated title's WAV under the opening, relative to the run dir
   totalFrames: number;
   warnings: string[];
 }
@@ -87,10 +116,17 @@ export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: Vid
     if (!e.accepted) warnings.push(`${key} (${e.file}) was never accepted by the inspector: ${e.issues.join("; ") || "no detail"}`);
   }
 
+  const titles = opts.titles;
+  // With cards, every scene gets a pad of silence to fade out over, so the
+  // fade never eats the last words; the last shot also holds after the end.
+  const padFrames = titles ? toFrames(0.75) : 0;
+  const holdFrames = titles ? toFrames(opts.holdSec ?? 2) : 0;
+  const ordered = [...timings.scenes].sort((a, b) => a.index - b.index);
   const scenes: TimelineScene[] = [];
   let previousMove: Move | undefined;
-  for (const t of [...timings.scenes].sort((a, b) => a.index - b.index)) {
-    const frames = toFrames(t.durationSec);
+  for (const [k, t] of ordered.entries()) {
+    const audioFrames = toFrames(t.durationSec);
+    const frames = audioFrames + padFrames + (k === ordered.length - 1 ? holdFrames : 0);
     const starts = t.paragraphStarts.length > 0 ? t.paragraphStarts : [0];
     const candidates = entries
       .filter(([, e]) => e.sceneIndex === t.index)
@@ -135,21 +171,45 @@ export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: Vid
       previousMove = move;
       return { ...c, slotFrames, clipFrames: k + 1 < segments.length ? slotFrames + fadeFrames : slotFrames, move };
     });
-    scenes.push({ index: t.index, audio: `audiobook/${t.file}`, frames, shots });
+    scenes.push({ index: t.index, audio: `audiobook/${t.file}`, audioFrames, frames, shots });
   }
   if (scenes.length === 0) throw new Error("timings.json has no scenes");
 
-  const introFrames = coverEntry ? toFrames(opts.introSec ?? 6) : 0;
+  // The opening: the cover (or black, for a title without a cover), long
+  // enough for the title to fade up and out, and for the narrated title.
+  let introFrames = 0;
+  if (coverEntry || titles?.title) {
+    introFrames = toFrames(opts.introSec ?? (titles?.title ? 8 : 6));
+    if (titles?.narration && opts.narrationSec) introFrames = Math.max(introFrames, Math.ceil((NARRATION_AT + opts.narrationSec + 2) * FPS));
+  }
   const gapFrames = toFrames(opts.gapSec ?? 1.5);
-  const totalFrames = introFrames + scenes.reduce((n, s) => n + s.frames, 0) + gapFrames * (scenes.length - 1);
+  const cardFrames = titles?.sceneCards ? toFrames(opts.cardSec ?? 4) : 0;
+
+  const parts: TimelinePart[] = [];
+  if (introFrames > 0) parts.push({ kind: "intro", file: "intro.mp4", frames: introFrames });
+  scenes.forEach((s, k) => {
+    const nn = String(s.index + 1).padStart(2, "0");
+    if (cardFrames > 0) parts.push({ kind: "card", file: `card-${nn}.mp4`, frames: cardFrames, scene: k });
+    else if (k > 0 && gapFrames > 0) parts.push({ kind: "gap", file: "", frames: gapFrames });
+    parts.push({ kind: "scene", file: `scene-${nn}.mp4`, frames: s.frames, scene: k });
+  });
+  if (titles?.ending) parts.push({ kind: "end", file: "end.mp4", frames: toFrames(4) });
+  titles?.credits.forEach((_, p) => parts.push({ kind: "credits", file: `credits-${p + 1}.mp4`, frames: toFrames(5), page: p }));
+  if (titles?.next) parts.push({ kind: "next", file: "next.mp4", frames: toFrames(3.5) });
+
   return {
     fps: FPS,
     fadeFrames,
     introFrames,
     gapFrames,
+    cardFrames,
+    padFrames,
+    holdFrames,
     cover: coverEntry ? `art/${coverEntry.file}` : undefined,
     scenes,
-    totalFrames,
+    parts,
+    narration: introFrames > 0 && titles?.narration && opts.narrationSec ? titles.narration : undefined,
+    totalFrames: parts.reduce((n, p) => n + p.frames, 0),
     warnings
   };
 }
@@ -207,28 +267,118 @@ export function introFilterGraph(introFrames: number): string {
   return `[0:v]${kenBurnsFilter("zoom_in", introFrames)},fade=t=in:d=${edge},fade=t=out:st=${sec(introFrames) - edge}:d=${edge}[out]`;
 }
 
-// Narration track matching the video: silence under the intro and the gaps,
-// each scene's audio trimmed/padded to its frame-rounded length so 60 minutes
-// of video can't drift from the voice. Input k+1 is scene k's WAV (input 0 is the video).
+// ---- cards ----
+
+// One line of text on a card: centered, faded up at `in` and out by `out` (seconds into the card).
+export interface CardText { text: string; font: string; size: number; y: number; in: number; out: number }
+export interface CardSpec { cover: boolean; texts: CardText[] }
+
+const TEXT_FADE = 0.7;
+const TEXT_MAX_WIDTH = 1680;
+
+// Shrinks a line that would run off the frame (an estimate from its length:
+// display capitals run wider than body text).
+export function fitSize(text: string, size: number, wide: boolean): number {
+  const width = text.length * size * (wide ? 0.66 : 0.46);
+  return width <= TEXT_MAX_WIDTH ? size : Math.floor((size * TEXT_MAX_WIDTH) / width);
+}
+
+// What each card says, where and when. Pure: the words come from the titles,
+// the times from the part's length.
+export function cardSpec(part: TimelinePart, timeline: Timeline, titles: TitleCards): CardSpec {
+  const len = sec(part.frames);
+  const out = len - 0.5;
+  const line = (text: string, wide: boolean, size: number, y: number, at: number, until = out): CardText =>
+    ({ text, font: wide ? titles.titleFont : titles.font, size: fitSize(text, size, wide), y, in: at, out: until });
+  switch (part.kind) {
+    case "intro": {
+      const texts: CardText[] = [];
+      if (titles.title) {
+        const until = len - 1.2;
+        texts.push(line(titles.title, true, 112, titles.subtitle ? 490 : 540, 1.2, until));
+        if (titles.subtitle) texts.push(line(titles.subtitle, false, 60, 620, 1.9, until));
+      }
+      return { cover: Boolean(timeline.cover), texts };
+    }
+    case "card": {
+      const scene = timeline.scenes[part.scene!];
+      const numeral = romanNumeral(scene.index + 1);
+      const title = titles.sceneTitles[scene.index];
+      return { cover: false, texts: title ? [line(numeral, true, 60, 470, 0.5), line(title, false, 84, 590, 0.9)] : [line(numeral, true, 96, 540, 0.5)] };
+    }
+    case "end":
+      return { cover: false, texts: [line(titles.ending!, true, 96, 540, 0.6)] };
+    case "credits": {
+      const lines = titles.credits[part.page!];
+      const spacing = 80;
+      const top = 540 - ((lines.length - 1) * spacing) / 2;
+      return { cover: false, texts: lines.map((l, k) => line(l, false, 52, top + k * spacing, 0.4)) };
+    }
+    case "next":
+      return { cover: false, texts: [line(titles.next!, false, 72, 540, 0.5)] };
+    default:
+      throw new Error(`${part.kind} is not a card`);
+  }
+}
+
+// A filtergraph value in single quotes (paths with spaces, colons, commas).
+const quoted = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+
+// Fades a line in at `in` and out by `out` with drawtext's alpha expression.
+function drawText(t: CardText, textFile: string): string {
+  const f = TEXT_FADE;
+  const a = t.in;
+  const b = t.out - f;
+  const alpha = `if(lt(t,${a}),0,if(lt(t,${a + f}),(t-${a})/${f},if(lt(t,${b}),1,if(lt(t,${t.out}),(${t.out}-t)/${f},0))))`;
+  return `drawtext=fontfile=${quoted(t.font)}:textfile=${quoted(textFile)}:expansion=none:fontsize=${t.size}:fontcolor=0xF2E8D5:shadowcolor=black@0.85:shadowx=3:shadowy=3:x=(w-text_w)/2:y=${Math.round(t.y)}-text_h/2:alpha='${alpha}'`;
+}
+
+// A card: black (or the cover, slowly pushing in and dimmed under the title),
+// its lines of text, and a fade up from and down to black at the edges.
+// `textFile` maps a line to the file drawtext reads it from (no escaping of the words).
+export function cardFilterGraph(spec: CardSpec, frames: number, textFile: (text: string) => string): string {
+  const len = sec(frames);
+  const edge = Math.min(0.75, len / 4);
+  const base = spec.cover
+    ? `[0:v]${kenBurnsFilter("zoom_in", frames)}${spec.texts.length ? ",drawbox=x=0:y=0:w=iw:h=ih:color=black@0.4:t=fill" : ""}`
+    : `color=black:s=${WIDTH}x${HEIGHT}:r=${FPS}:d=${len},format=yuv420p`;
+  const text = spec.texts.map((t) => `,${drawText(t, textFile(t.text))}`).join("");
+  return `${base}${text},fade=t=in:d=${edge},fade=t=out:st=${len - edge}:d=${edge},trim=end_frame=${frames}[out]`;
+}
+
+// Narration track matching the video, part by part: each scene's audio
+// trimmed/padded to its frame length (so an hour of video can't drift from
+// the voice), the narrated title under the opening, and silence under
+// everything else. Input k+1 is scene k's WAV (input 0 is the video); the
+// narrated title, if any, comes after the scenes.
 export function audioFilterGraph(timeline: Timeline): string {
   const fmt = "aformat=sample_rates=48000:channel_layouts=stereo";
   const silence = (label: string, frames: number) => `anullsrc=r=48000:cl=stereo,atrim=end=${sec(frames)}[${label}]`;
   const lines: string[] = [];
-  const parts: string[] = [];
-  if (timeline.introFrames > 0) {
-    lines.push(silence("intro", timeline.introFrames));
-    parts.push("[intro]");
-  }
-  timeline.scenes.forEach((s, k) => {
-    if (k > 0) {
-      lines.push(silence(`gap${k}`, timeline.gapFrames));
-      parts.push(`[gap${k}]`);
+  const labels: string[] = [];
+  const narrated = timeline.narration !== undefined;
+  for (const part of timeline.parts) {
+    const d = sec(part.frames);
+    let label: string;
+    if (part.kind === "scene") {
+      label = `a${part.scene}`;
+      lines.push(`[${part.scene! + 1}:a]${fmt},apad=whole_dur=${d},atrim=end=${d}[${label}]`);
+    } else if (part.kind === "intro" && narrated) {
+      label = "intro";
+      const ms = Math.round(NARRATION_AT * 1000);
+      lines.push(`[${timeline.scenes.length + 1}:a]${fmt},adelay=${ms}|${ms},apad=whole_dur=${d},atrim=end=${d}[${label}]`);
+    } else {
+      const next = timeline.parts[timeline.parts.indexOf(part) + 1];
+      label = part.kind === "intro" ? "intro"
+        : part.kind === "gap" ? `gap${next?.scene}`
+        : part.kind === "card" ? `card${part.scene}`
+        : part.kind === "credits" ? `credits${part.page! + 1}`
+        : part.kind;
+      lines.push(silence(label, part.frames));
     }
-    const d = sec(s.frames);
-    lines.push(`[${k + 1}:a]${fmt},apad=whole_dur=${d},atrim=end=${d}[a${k}]`);
-    parts.push(`[a${k}]`);
-  });
-  lines.push(`${parts.join("")}concat=n=${parts.length}:v=0:a=1[aout]`);
+    labels.push(`[${label}]`);
+  }
+  lines.push(`${labels.join("")}concat=n=${labels.length}:v=0:a=1[aout]`);
   return lines.join(";\n");
 }
 
@@ -245,11 +395,16 @@ function srtTime(s: number): string {
 // narration window in proportion to sentence length.
 export function buildSrt(timeline: Timeline, timings: Timings, paragraphsByScene: Map<number, string[]>): string {
   const cues: string[] = [];
-  let sceneStart = sec(timeline.introFrames);
-  for (const scene of timeline.scenes) {
+  let partStart = 0;
+  for (const part of timeline.parts) {
+    const at0 = sec(partStart);
+    partStart += part.frames;
+    if (part.kind !== "scene") continue;
+    const scene = timeline.scenes[part.scene!];
     const t = timings.scenes.find((x) => x.index === scene.index);
     const paragraphs = paragraphsByScene.get(scene.index) ?? [];
-    const sceneEnd = sec(scene.frames);
+    // Captions end with the narration, never over the fade or the hold.
+    const sceneEnd = sec(scene.audioFrames);
     paragraphs.forEach((para, p) => {
       const start = t?.paragraphStarts[p] ?? 0;
       const end = t?.paragraphStarts[p + 1] ?? sceneEnd;
@@ -258,11 +413,10 @@ export function buildSrt(timeline: Timeline, timings: Timings, paragraphsByScene
       let at = start;
       for (const s of sentences) {
         const next = at + ((end - start) * s.length) / total;
-        cues.push(`${cues.length + 1}\n${srtTime(sceneStart + at)} --> ${srtTime(sceneStart + next)}\n${s}\n`);
+        cues.push(`${cues.length + 1}\n${srtTime(at0 + at)} --> ${srtTime(at0 + next)}\n${s}\n`);
         at = next;
       }
     });
-    sceneStart += sceneEnd + sec(timeline.gapFrames);
   }
   return cues.join("\n");
 }
@@ -319,9 +473,24 @@ export type VideoProgress =
   | { type: "part_done"; label: string; elapsedMs: number }
   | { type: "muxing" };
 
+// Counts a clip's video frames and measures its audio, to prove the parts
+// add up before they're joined and that picture and sound end together.
+export type Probe = (file: string) => Promise<{ frames?: number; audioSec?: number }>;
+
+export const ffprobe: Probe = (file) => new Promise((resolve, reject) => {
+  execFile("ffprobe", ["-v", "error", "-count_packets", "-show_entries", "stream=codec_type,nb_read_packets,duration", "-of", "json", file], (err, out) => {
+    if (err) return reject(new Error(`could not probe ${file}: ${err.message}`));
+    const streams = (JSON.parse(out).streams ?? []) as Array<{ codec_type: string; nb_read_packets?: string; duration?: string }>;
+    const v = streams.find((x) => x.codec_type === "video");
+    const a = streams.find((x) => x.codec_type === "audio");
+    resolve({ frames: v?.nb_read_packets ? Number(v.nb_read_packets) : undefined, audioSec: a?.duration ? Number(a.duration) : undefined });
+  });
+});
+
 export interface RenderOptions extends VideoOptions {
   runDir: string;
   run?: Runner;
+  probe?: Probe;            // default ffprobe with the real ffmpeg; off with an injected runner unless given
   force?: boolean;
   encoder?: EncoderChoice;  // default "auto"
   parallel?: number;        // scenes rendered at once, default 3
@@ -363,7 +532,11 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
     emit({ type: "warning", message: `audio covers ${timings.scenes.length} of ${committed} scenes — the video will stop there` });
   }
 
-  const timeline = buildTimeline(manifest, timings, opts);
+  const narrationSec = opts.titles?.narration
+    ? await readFile(join(runDir, opts.titles.narration)).then((b) => { const w = decodeWav(b); return w.samples.length / w.sampleRate; }, () => undefined)
+    : undefined;
+  if (opts.titles?.narration && narrationSec === undefined) emit({ type: "warning", message: `no ${opts.titles.narration} — the opening runs without the narrated title` });
+  const timeline = buildTimeline(manifest, timings, { ...opts, narrationSec });
   for (const w of timeline.warnings) emit({ type: "warning", message: w });
   await writeFile(join(outDir, "timeline.json"), JSON.stringify(timeline, null, 2) + "\n", "utf8");
 
@@ -403,39 +576,87 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
     emit({ type: "part_done", label, elapsedMs: Date.now() - t0 });
   };
 
-  const parts: string[] = [];
-  if (timeline.cover && timeline.introFrames > 0) {
-    await renderPart("intro", "intro.mp4", [timeline.cover], introFilterGraph(timeline.introFrames), timeline.introFrames);
-    parts.push("intro.mp4");
+  // The words on each card go in text files that drawtext reads as they are;
+  // named by their content, so a changed title is a changed filter (and a re-render).
+  const textDir = join(partsDir, "text");
+  const texts = new Map<string, string>();
+  const textFile = (text: string) => {
+    const file = join(textDir, `${createHash("sha1").update(text).digest("hex").slice(0, 16)}.txt`);
+    texts.set(file, text);
+    return file;
+  };
+  const graphs = new Map<TimelinePart, { inputs: string[]; filter: string }>();
+  for (const part of timeline.parts) {
+    if (part.kind === "scene" || part.kind === "gap") continue;
+    if (part.kind === "intro" && !opts.titles) {
+      graphs.set(part, { inputs: [timeline.cover!], filter: introFilterGraph(part.frames) });
+      continue;
+    }
+    const spec = cardSpec(part, timeline, opts.titles!);
+    graphs.set(part, { inputs: spec.cover ? [timeline.cover!] : [], filter: cardFilterGraph(spec, part.frames, textFile) });
   }
+  if (texts.size) {
+    await mkdir(textDir, { recursive: true });
+    for (const [file, text] of texts) await writeFile(file, text, "utf8");
+  }
+
   const gap = `gap-${String(timeline.gapFrames)}-${encoder}.mp4`;
-  if (timeline.scenes.length > 1 && timeline.gapFrames > 0 && !(await stat(join(partsDir, gap)).then(() => true, () => false))) {
+  const files = timeline.parts.map((p) => (p.kind === "gap" ? gap : p.file));
+  // Cards are quick: one at a time, in order. Scenes are independent: render
+  // several at once. The zoom filter is single-threaded, so this is what puts
+  // the other cores to work.
+  for (const [part, g] of graphs) {
+    await renderPart(part.kind === "credits" ? `credits ${part.page! + 1}` : part.kind === "card" ? `scene ${timeline.scenes[part.scene!].index + 1} card` : part.kind, part.file, g.inputs, g.filter, part.frames);
+  }
+  if (timeline.parts.some((p) => p.kind === "gap") && !(await stat(join(partsDir, gap)).then(() => true, () => false))) {
     await run(["-f", "lavfi", "-i", `color=black:s=${WIDTH}x${HEIGHT}:r=${FPS}`, "-frames:v", String(timeline.gapFrames), ...ENCODE, "-an", join(partsDir, gap)]);
   }
-  // Scenes are independent: render several at once. The zoom filter is
-  // single-threaded, so this is what puts the other cores to work.
-  const sceneJobs: Array<() => Promise<void>> = [];
-  for (const [k, scene] of timeline.scenes.entries()) {
-    if (k > 0 && timeline.gapFrames > 0) parts.push(gap);
-    const file = `scene-${String(scene.index + 1).padStart(2, "0")}.mp4`;
-    sceneJobs.push(() => renderPart(`scene ${scene.index + 1} (${scene.shots.length} shots)`, file, scene.shots.map((s) => s.file), sceneFilterGraph(scene, timeline.fadeFrames), scene.frames, parallel > 1));
-    parts.push(file);
-  }
+  const sceneJobs = timeline.parts.filter((p) => p.kind === "scene").map((p) => {
+    const scene = timeline.scenes[p.scene!];
+    return () => renderPart(`scene ${scene.index + 1} (${scene.shots.length} shots)`, p.file, scene.shots.map((s) => s.file), sceneFilterGraph(scene, timeline.fadeFrames), scene.frames, parallel > 1);
+  });
   await pool(sceneJobs, parallel);
+
+  // Every part must be exactly as long as the timeline says: the narration is
+  // laid out from the timeline, so a frame lost in one part would put the
+  // picture behind the voice for the rest of the video.
+  const probe = opts.probe ?? (opts.run ? undefined : ffprobe);
+  if (probe) {
+    const checked = new Set<string>();
+    for (const [k, part] of timeline.parts.entries()) {
+      if (checked.has(files[k])) continue; // the black gap is one clip, used between every scene
+      checked.add(files[k]);
+      const { frames } = await probe(join(partsDir, files[k]));
+      if (frames !== part.frames) {
+        delete cache[files[k]];
+        await saveCache();
+        throw new Error(`video/parts/${files[k]} has ${frames} frames where the timeline needs ${part.frames} — it will be re-rendered on the next run`);
+      }
+    }
+  }
 
   // Join the parts without re-encoding and lay the narration under them.
   emit({ type: "muxing" });
-  await writeFile(join(partsDir, "parts.txt"), parts.map((p) => `file '${p}'`).join("\n") + "\n", "utf8");
+  await writeFile(join(partsDir, "parts.txt"), files.map((p) => `file '${p}'`).join("\n") + "\n", "utf8");
   const video = join(outDir, "story.mp4");
   await run([
     "-f", "concat", "-safe", "0", "-i", join(partsDir, "parts.txt"),
     ...timeline.scenes.flatMap((s) => ["-i", join(runDir, s.audio)]),
+    ...(timeline.narration ? ["-i", join(runDir, timeline.narration)] : []),
     "-filter_complex", audioFilterGraph(timeline),
     "-map", "0:v", "-map", "[aout]",
     "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
     "-movflags", "+faststart",
     video
   ]);
+  if (probe) {
+    const { frames, audioSec } = await probe(video);
+    if (frames !== timeline.totalFrames) emit({ type: "warning", message: `story.mp4 has ${frames} frames where the timeline has ${timeline.totalFrames}` });
+    // AAC pads its last packet: allow a frame and a little.
+    if (audioSec !== undefined && Math.abs(audioSec - sec(timeline.totalFrames)) > 1 / FPS + 0.05) {
+      emit({ type: "warning", message: `the sound runs ${audioSec.toFixed(2)}s and the picture ${sec(timeline.totalFrames).toFixed(2)}s — they've drifted apart` });
+    }
+  }
 
   if (timeline.cover) {
     await run(["-i", join(runDir, timeline.cover), "-vf", "crop='min(iw,ih*16/9)':'min(ih,iw*9/16)',scale=1280:720:flags=lanczos", "-frames:v", "1", "-q:v", "2", join(outDir, "thumbnail.jpg")]);
