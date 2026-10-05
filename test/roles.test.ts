@@ -386,25 +386,34 @@ test("a JSON role that hits the output limit fails once with the reason; the wri
 // --- the director follows the author's plan ---
 import { direct, reviewBeat } from "../src/roles.ts";
 
-test("the director sees the author's plan, and the plan outranks the random complication", async () => {
+// Issue #90: no stock complications. Each scene's turn is the author's, the
+// author's plan's, or the director's own, and never a repeat.
+test("the director chooses the scene's turn; the author's plan or a pinned turn takes its place; earlier turns are never repeated", async () => {
   const beatRole = { provider: { complete: async () => JSON.stringify(testBeat) }, temperature: 0 };
-  const params = { bible: emptyBible(), sceneIndex: 1, total: 3, tension: 7, complication: "An ally withholds a crucial fact.", overdue: [] };
+  const params = { bible: emptyBible(), sceneIndex: 1, total: 3, tension: 7, overdue: [], earlierTurns: ["The letter is in Ada's own handwriting."] };
+  const open = await direct(beatRole, params);
+  assert.ok(open.prompt.includes(`TURN: choose this scene's "turn" yourself`));
+  assert.ok(open.prompt.includes("EARLIER TURNS (never repeat one, even reworded):\n- scene 1: The letter is in Ada's own handwriting."));
+  assert.ok(!/COMPLICATION/.test(open.prompt), "no stock complication anywhere");
   const planned = await direct(beatRole, { ...params, context: "Scene 2 — The hold: the sigil door opens." });
   assert.ok(planned.prompt.includes("STORY CONTEXT (provided by author):\nScene 2 — The hold"));
   assert.ok(planned.prompt.includes("THE AUTHOR'S PLAN COMES FIRST"));
-  assert.ok(planned.prompt.includes("SUGGESTED COMPLICATION (optional"));
-  assert.ok(!planned.prompt.includes("REQUIRED COMPLICATION"));
-  const open = await direct(beatRole, params);
-  assert.ok(open.prompt.includes("REQUIRED COMPLICATION: An ally withholds"));
-  assert.ok(!open.prompt.includes("STORY CONTEXT"));
+  assert.ok(planned.prompt.includes(`TURN: the beat's "turn" is the change the author's plan makes in this scene.`));
+  const pinned = await direct(beatRole, { ...params, turn: "The keeper's brother walks in." });
+  assert.ok(pinned.prompt.includes("TURN (the author's, for this scene — deliver it): The keeper's brother walks in."));
+  const last = await direct(beatRole, { ...params, sceneIndex: 2 });
+  assert.ok(last.prompt.includes("TURN: this is the final scene."));
+  assert.ok(DIRECTOR_SYSTEM.includes(`"turn":string`));
 });
 
 test("the beat gate flags a beat that leaves the author's plan", async () => {
   assert.ok(BEAT_GATE_SYSTEM.includes("OFF_PLAN"));
   assert.ok(BEAT_GATE_SYSTEM.includes("check the spec against it FIRST"));
   const gateRole = { provider: { complete: async () => JSON.stringify({ ok: true, issues: [] }) }, temperature: 0 };
-  const out = await reviewBeat(gateRole, { bible: emptyBible(), beat: testBeat, sceneIndex: 1, total: 3, tension: 7, complication: "x", context: "plan" });
-  assert.ok(out.prompt.includes("SUGGESTED COMPLICATION (optional"));
+  const out = await reviewBeat(gateRole, { bible: emptyBible(), beat: testBeat, sceneIndex: 1, total: 3, tension: 7, context: "plan", turn: "The door opens.", earlierTurns: ["A letter arrives."] });
+  assert.ok(out.prompt.includes("TURN (the author's, for this scene — deliver it): The door opens."));
+  assert.ok(out.prompt.includes("- scene 1: A letter arrives."));
+  assert.ok(BEAT_GATE_SYSTEM.includes("MISSING_TURN"), "the gate checks the turn is there, new, and the author's when pinned");
 });
 
 // Issue #81 (Rantoul's Mushrooms, scene 5): the director paid off a stained
@@ -413,7 +422,7 @@ test("the beat gate flags a beat that leaves the author's plan", async () => {
 test("in an adaptation the director reveals only what the plan reveals, and the gate flags an invented reveal", async () => {
   const context = "Scene 5 — The troll: Lemuel feeds the troll leg six; it collapses. Leg four, owl hoots, the wagon escapes.";
   const beatRole = { provider: { complete: async () => JSON.stringify(testBeat) }, temperature: 0 };
-  const params = { bible: emptyBible(), sceneIndex: 4, total: 6, tension: 9, complication: "Someone arrives who should not be here.", overdue: [] };
+  const params = { bible: emptyBible(), sceneIndex: 4, total: 6, tension: 9, overdue: [] };
   const planned = await direct(beatRole, { ...params, context });
   assert.ok(planned.prompt.includes("Reveal only what the plan reveals"));
   assert.ok(planned.prompt.includes("open setups the plan doesn't pay off stay open"));
@@ -423,7 +432,7 @@ test("in an adaptation the director reveals only what the plan reveals, and the 
   const invented = { ...testBeat, mustReveal: "The troll's collapse was the gnacien toxin on Rantoul's quarterstaff: he is more prepared than he seems." };
   const verdict = { ok: false, issues: [{ type: "OFF_PLAN", severity: "high", quote: invented.mustReveal, constraint: "the author's Scene 5", detail: "The plan never explains the quarterstaff." }] };
   const gateRole = { provider: { complete: async () => JSON.stringify(verdict) }, temperature: 0 };
-  const out = await reviewBeat(gateRole, { bible: emptyBible(), beat: invented, sceneIndex: 4, total: 6, tension: 9, complication: "x", context });
+  const out = await reviewBeat(gateRole, { bible: emptyBible(), beat: invented, sceneIndex: 4, total: 6, tension: 9, context });
   assert.ok(out.prompt.includes(invented.mustReveal), "the gate sees the reveal");
   assert.equal(out.result.ok, false);
   assert.equal(out.result.issues[0].type, "OFF_PLAN");

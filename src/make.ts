@@ -77,6 +77,9 @@ export interface StoryFile {
   artStyle?: string;                   // prescriptive art style; overrides the Creator's
   artist?: StoryConfig["artist"];      // image settings over the config's (batch, retakes, concurrency...)
   critic?: StoryConfig["critic"];      // "blocking" (default), "advisory" or "off"
+  // The author's pins, per scene in order (null: the models decide).
+  tension?: Array<number | null>;      // tension targets 1-10 (else the creator's arc)
+  turns?: Array<string | null>;        // each scene's turn (else the plan or the director)
   // Real people and animals who star in the story, from photos (paths relative to the story file).
   cast?: { name: string; photos: string | string[]; notes?: string }[];
 }
@@ -129,6 +132,8 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
     ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {}),
     ...(raw.critic ?? baseConfig.critic ? { critic: raw.critic ?? baseConfig.critic } : {}),
+    ...(raw.tension ?? baseConfig.tension ? { tension: raw.tension ?? baseConfig.tension } : {}),
+    ...(raw.turns ?? baseConfig.turns ? { turns: raw.turns ?? baseConfig.turns } : {}),
     ...(raw.artist ? { artist: { ...baseConfig.artist, ...raw.artist } } : {})
   };
   if (config.budget !== undefined && !(typeof config.budget.usd === "number" && config.budget.usd > 0)) {
@@ -142,6 +147,12 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     throw new Error(`${path}: audiobook "geminiMode" must be one of ${GEMINI_MODES.join(", ")}`);
   }
   checkDirection(config.direction);
+  if (config.tension !== undefined && !(Array.isArray(config.tension) && config.tension.every((t) => t === null || (Number.isInteger(t) && t >= 1 && t <= 10)))) {
+    throw new Error(`${path}: "tension" must be a list of tension targets 1-10, one per scene (null where the models decide)`);
+  }
+  if (config.turns !== undefined && !(Array.isArray(config.turns) && config.turns.every((t) => t === null || typeof t === "string"))) {
+    throw new Error(`${path}: "turns" must be a list of each scene's turn, in order (null where the models decide)`);
+  }
   const contexts = raw.context === undefined ? [] : Array.isArray(raw.context) ? raw.context : [raw.context];
   const attempts = raw.maxAttempts === "unlimited" ? Infinity : raw.maxAttempts;
   if (attempts !== undefined && !(attempts === Infinity || (Number.isInteger(attempts) && attempts > 0))) {

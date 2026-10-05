@@ -101,6 +101,8 @@ export interface Bible {
   threads: Record<string, Thread>;
   ledger: Setup[];
   resolvedDecisions: string[];
+  // The creator's tension plan, one target (1-10) per scene; null where it gave none.
+  arc?: Array<number | null>;
   summary: BibleSummary;
   sceneCount: number;
 }
@@ -114,6 +116,7 @@ export interface Beat {
   constraints: string[];
   payoffs: string[];
   title?: string;     // the scene's title card ("The Pardon"): a few words, no spoilers
+  turn?: string;      // what changes in this scene that its people didn't see coming
 }
 
 export interface Patch {
@@ -143,7 +146,7 @@ export interface StoryEvent<T = unknown> {
 export interface SceneCommittedData {
   index: number;
   tension: number;
-  complication: string;
+  complication?: string;  // runs written before turns (#90): the stock complication it was given
   beat: Beat;
   prose: string;
   patch: Patch;
@@ -273,8 +276,10 @@ export const CRITIC_MODES = ["blocking", "advisory", "off"] as const;
 export type CriticMode = (typeof CRITIC_MODES)[number];
 
 export interface StoryConfig {
-  rngSeed?: number;
   scenes?: number;
+  // The author's pins, per scene in order; null leaves that scene to the models.
+  tension?: Array<number | null>;   // tension targets 1-10 (else the creator's arc)
+  turns?: Array<string | null>;     // each scene's turn (else the author's plan or the director)
   maxRevisions?: number;
   overdueAfter?: number;
   sceneWords?: WordBudget;

@@ -116,15 +116,15 @@ npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, 
 |---|---|---|
 | **contextgate** | Before anything is generated, checks the author's context files for contradictions between them or with the premise. | optional (falls back to the continuist) |
 | **worldbuilder** | Names characters and places that belong in the setting. | optional |
-| **creator** | Builds the foundation: premise, tone, **art style**, cast (with gender), locations, **key objects**, threads, and scene 1's beat. Runs on the `director`'s provider. | — |
-| **director** | Plans each later scene as a JSON beat spec — never prose. | yes |
+| **creator** | Builds the foundation: premise, tone, **art style**, cast (with gender), locations, **key objects**, threads, the story's **tension arc**, and scene 1's beat. Runs on the `director`'s provider. | — |
+| **director** | Plans each later scene as a JSON beat spec, including the scene's **turn**. Never writes prose. | yes |
 | **writer** | Writes the scene in the POV character's voice, inside a word band. | yes |
 | **editor** | Line-edits each draft before review: hunts machine-prose tics, trims about 10%, and keeps every event, name and speaker tag. An edit that guts or pads the scene is discarded. | optional |
 | **continuist** | Blocks continuity and canon errors: POV, timeline, constraints, setups, key-object contradictions. | yes |
 | **critic** | Blocks craft problems: pacing, telling-not-showing, sensory detail, voice drift, recurring style tics. | optional |
 | **archivist** | The only role that changes the bible, via JSON patches. | yes |
 | **worldgate / beatgate / patchgate** | Review the worldbuilder's output, each beat spec, and each bible patch before they're used. | optional (fall back to the continuist / critic) |
-| **voicedirector** | Before the audiobook: labels who speaks each paragraph and how (a delivery note per line), designs each character's tone palette from the whole script, and picks each line's tone from it. Never changes the text; quote-mark checks catch its mistakes. Defaults to the continuist's model. | optional |
+| **voicedirector** | Before the audiobook: labels who speaks each paragraph and how (a delivery note per line), designs each character's and the narrator's tone palette from the whole script, and picks each line's tone from it. Never changes the text; quote-mark checks catch its mistakes. Defaults to the continuist's model. | optional |
 | **artdirector** | After each scene: a sequence of shots, plus canonical visual references for what they show; at the end, the cover. | optional |
 
 Every role is mapped to a provider in the config, so each can run on a different model.
@@ -201,7 +201,7 @@ This describes everyone, recording the descriptions in the run so the story reus
   - `"geminiVoices"` pins any voice, whether one of the 30 built-in voices, a library voice (`en-gb-advisor-9`) or a designed one, and always wins. `"casting": false` turns casting off.
 - **Gemini modes.** Gemini TTS allows few requests (Tier 1: 10 a minute, 100 a day), so `"geminiMode"` in the `audiobook` block (or `--gemini-mode`) trades direction for requests. The dollar cost is about the same in every mode: you pay for the audio.
   - `"line"` (the default): one request per line, each with its own delivery note. The best, and the most requests (a few hundred for a 4,000-word story).
-  - `"palette"`: the voice director gives each character a palette of `paletteSize` tones (default 4) designed from the whole script. The narrator gets a fixed four: neutral, tense, hushed, grave. Lines are batched by speaker and tone, a few dozen requests in total.
+  - `"palette"`: the voice director gives each character a palette of `paletteSize` tones (default 4) designed from the whole script. The narrator gets one too, in this story's own registers; its first tone is its home register, used for plain narration. Lines are batched by speaker and tone, a few dozen requests in total.
   - `"speaker"`: lines are batched by speaker with no direction. The fewest requests.
   - In the batched modes, Gemini is asked for a long pause between lines. The audio is cut where the pieces best match each line's expected length, worked out from its letters and that take's pace, so a two-word line can't swallow its neighbour. Each piece is then checked against its words.
   - A batch that won't cut cleanly is retaken, then split in half and tried again. Narrator batches stay small (8 lines), because narration has the most pauses inside lines.
@@ -326,7 +326,6 @@ Other config keys:
 | `overdueAfter` | 3 | Scenes before an open setup must be paid off. |
 | `speakerTags` | false | Have the writer tag paragraphs itself (or `--speaker-tags`). Not needed: the audiobook's voice director labels plain prose. |
 | `artWordsPerShot` | 110 | Narration words per art shot. |
-| `rngSeed` | 1 | Seeds the complication table. |
 | `artist` | Gemini | `image` and `inspector` backends (`gemini` or `mock`; `"inspector": null` skips review), `maxAttempts`, `maxReferences`, `referenceSize`, `inspectSize`. |
 
 ## Spend
@@ -343,11 +342,22 @@ The budget covers the whole run, including earlier sessions, since the log lives
 
 Costs are estimates: token counts multiplied by a price table. The defaults are in `src/usage.ts`, dated 2026-10, and `pricing` overrides them. Models without a price are still logged by token count. The log keeps raw token counts, so costs can be recalculated when prices change.
 
-## Procedural pressure
+## Story structure
 
-- **Tension curve:** rises to about 75% of the story, then falls.
-- **Complications:** a seeded complication table adds a required complication to each scene.
-- **Chekhov ledger:** setups left unpaid after `overdueAfter` scenes become required payoffs for the director. All of them are paid in the final scene.
+Nothing about the shape of a story is pre-written. The models decide it, and the author can pin any part of it.
+
+- **The arc:** the creator plans a tension target (1–10) for every scene when it builds the foundation, shaped for this story: a slow burn, an early shock, a farce that escalates. Each scene's beat plays at its target, and the music director scores to it. A fixed rise-to-75%-then-fall curve is used only where neither the author nor the creator set a value.
+- **Turns:** every beat has a `turn`, the one change in the scene its people didn't see coming. The director chooses it from the bible (threads, goals, setups) and sees every earlier turn so it never repeats one; the beat gate flags a missing or repeated turn. With an author's plan, the turn is whatever the plan has happen in that scene. The final scene's turn resolves the story unless the plan ends it some other way.
+- **Chekhov ledger:** setups left unpaid after `overdueAfter` scenes become required payoffs for the director, and all of them are paid in the final scene. This is bookkeeping: it tracks what this story has promised, and contains nothing pre-written. With an author's plan it's off, and setups are paid where the plan pays them.
+
+**Author pins** (story file, one entry per scene in order, `null` = let the models decide):
+
+```jsonc
+"tension": [3, null, null, 9, null],                 // pin a scene's tension target
+"turns": [null, "The rope breaks.", null, null, null] // pin a scene's turn; the director must deliver it
+```
+
+The author's plan in the context files and `direction.<layer>` notes work as before. Pins are for when you want one scene's tension or turn fixed without writing a whole plan.
 
 ## Development
 

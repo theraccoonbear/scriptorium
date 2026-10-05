@@ -82,7 +82,7 @@ export class MockProvider {
         if (ctx.task === "palette") {
           // Two tones for every cast member.
           const ids: string[] = ctx.castIds ?? [];
-          return JSON.stringify({ palettes: Object.fromEntries(ids.map((id) => [id, ["plain", "intense"].slice(0, ctx.size ?? 2)])) });
+          return JSON.stringify({ palettes: Object.fromEntries([["narrator", ["even", "hushed"].slice(0, ctx.size ?? 2)], ...ids.map((id) => [id, ["plain", "intense"].slice(0, ctx.size ?? 2)])]) });
         }
         // A paragraph with a quotation is the first cast member's; the rest is narration.
         const castIds: string[] = ctx.castIds ?? [];
@@ -149,8 +149,12 @@ export class MockProvider {
     };
   }
 
-  create(_ctx: MockCtx) {
+  create(ctx: MockCtx) {
+    // A slow burn: the author's pins where given, else rising to the second-last scene.
+    const total: number = ctx.total ?? 3;
+    const arc = Array.from({ length: total }, (_, i) => ctx.arc?.[i] ?? Math.min(9, 3 + 2 * i));
     return {
+      arc,
       premise: "A lone lighthouse keeper receives a letter from someone who shouldn't know they exist.",
       tone: "Quiet, uncanny, with dry humor.",
       art_style: "Muted ink and watercolor illustration, grey-green palette, soft diffuse light.",
@@ -169,6 +173,7 @@ export class MockProvider {
         { id: "letter-origin", title: "Who sent the letter", status: "open" }
       ],
       beat: {
+        turn: ctx.turn ?? "The letter is in Ada's own handwriting.",
         goal: "Ada finds the letter and must decide whether to answer it.",
         conflict: "The letter is addressed to her by name, but she told no one she was coming here.",
         pov: "keeper",
@@ -186,8 +191,9 @@ export class MockProvider {
     const locs = Object.keys(ctx.bible.locations);
     const location = locs.length ? locs[ctx.sceneIndex % locs.length] : "loc-0";
     return {
+      turn: ctx.turn ?? `Scene ${ctx.sceneIndex + 1}: something about ${pov} changes`,
       goal: `Advance the story at tension ${ctx.tension}`,
-      conflict: ctx.complication,
+      conflict: `Pressure on ${pov}`,
       pov,
       location,
       mustReveal: `A detail about ${pov}`,

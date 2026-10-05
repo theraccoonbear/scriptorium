@@ -228,3 +228,13 @@ test("story files carry a title, subtitle and series, and video titles settings;
   await assert.rejects(loadStoryFile((await storyDir({ video: { titles: { narrate: "on" } } })).file), /"narrate" must be true or false/);
   await assert.rejects(loadStoryFile((await storyDir({ series: "Part 2" })).file), /"series" must look like/);
 });
+
+test("story files can pin each scene's tension and turn (null leaves it to the models); malformed pins are rejected", async () => {
+  const { file } = await storyDir({ tension: [3, null, 9], turns: [null, "The rope breaks."] });
+  const s = await loadStoryFile(file);
+  assert.deepEqual(s.config.tension, [3, null, 9]);
+  assert.deepEqual(s.config.turns, [null, "The rope breaks."]);
+  await assert.rejects(loadStoryFile((await storyDir({ tension: [11] })).file), /"tension" must be a list of tension targets 1-10/);
+  await assert.rejects(loadStoryFile((await storyDir({ tension: "rising" })).file), /"tension" must be/);
+  await assert.rejects(loadStoryFile((await storyDir({ turns: [3] })).file), /"turns" must be a list/);
+});

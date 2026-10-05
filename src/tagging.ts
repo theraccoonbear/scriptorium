@@ -297,23 +297,15 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
 
 // ---- tone palettes (geminiMode "palette") ----
 
-// The narrator reads in one of a few fixed registers; its delivery notes
-// ("silence, which is answer enough") describe the scene, not a reading.
-export const NARRATOR_TONES = [
-  "neutral, measured storytelling",
-  "tense and quickening",
-  "hushed and intimate",
-  "grave and heavy"
-];
-
 // Bumped when palette logic changes, so palettes made by older logic are remade.
-const PALETTE_VERSION = 3;
+// 4: the narrator's palette is designed from the script like everyone's (#90).
+const PALETTE_VERSION = 4;
 
 export interface TonePaletteData {
   version?: number;
   size: number;
   source: string;  // hash of what it was designed from (script, cast, size)
-  speakers: Record<string, { tones: string[] }>;  // includes "narrator" (NARRATOR_TONES)
+  speakers: Record<string, { tones: string[] }>;  // includes "narrator" (its first tone is its home register)
 }
 
 function paletteInputs(events: StoryEvent[], size: number) {
@@ -333,13 +325,13 @@ export function latestPalette(events: StoryEvent[], size: number): TonePaletteDa
 }
 
 // Designs every speaker's tone palette from the whole script (once per script
-// and cast); the narrator always reads in NARRATOR_TONES.
+// and cast), the narrator's included: its registers come from this story.
 export async function designRun(log: EventLog, role: Role, size: number): Promise<TonePaletteData> {
   const existing = latestPalette(log.events, size);
   if (existing) return existing;
   const { cast, script, source } = paletteInputs(log.events, size);
   const out = await designPalettes(role, { script, cast, size });
-  const speakers: Record<string, { tones: string[] }> = { narrator: { tones: NARRATOR_TONES } };
+  const speakers: Record<string, { tones: string[] }> = {};
   for (const [id, tones] of Object.entries(out.result)) speakers[id] = { tones };
   const data: TonePaletteData = { version: PALETTE_VERSION, size, source, speakers };
   await log.append("tone_palette", data);

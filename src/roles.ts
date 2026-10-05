@@ -48,8 +48,10 @@ Output ONLY JSON with this shape:
   "locations":[{"id":string,"name":string,"description":string}],
   "objects":[{"id":string,"name":string,"description":string,"owner":characterId}],
   "threads":[{"id":string,"title":string,"status":"open"}],
-  "beat":{"title":string,"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[]}
+  "arc":[number],
+  "beat":{"title":string,"turn":string,"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[]}
 }
+arc: the story's tension plan, one target from 1 (calm) to 10 (peak) for each scene, in order — shaped for THIS story and its genre (a slow burn, an early shock, a farce that escalates, a quiet ending), not a stock curve. Keep the author's ARC values where given and fill the rest. Scene 1's beat plays at arc[0].
 art_style: how this world is portrayed in pictures, decided with the tone — one or two sentences naming the medium and rendering (e.g. gouache illustration, ink and watercolor, oil painting, woodcut), palette, light, line quality, level of detail, and mood. Specific enough that two illustrators would produce images that look like the same book. Suited to this story's genre and tone; never name a living artist.
 Each character needs a distinct voice that will guide the Writer.
 vocal: how the character SOUNDS, for casting the audiobook — apparent age, pitch, texture, pace, and accent, in one line (e.g. "fifties, low and gravelly, unhurried, a hill-country burr"). Make the main characters sound clearly different from each other.
@@ -64,9 +66,9 @@ ${BEAT_CRAFT}`;
 
 export const DIRECTOR_SYSTEM = `You are the Director of a procedurally generated story. You never write prose.
 Plan the next scene as a beat spec. Output ONLY JSON with this shape:
-{"goal":string,"conflict":string,"pov":characterId,"location":string,"mustReveal":string,"constraints":[string],"payoffs":[setupId]}
+{"title":string,"turn":string,"goal":string,"conflict":string,"pov":characterId,"location":string,"mustReveal":string,"constraints":[string],"payoffs":[setupId]}
 title: the scene's title, shown on its title card in the video — two to five words, no spoilers. If the STORY CONTEXT names this scene ("Scene 2 — The pardon"), use that name.
-Honor the tension target and the required complication. Every overdue setup must appear in payoffs.
+Honor the tension target, and give the scene its turn (see TURN). Every overdue setup must appear in payoffs.
 Never contradict the bible.
 Before outputting, verify the beat is self-satisfiable: mustReveal and constraints must be jointly satisfiable by one scene. If a constraint requires something to remain unresolved, the reveal cannot be that the thing is solved, resolved, or compensated.
 The bible lists RESOLVED DECISIONS — choices characters have already made and closed. Do not build a beat whose core is re-deciding one of them (having characters re-choose what is already chosen). A resolved decision may be referenced only if the beat adds genuinely NEW pressure on it: new stakes, new information, or a new cost. Each scene must turn the story somewhere it has not been.
@@ -256,7 +258,8 @@ Allowed types:
 - POV_LEAK: the spec requires the POV character to know something they cannot plausibly know
 - WRONG_PAYOFF: a payoff doesn't match its setup, or an overdue setup is missing from payoffs
 - OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events, or explains, reveals or connects something the plan leaves unexplained
-- REHASH: the beat re-decides something already closed, or restates a turn the story already made
+- REHASH: the beat re-decides something already closed, or restates a turn the story already made (its "turn" repeats one of the EARLIER TURNS, even reworded)
+- MISSING_TURN: the beat has no "turn", or its turn changes nothing; or the author pinned a TURN for this scene and the beat doesn't deliver it
 
 CHECK SPECIFICALLY:
 - If the STORY CONTEXT lays out what happens in this scene (by scene number), check the spec against it FIRST. Every event the author lists for this scene must be covered by the spec, as an outcome or a fixed moment (the spec need not fix their order); no event the author assigns to a later scene may be. A spec that goes somewhere else — however well-made — is OFF_PLAN. Bridging from where the last scene actually ended to the plan's events is fine. Then read mustReveal and payoffs against the plan: a reveal, explanation or connection the plan does not make (a secret purpose for an object, a hidden cause behind an event, a link between two of the author's details) is OFF_PLAN, however neat. In an author's story an unexplained detail is often left unexplained on purpose.
@@ -427,6 +430,7 @@ interface CreatorFoundation {
   locations?: { id?: string; name?: string; description?: string }[];
   objects?: { id?: string; name?: string; description?: string; owner?: string }[];
   threads?: { id?: string; title?: string; status?: string }[];
+  arc?: unknown[];
   beat?: Beat;
 }
 
@@ -454,6 +458,8 @@ function applyBibleData(data: CreatorFoundation): Bible {
   for (const t of data.threads || []) {
     if (t.id) bible.threads[t.id] = { id: t.id, title: t.title || t.id, status: t.status || "open" };
   }
+  // The engine settles the final arc (the author's pins win; gaps fall back).
+  if (Array.isArray(data.arc)) bible.arc = data.arc.map((t) => (typeof t === "number" && t >= 1 && t <= 10 ? Math.round(t) : null));
   return bible;
 }
 
@@ -528,13 +534,12 @@ export interface CreatorOutput {
 export async function createAndDirect(role: Role, params: {
   sceneIndex: number;
   total: number;
-  tension: number;
-  complication: string;
+  arc?: Array<number | null>;   // the author's tension targets, null where the creator decides
   world: WorldOutput;
   premise?: string;
   context?: string;
-} & CreativeFeedback): Promise<CreatorOutput> {
-  const { sceneIndex, total, tension, complication, world, premise, context, issues, fresh } = params;
+} & TurnParams & CreativeFeedback): Promise<CreatorOutput> {
+  const { sceneIndex, total, arc, world, premise, context, issues, fresh } = params;
   const charNames = (world.characters || []).map((c) => `${c.name} (${c.archetype})`).join(", ");
   const locNames = (world.locations || []).map((l) => `${l.name} (${l.archetype})`).join(", ");
   const fix = feedbackBlock(
@@ -550,27 +555,40 @@ export async function createAndDirect(role: Role, params: {
     world.setting_notes ? `WORLD: ${world.setting_notes}` : "",
     charNames ? `USE THESE CHARACTER NAMES: ${charNames}` : "",
     locNames ? `USE THESE LOCATION NAMES: ${locNames}` : "",
-    `TENSION TARGET (1-10): ${tension}`,
-    complicationLine(complication, context),
+    `SCENES: ${total} — plan the arc for all of them.`,
+    arc?.some((t) => t !== null && t !== undefined) ? `ARC (the author's; keep these values, fill the nulls): ${JSON.stringify(arc)}` : "",
+    turnLines({ ...params, sceneIndex, total, context }),
     fix
   ].filter(Boolean).join("\n\n");
   const { result, system, raw } = await callJson(role, {
     role: "creator",
     system: CREATOR_SYSTEM,
     prompt,
-    ctx: { sceneIndex, total, tension, complication, world, premise, context, issues, fresh }
+    ctx: { sceneIndex, total, arc, turn: params.turn, world, premise, context, issues, fresh }
   });
   const foundation = result as CreatorFoundation;
   const bible = applyBibleData(foundation);
   return { bible, beat: foundation.beat as Beat, prompt, system, raw };
 }
 
-// The engine's random complication is a nudge for open-ended stories. When the
-// author has planned the story, the plan wins and the complication is optional.
-function complicationLine(complication: string, context: string | undefined): string {
-  return context
-    ? `SUGGESTED COMPLICATION (optional — use it only if it fits the author's plan for this scene; never bend the plan to fit it): ${complication}`
-    : `REQUIRED COMPLICATION: ${complication}`;
+// What turns this scene: the author's pinned turn, the author's plan, or the
+// director's own choice, never a repeat of an earlier scene's turn. The final
+// scene's turn resolves the story (unless the author's plan ends it otherwise).
+export interface TurnParams { turn?: string; earlierTurns?: string[] }
+
+export function turnLines(p: TurnParams & { sceneIndex: number; total: number; context?: string }): string {
+  const final = p.sceneIndex === p.total - 1;
+  const lines = [
+    p.turn
+      ? `TURN (the author's, for this scene — deliver it): ${p.turn}`
+      : p.context
+      ? `TURN: the beat's "turn" is the change the author's plan makes in this scene${final ? " — the story's ending as the plan has it" : ""}.`
+      : final
+      ? `TURN: this is the final scene. Its "turn" resolves the central conflict — the change the whole story has been heading for. Open nothing new.`
+      : `TURN: choose this scene's "turn" yourself — the one change the people in it don't see coming, which pushes the story somewhere it hasn't been. Earn it from the bible: its threads, its people's goals, what has been set up.`
+  ];
+  if (p.earlierTurns?.length) lines.push(`EARLIER TURNS (never repeat one, even reworded):\n${p.earlierTurns.map((t, k) => `- scene ${k + 1}: ${t}`).join("\n")}`);
+  return lines.join("\n");
 }
 
 export async function direct(role: Role, params: {
@@ -578,11 +596,10 @@ export async function direct(role: Role, params: {
   sceneIndex: number;
   total: number;
   tension: number;
-  complication: string;
   overdue: Setup[];
   context?: string;
-} & CreativeFeedback): Promise<RoleOutput<Beat>> {
-  const { bible, sceneIndex, total, tension, complication, overdue, context, issues, fresh } = params;
+} & TurnParams & CreativeFeedback): Promise<RoleOutput<Beat>> {
+  const { bible, sceneIndex, total, tension, overdue, context, issues, fresh } = params;
   const fix = feedbackBlock(
     issues,
     fresh,
@@ -598,7 +615,7 @@ export async function direct(role: Role, params: {
     `SCENE ${sceneIndex + 1} OF ${total}`,
     plan,
     `TENSION TARGET (1-10): ${tension}`,
-    complicationLine(complication, context),
+    turnLines({ ...params, sceneIndex, total, context }),
     `OVERDUE SETUPS TO PAY OFF: ${overdue.map((s) => s.id).join(", ") || "none"}`,
     fix
   ].filter(Boolean).join("\n\n");
@@ -606,7 +623,7 @@ export async function direct(role: Role, params: {
     role: "director",
     system: DIRECTOR_SYSTEM,
     prompt,
-    ctx: { bible, sceneIndex, total, tension, complication, overdue, issues, fresh }
+    ctx: { bible, sceneIndex, total, tension, turn: params.turn, overdue, issues, fresh }
   });
   return { result: result as Beat, prompt, system, raw };
 }
@@ -848,8 +865,9 @@ export function taggingProblem(t: SpeakerTagging, paragraphCount: number, castId
 export const PALETTE_SYSTEM = `You are casting director and voice director for an audiobook. You read the whole script and give each speaking character a small palette of distinct performance tones — like choosing a few colours that can paint every line they speak. Each line will later be performed in one of its speaker's tones.
 
 Output ONLY JSON:
-{"palettes":{"<character id>":[string]}}
+{"palettes":{"narrator":[string],"<character id>":[string]}}
 
+- "narrator": the storyteller's own registers across this script — how the narration itself should be read in its calmest, tensest, most intimate and heaviest stretches, in this story's tone (a deadpan comedy's narrator is not a ghost story's). Its FIRST tone is its home register, used for plain narration.
 - One entry per character in CAST who speaks in the script (skip anyone who never speaks), using the CAST id.
 - Each palette has at most the PALETTE SIZE given: tones of 2-6 words of performance direction ("low, suppressed fury", "bright, deflecting charm").
 - Draw them from what the character actually says and goes through across the WHOLE script: cover their real range, from their most common register to their most extreme moment. No near-duplicates.`;
@@ -871,11 +889,11 @@ export async function designPalettes(role: Role, params: { script: string; cast:
     problem = "";
     for (const [id, tones] of Object.entries(raw)) {
       const list = Array.isArray(tones) ? tones.map((t) => String(t).trim()).filter(Boolean) : [];
-      if (!ids.has(id)) { problem = `"${id}" is not a CAST id`; break; }
+      if (!ids.has(id) && id !== "narrator") { problem = `"${id}" is not a CAST id (or "narrator")`; break; }
       if (list.length === 0 || list.length > size) { problem = `${id} has ${list.length} tones (want 1-${size})`; break; }
       palettes[id] = list;
     }
-    if (!problem && Object.keys(palettes).length === 0) problem = "no palettes";
+    if (!problem && !palettes.narrator) problem = "no narrator palette";
     if (!problem) return { ...out, result: palettes };
     prompt = `${prompt}\n\nYour last reply was unusable: ${problem}. Reply again.`;
   }
@@ -1163,19 +1181,18 @@ export async function reviewBeat(role: Role, params: {
   sceneIndex: number;
   total: number;
   tension: number;
-  complication: string;
   overdue?: Setup[];
   previousIssues?: ReadonlyArray<Issue | string>;
   context?: string;
-}): Promise<RoleOutput<Verdict>> {
-  const { bible, beat, sceneIndex, total, tension, complication, overdue, previousIssues, context } = params;
+} & TurnParams): Promise<RoleOutput<Verdict>> {
+  const { bible, beat, sceneIndex, total, tension, overdue, previousIssues, context } = params;
   const priorIssues = previousIssuesBlock(previousIssues, "BEAT SPEC ISSUES FLAGGED PREVIOUSLY (do not re-flag)");
   const prompt = [
     context ? `STORY CONTEXT (provided by author):\n${context}` : "",
     renderBible(bible),
     `SCENE ${sceneIndex + 1} OF ${total}`,
     `TENSION TARGET (1-10): ${tension}`,
-    complicationLine(complication, context),
+    turnLines({ ...params, sceneIndex, total, context }),
     overdue ? `OVERDUE SETUPS TO PAY OFF: ${overdue.map((s) => s.id).join(", ") || "none"}` : "",
     `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`,
     priorIssues
