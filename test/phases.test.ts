@@ -227,3 +227,25 @@ test("a sheet reference image: copied and hashed, drives the portrait, and a new
   await editSheet(runDir, (s) => { s.characters.lemuel.reference = "notes.txt"; });
   await assert.rejects(syncCharacterSheet(runDir, log), /must be a \.png, \.jpg or \.webp image/);
 });
+
+// A sheet edit must be able to change a face: when a portrait is remade, its old
+// look is not handed to the art director as canon to keep.
+test("a remade portrait follows the new sheet entry, not its old look", async () => {
+  const { runDir, log } = await run();
+  const config = JSON.parse(await readFile(new URL("../story.config.json", import.meta.url), "utf8"));
+  const prompts: string[] = [];
+  const roles = buildRoleProviders(config);
+  const inner = roles.artdirector!.provider;
+  roles.artdirector!.provider = { complete: async (req) => { prompts.push(req.prompt); return inner.complete(req); } };
+  await syncCharacterSheet(runDir, log);
+  await planReferences({ config, log, roles });
+  await log.append("visual_ref", { kind: "character", id: "lemuel", appearance: "OLD LOOK: grey hair, long lined face", prompt: "old portrait" });
+  await editSheet(runDir, (s) => { s.characters.lemuel.appearance = "NEW LOOK: ginger beard, broken nose"; });
+  await syncCharacterSheet(runDir, log);
+  prompts.length = 0;
+  const out = await planReferences({ config, log, roles });
+  assert.ok(out.made.includes("character:lemuel"));
+  const remake = prompts.find((p) => p.includes("lemuel"))!;
+  assert.ok(remake.includes("NEW LOOK: ginger beard"), "the sheet's look reaches the art director");
+  assert.ok(!remake.includes("OLD LOOK"), "the old portrait's look is not passed as canon");
+});
