@@ -51,7 +51,8 @@ const USAGE = `scriptorium <command> [options]
                                                          render the run's scenes to WAV
   art   --out <dir> [--config <file>] [--force]          render the run's art prompts to images
   video --out <dir> [--encoder auto|nvenc|x264] [--parallel N] [--force]
-                                                         assemble art + audiobook into video/story.mp4
+                                                         assemble art + audiobook into video/story.mp4,
+                                                         with scene cards and credits (titles: a story file)
                                                          (Ken Burns shots, timed crossfades, subtitles)
   artdirect --out <dir> [--config <file>]               redo the art direction (shots + cover) for an
                                                          existing run, then render the images

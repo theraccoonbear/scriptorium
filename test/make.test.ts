@@ -215,3 +215,16 @@ test("make runs a review phase on its own, routing --redo to it", async () => {
   await assert.rejects(make(file, { only: "art", redo: ["character:nell"], steps }), /refs phase/);
   await assert.rejects(make(file, { only: "refs", notes: "x", steps }), /--note goes with --redo/);
 });
+
+test("story files carry a title, subtitle and series, and video titles settings; malformed ones are rejected", async () => {
+  const { file } = await storyDir({ title: "Rantoul's Mushrooms", subtitle: "Part 1", series: { next: "Part 2" }, video: { titles: { narrate: true, sceneTitles: ["The ditch"], ending: "The End" } } });
+  const s = await loadStoryFile(file);
+  assert.equal(s.title, "Rantoul's Mushrooms");
+  assert.equal(s.subtitle, "Part 1");
+  assert.deepEqual(s.series, { next: "Part 2" });
+  assert.deepEqual(s.video.titles, { narrate: true, sceneTitles: ["The ditch"], ending: "The End" });
+  assert.equal((await loadStoryFile((await storyDir({ video: { titles: false } })).file)).video.titles, false);
+  await assert.rejects(loadStoryFile((await storyDir({ video: { titles: { sceneTitles: "yes" } } })).file), /"sceneTitles" must be/);
+  await assert.rejects(loadStoryFile((await storyDir({ video: { titles: { narrate: "on" } } })).file), /"narrate" must be true or false/);
+  await assert.rejects(loadStoryFile((await storyDir({ series: "Part 2" })).file), /"series" must look like/);
+});

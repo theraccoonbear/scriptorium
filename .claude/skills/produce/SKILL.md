@@ -17,7 +17,7 @@ You are the interface to Scriptorium's pipeline. The author reviews and signs of
 | 3 | Voices | `npm run make -- <story.json> --only voices` | `npm run review -- <story.json> voices` | cents |
 | 4 | Shots + cover | `npm run make -- <story.json> --only art` | `npm run review -- <story.json> shots` | ~$0.05/image (batch) |
 | 5 | Audiobook | `npm run make -- <story.json> --only audiobook` | `<run>/audiobook/scene-NN.mp3` | ~$0.01/min (batch) |
-| 6 | Video | `npm run make -- <story.json> --only video` | `<run>/video/story.mp4` | free (local) |
+| 6 | Video | `npm run make -- <story.json> --only video` | `<run>/video/story.mp4`, `<run>/video/titles.json` | free (local); a narrated title is one Gemini TTS line |
 
 `<run>` is the story file's `"out"`. Every phase resumes and skips finished work, so re-running is safe.
 
@@ -65,6 +65,8 @@ After `--only voices`, build the reel (`npm run review -- <story.json> voices`) 
 ## Phases 5–6
 
 The audiobook and video need no review loop; send a scene MP3 or the video path when done.
+
+Before the video, check the story file has a `title` (and `subtitle`, and `series` for a chapter); without one, the opening has no text. After it, show the author the scene titles the run printed (from `<run>/video/titles.json`). To change one, edit its `title` there and re-run `--only video`: only that card and the join are redone. `video.titles.narrate` makes a paid TTS call, so pitch it before turning it on.
 
 ## House rules
 

@@ -113,6 +113,7 @@ export interface Beat {
   mustReveal: string;
   constraints: string[];
   payoffs: string[];
+  title?: string;     // the scene's title card ("The Pardon"): a few words, no spoilers
 }
 
 export interface Patch {
