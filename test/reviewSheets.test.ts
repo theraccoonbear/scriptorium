@@ -15,18 +15,21 @@ const manifest = {
   cover: entry("cover.png")
 } as ArtManifest;
 
-test("contact sheets: references (characters first) in one, shots one per scene, the cover on its own; approved marked", () => {
+test("contact sheets: references split into characters, locations and props; shots one per scene, the cover on its own; approved marked", () => {
   const refs = contactSheets(manifest, "refs", new Set(["character-lemuel"]), "/run/art");
-  assert.deepEqual([...refs.keys()], ["refs"]);
-  assert.deepEqual(refs.get("refs")!.map((t) => t.label), ["✓ character-lemuel", "location-ditch"]);
-  assert.equal(refs.get("refs")![0].file, "/run/art/character-lemuel.png");
+  assert.deepEqual([...refs.keys()], ["refs-characters", "refs-locations"]);
+  assert.deepEqual(refs.get("refs-characters")!.map((t) => t.label), ["✓ character-lemuel"]);
+  assert.deepEqual(refs.get("refs-locations")!.map((t) => t.label), ["location-ditch"]);
+  assert.equal(refs.get("refs-characters")![0].file, "/run/art/character-lemuel.png");
   const shots = contactSheets(manifest, "shots", new Set(), "/run/art");
   assert.deepEqual([...shots.keys()], ["shots-scene-01", "shots-scene-02", "cover"]);
   assert.deepEqual(shots.get("shots-scene-01")!.map((t) => t.label), ["scene-01-01", "scene-01-02"]);
-  const args = montageArgs(refs.get("refs")!, "/run/review/refs.jpg");
+  const two = [...refs.get("refs-characters")!, ...refs.get("refs-locations")!];
+  const args = montageArgs(two, "/run/review/refs-characters.jpg");
   assert.deepEqual(args.slice(0, 4), ["montage", "-label", "✓ character-lemuel", "/run/art/character-lemuel.png"]);
-  assert.equal(args.at(-1), "/run/review/refs.jpg");
+  assert.equal(args.at(-1), "/run/review/refs-characters.jpg");
   assert.ok(args.includes("2x"), "no wider than the tiles");
+  assert.ok(args.includes("960x960>+12+12"), "tiles big enough to judge on a phone");
 });
 
 test("the voice reel puts every sample in one file, a second apart, with a legend of who speaks when", () => {

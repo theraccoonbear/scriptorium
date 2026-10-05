@@ -25,7 +25,7 @@ You are the interface to Scriptorium's pipeline. The author reviews and signs of
 ## Review files
 
 `npm run review -- <story.json> refs|shots|voices|music` builds them in `<run>/review/` (free):
-- `refs.jpg`: every reference, labeled with its key (`✓` = approved)
+- `refs-characters.jpg`, `refs-locations.jpg`, `refs-props.jpg`: every reference, labeled with its key (`✓` = approved)
 - `shots-scene-NN.jpg` (one per scene) and `cover.jpg`
 - `music.mp3`: every music cue, theme first, with its legend (`music.txt`)
 - `voices.mp3`: every voice sample, a second apart, narrator first. The legend (`voices.txt`, also printed) says who speaks at what time, with which voice.

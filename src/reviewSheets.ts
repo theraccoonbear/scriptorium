@@ -18,15 +18,17 @@ export const REVIEW_KINDS: readonly ReviewKind[] = ["refs", "shots", "voices", "
 
 export interface SheetTile { label: string; file: string }
 
-// The tiles of each contact sheet: one for the references, one per scene of
-// shots (the cover with the last), in art.json order.
+// The tiles of each contact sheet: one each for the character, location and
+// prop references, one per scene of shots (the cover on its own), in art.json order.
 export function contactSheets(manifest: ArtManifest, kind: "refs" | "shots", approved: ReadonlySet<string>, artDir: string): Map<string, SheetTile[]> {
   const sheets = new Map<string, SheetTile[]>();
   const tile = (key: string): SheetTile => ({ label: `${approved.has(key) ? "✓ " : ""}${key}`, file: join(artDir, manifest[key].file) });
   const keys = Object.keys(manifest);
   if (kind === "refs") {
-    const refs = keys.filter((k) => manifest[k].refKind).sort((a, b) => order(a) - order(b) || a.localeCompare(b));
-    if (refs.length) sheets.set("refs", refs.map(tile));
+    for (const kind of ["character", "location", "prop"] as const) {
+      const refs = keys.filter((k) => manifest[k].refKind === kind).sort();
+      if (refs.length) sheets.set(`refs-${kind === "character" ? "characters" : kind === "location" ? "locations" : "props"}`, refs.map(tile));
+    }
     return sheets;
   }
   const shots = keys.filter((k) => /^scene-\d+/.test(k)).sort();
@@ -39,13 +41,10 @@ export function contactSheets(manifest: ArtManifest, kind: "refs" | "shots", app
   return sheets;
 }
 
-function order(key: string): number {
-  return key.startsWith("character-") ? 0 : key.startsWith("location-") ? 1 : 2;
-}
-
-// ImageMagick montage arguments: each tile labeled, four across.
+// ImageMagick montage arguments: each tile labeled, four across, large enough
+// to judge a face or a prop on a phone (up to 960 px a tile).
 export function montageArgs(tiles: SheetTile[], out: string): string[] {
-  return ["montage", ...tiles.flatMap((t) => ["-label", t.label, t.file]), "-tile", `${Math.min(4, tiles.length)}x`, "-geometry", "480x480>+8+8", "-pointsize", "18", "-background", "#1e1e1e", "-fill", "#f0f0f0", out];
+  return ["montage", ...tiles.flatMap((t) => ["-label", t.label, t.file]), "-tile", `${Math.min(4, tiles.length)}x`, "-geometry", "960x960>+12+12", "-pointsize", "30", "-background", "#1e1e1e", "-fill", "#f0f0f0", "-quality", "88", out];
 }
 
 export interface ReelEntry { id: string; start: number; seconds: number; voice: string; approved: boolean }
