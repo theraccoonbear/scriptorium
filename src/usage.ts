@@ -8,11 +8,14 @@ import { join } from "node:path";
 // folder (usage.jsonl), so totals and the budget span every session of a run.
 
 // USD per million tokens. Estimates as of 2026-10; override with config.pricing.
+// A model billed per request instead (music) sets perRequest; its tokens, if
+// any, are then ignored.
 export interface Price {
   input: number;
   output: number;
   cacheRead?: number;
   cacheWrite?: number;
+  perRequest?: number;
 }
 
 export const DEFAULT_PRICES: Readonly<Record<string, Price>> = {
@@ -24,7 +27,10 @@ export const DEFAULT_PRICES: Readonly<Record<string, Price>> = {
   "gemini-3.8-flash-tts": { input: 0.5, output: 9 },
   "gemini-3.8-flash-lite-tts": { input: 0.5, output: 6 },
   "gemini-3.8-flash": { input: 0.75, output: 3.75 },
-  "gemini-3.1-flash-image": { input: 0.25, output: 60 }  // images bill as output tokens
+  "gemini-3.1-flash-image": { input: 0.25, output: 60 },  // images bill as output tokens
+  // Lyria music: a flat price per generated cue, whatever its length
+  "lyria-3.5": { input: 0, output: 0, perRequest: 0.08 },
+  "lyria-3-clip-preview": { input: 0, output: 0, perRequest: 0.04 }
 };
 
 // Exact id, else the longest table key the id starts with ("claude-haiku-4-5-20251001").
@@ -131,14 +137,16 @@ export class Accountant {
 
   // priceFactor: batch-mode calls cost half (BATCH_PRICE_FACTOR).
   record(role: string, model: string, response: unknown, opts: { priceFactor?: number } = {}): LedgerEntry | undefined {
-    const usage = extractUsage(response);
-    if (!usage) return undefined;
     const price = priceFor(model, this.prices);
+    const flat = price?.perRequest;
+    // A per-request model is recorded whether or not its response reports tokens.
+    const usage = extractUsage(response) ?? (flat !== undefined ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : undefined);
+    if (!usage) return undefined;
     if (!price && !this.unpriced.has(model)) {
       this.unpriced.add(model);
       console.error(`[scriptorium] no price for model "${model}" — its tokens are logged but not costed (add it to config.pricing)`);
     }
-    const usd = price ? costOf(usage, price) * (opts.priceFactor ?? 1) : null;
+    const usd = price ? (flat ?? costOf(usage, price)) * (opts.priceFactor ?? 1) : null;
     // Steps can run at once (art and audio): the step is the caller's, not the last one set.
     const step = context.getStore()?.step ?? this.step;
     const entry: LedgerEntry = { ts: new Date().toISOString(), step, role, model, ...usage, usd, ...(opts.priceFactor !== undefined && opts.priceFactor !== 1 ? { batch: true } : {}) };

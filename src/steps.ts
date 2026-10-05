@@ -11,6 +11,8 @@ import { renderVoiceSamples } from "./voiceSamples.ts";
 import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
 import { prepareTitles } from "./titles.ts";
+import { cueSheetFor, cuesFromSheet, generateCues, geminiVoiceCheck, lyriaComposer, MUSIC_DEFAULTS, prepareMusic, sceneSeconds } from "./music.ts";
+import type { Compose, MusicSettings, VoiceCheck } from "./music.ts";
 import type { TitleSettings } from "./titles.ts";
 import type { EncoderChoice } from "./video.ts";
 import { BatchImageBackend, CAST_PHOTO_LABEL, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig } from "./artist.ts";
@@ -420,6 +422,34 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
   return result;
 }
 
+// The score: the music director's cue sheet, then each cue from Lyria, checked
+// for voices and retaken until clean. Paid (a flat price per cue); the mix
+// under the narration happens in the video step and costs nothing.
+export async function musicStep(runDir: string, config: StoryConfig, settings: MusicSettings, opts: { force?: boolean; compose?: Compose; check?: VoiceCheck } = {}) {
+  return accounted(runDir, config, "music", async () => {
+    const log = new EventLog(runDir);
+    await log.load();
+    const roles = buildRoleProviders(config);
+    const lengths = await sceneSeconds(runDir);
+    const { sheet, made } = await cueSheetFor(log, roles.musicdirector ?? roles.continuist, settings, lengths);
+    console.error(`[scriptorium] ${c.dim(`${made ? "cue sheet written" : "cue sheet unchanged"} — sound: ${sheet.style}`)}`);
+    const cues = cuesFromSheet(sheet, lengths);
+    const index = await generateCues(runDir, cues, {
+      compose: opts.compose ?? lyriaComposer(),
+      check: opts.check ?? geminiVoiceCheck(),
+      model: settings.model, maxTakes: settings.maxTakes, force: opts.force,
+      onProgress: (e) => {
+        if (e.type === "cue_kept") console.error(`[scriptorium] ${c.dim(`${e.id} unchanged${e.clean ? "" : " (failed before; change its prompt or --force to retry)"}`)}`);
+        else if (e.type === "take" && e.findings.length) console.error(`[scriptorium]   ${c.retry(`${e.id} take ${e.take} (${e.model}) has a voice — set aside: ${e.findings[0].slice(0, 120)}`)}`);
+        else if (e.type === "cue_done") console.error(`[scriptorium] ${e.clean ? c.ok(`${e.id} made (${e.model}, ${e.takes} take${e.takes === 1 ? "" : "s"})`) : c.retry(`${e.id}: every take had a voice — this cue is left out`)}`);
+      }
+    });
+    const clean = cues.filter((q) => index[q.id]?.clean).length;
+    console.log(`${c.ok(`${clean} of ${cues.length} cues ready →`)} ${c.cyan(join(runDir, "music") + "/")}`);
+    return index;
+  });
+}
+
 export interface VideoStepOptions {
   encoder?: EncoderChoice;
   parallel?: number;
@@ -431,6 +461,7 @@ export interface VideoStepOptions {
   base?: string;                    // where relative font paths resolve
   gemini?: boolean;                 // the audiobook spoke with Gemini voices
   geminiModel?: string;             // for the narrated title
+  music?: MusicSettings;            // lay the score under the narration
 }
 
 export async function videoStep(runDir: string, events: StoryEvent[], force: boolean | undefined, opts: VideoStepOptions = {}) {
@@ -447,12 +478,20 @@ export async function videoStep(runDir: string, events: StoryEvent[], force: boo
     onNote: (m) => console.error(`[scriptorium] ${c.dim(m)}`)
   });
   if (titles?.sceneCards) console.error(`[scriptorium] ${c.dim(`scene titles: ${Object.values(titles.sceneTitles).map((t) => t || "—").join(" · ")} (edit ${join(runDir, "video", "titles.json")})`)}`);
+  let music;
+  if (opts.music) {
+    const timings = JSON.parse(await readFile(join(runDir, "audiobook", "timings.json"), "utf8").catch(() => '{"scenes":[]}')) as { scenes: Array<{ index: number; file: string; durationSec: number }> };
+    music = await prepareMusic(runDir, timings.scenes.map((s) => ({ index: s.index, audio: `audiobook/${s.file}`, seconds: s.durationSec })), opts.music);
+    if (music) console.error(`[scriptorium] ${c.dim(`music: ${music.theme ? "theme + " : ""}${Object.keys(music.beds).length} scene bed${Object.keys(music.beds).length === 1 ? "" : "s"}, ${opts.music.duck ?? MUSIC_DEFAULTS.duck} dB under the narrator`)}`);
+    else console.error(`[scriptorium] ${c.retry("music is on, but there are no cues yet — run the music step first")}`);
+  }
   const result = await renderVideo(events, {
     runDir,
     force,
     encoder: opts.encoder,
     parallel: opts.parallel,
     titles,
+    music,
     onProgress: (event) => {
       if (event.type === "encoder") console.error(`[scriptorium] ${c.dim(`encoding with ${event.encoder === "nvenc" ? "NVENC (GPU)" : "x264 (CPU)"}, ${event.parallel} scene${event.parallel === 1 ? "" : "s"} at a time`)}`);
       else if (event.type === "warning") console.error(`[scriptorium] ${c.retry(event.message)}`);

@@ -13,8 +13,8 @@ import type { ArtManifest } from "./artist.ts";
 // a legend of who speaks when. Approved work is marked ✓.
 
 const run = promisify(execFile);
-export type ReviewKind = "refs" | "shots" | "voices";
-export const REVIEW_KINDS: readonly ReviewKind[] = ["refs", "shots", "voices"];
+export type ReviewKind = "refs" | "shots" | "voices" | "music";
+export const REVIEW_KINDS: readonly ReviewKind[] = ["refs", "shots", "voices", "music"];
 
 export interface SheetTile { label: string; file: string }
 
@@ -80,6 +80,26 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
   const outDir = join(runDir, "review");
   await mkdir(outDir, { recursive: true });
   const approvals = await readApprovals(runDir);
+  if (kind === "music") {
+    // Every clean cue in order, theme first, a second apart.
+    let index: Record<string, { file: string; model: string; takes: number; clean: boolean }> = {};
+    try { index = JSON.parse(await readFile(join(runDir, "music", "cues.json"), "utf8")); } catch { throw new Error(`no music in ${join(runDir, "music")} — run make --only music first`); }
+    const ids = Object.keys(index).filter((id) => index[id].clean).sort((a, b) => (a === "theme" ? -1 : b === "theme" ? 1 : a.localeCompare(b)));
+    if (ids.length === 0) throw new Error("no clean cues to review");
+    const legend: string[] = [];
+    let at = 0;
+    for (const id of ids) {
+      const { stdout } = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", join(runDir, index[id].file)]);
+      legend.push(`${clock(at)}  ${id} — ${index[id].model}, ${index[id].takes} take${index[id].takes === 1 ? "" : "s"}`);
+      at += Number(stdout.trim()) + 1;
+    }
+    const inputs = ids.flatMap((id) => ["-i", join(runDir, index[id].file)]);
+    const graph = ids.map((_, k) => `[${k}:a]aformat=sample_rates=48000:channel_layouts=stereo,apad=pad_dur=1[c${k}]`).join(";") + `;${ids.map((_, k) => `[c${k}]`).join("")}concat=n=${ids.length}:v=0:a=1[out]`;
+    const mp3 = join(outDir, "music.mp3");
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", ...inputs, "-filter_complex", graph, "-map", "[out]", "-codec:a", "libmp3lame", "-q:a", "4", mp3]);
+    await writeFile(join(outDir, "music.txt"), legend.join("\n") + "\n");
+    return { files: [mp3], legend: legend.join("\n") };
+  }
   if (kind === "voices") {
     const dir = join(runDir, "audiobook", "samples");
     let index: Record<string, { voice: string; text: string }> = {};

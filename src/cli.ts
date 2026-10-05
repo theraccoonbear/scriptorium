@@ -31,7 +31,7 @@ const USAGE = `scriptorium <command> [options]
           voices       cast every speaker and render a sample of each (audiobook/samples/)
         [--redo character:<id>,voice:<id>,...] [--note "..."]
                        remake these references (with your corrections) or recast these voices
-  review <story.json> refs|shots|voices
+  review <story.json> refs|shots|voices|music
         build the review files for a phase in <run>/review/: a labeled contact sheet of the
         portraits (or one per scene of shots), or one reel of every voice sample with a legend
   approve <story.json> <key>... [--revoke]

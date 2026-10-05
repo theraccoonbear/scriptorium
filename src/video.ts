@@ -8,6 +8,7 @@ import type { SceneTiming } from "./audiobook.ts";
 import type { ArtManifest } from "./artist.ts";
 import { decodeWav } from "./geminiTts.ts";
 import { romanNumeral } from "./titles.ts";
+import type { MusicMix } from "./music.ts";
 import type { TitleCards } from "./titles.ts";
 import type { SceneCommittedData, StoryEvent } from "./types.ts";
 
@@ -34,6 +35,7 @@ export interface VideoOptions {
   titles?: TitleCards;
   narrationSec?: number;  // length of the narrated title (titles.narration)
   cardSec?: number;       // a scene card, black included, default 4
+  music?: MusicMix;       // the score, prepared under the narration (music.ts)
   holdSec?: number;       // the last shot held after the narration ends, default 2
 }
 
@@ -84,6 +86,8 @@ export interface Timeline {
   scenes: TimelineScene[];
   parts: TimelinePart[];
   narration?: string;      // the narrated title's WAV under the opening, relative to the run dir
+  narrationSec?: number;
+  music?: MusicMix;
   totalFrames: number;
   warnings: string[];
 }
@@ -209,6 +213,8 @@ export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: Vid
     scenes,
     parts,
     narration: introFrames > 0 && titles?.narration && opts.narrationSec ? titles.narration : undefined,
+    ...(introFrames > 0 && titles?.narration && opts.narrationSec ? { narrationSec: opts.narrationSec } : {}),
+    ...(opts.music ? { music: opts.music } : {}),
     totalFrames: parts.reduce((n, p) => n + p.frames, 0),
     warnings
   };
@@ -378,8 +384,76 @@ export function audioFilterGraph(timeline: Timeline): string {
     }
     labels.push(`[${label}]`);
   }
-  lines.push(`${labels.join("")}concat=n=${labels.length}:v=0:a=1[aout]`);
+  const music = musicInputs(timeline);
+  lines.push(`${labels.join("")}concat=n=${labels.length}:v=0:a=1[${music.length ? "voice" : "aout"}]`);
+  if (music.length) {
+    lines.push(...musicGraph(timeline, music, timeline.scenes.length + 1 + (narrated ? 1 : 0)));
+    lines.push("[voice][music]amix=inputs=2:normalize=0:duration=first[aout]");
+  }
   return lines.join(";\n");
+}
+
+// The score's input files, after the scenes' WAVs and the narrated title: the
+// theme under the opening, the theme again under the closing cards, then each
+// scene's bed in order.
+export function musicInputs(timeline: Timeline): Array<{ file: string; use: "intro" | "closing" | number }> {
+  const m = timeline.music;
+  if (!m) return [];
+  const out: Array<{ file: string; use: "intro" | "closing" | number }> = [];
+  if (m.theme && timeline.parts.some((p) => p.kind === "intro")) out.push({ file: m.theme, use: "intro" });
+  if (m.theme && timeline.parts.some((p) => CLOSING.has(p.kind))) out.push({ file: m.theme, use: "closing" });
+  timeline.scenes.forEach((s, k) => { if (m.beds[s.index]) out.push({ file: m.beds[s.index], use: k }); });
+  return out;
+}
+
+const CLOSING = new Set<PartKind>(["end", "credits", "next"]);
+
+// The music track, part by part like the narration: the theme under the
+// opening (dipped under a narrated title), each scene's bed (already ducked
+// under its narration) faded out over the scene's pad, silence under the scene
+// cards, and the theme again under the ending and credits.
+function musicGraph(timeline: Timeline, inputs: ReturnType<typeof musicInputs>, first: number): string[] {
+  const fmt = "aformat=sample_rates=48000:channel_layouts=stereo";
+  const at = (use: "intro" | "closing" | number) => {
+    const k = inputs.findIndex((i) => i.use === use);
+    return k === -1 ? undefined : first + k;
+  };
+  const lines: string[] = [];
+  const labels: string[] = [];
+  let k = 0;
+  const parts = timeline.parts;
+  while (k < parts.length) {
+    const part = parts[k];
+    const label = `m${k}`;
+    // Consecutive closing cards share one stretch of the theme.
+    if (CLOSING.has(part.kind)) {
+      let frames = 0;
+      while (k < parts.length && CLOSING.has(parts[k].kind)) frames += parts[k++].frames;
+      const d = sec(frames);
+      const input = at("closing");
+      lines.push(input === undefined
+        ? `anullsrc=r=48000:cl=stereo,atrim=end=${d}[${label}]`
+        : `[${input}:a]${fmt},apad=whole_dur=${d},atrim=end=${d},afade=t=in:d=1,afade=t=out:st=${Math.max(0, d - 3)}:d=3[${label}]`);
+      labels.push(`[${label}]`);
+      continue;
+    }
+    const d = sec(part.frames);
+    const input = part.kind === "intro" ? at("intro") : part.kind === "scene" ? at(part.scene!) : undefined;
+    if (input === undefined) lines.push(`anullsrc=r=48000:cl=stereo,atrim=end=${d}[${label}]`);
+    else if (part.kind === "intro") {
+      const dip = timeline.narration && timeline.narrationSec
+        ? `,volume=-${timeline.music!.duck}dB:enable='between(t,${NARRATION_AT - 0.3},${NARRATION_AT + timeline.narrationSec + 0.5})'`
+        : "";
+      lines.push(`[${input}:a]${fmt},apad=whole_dur=${d},atrim=end=${d}${dip},afade=t=in:d=0.5,afade=t=out:st=${Math.max(0, d - 1.5)}:d=1.5[${label}]`);
+    } else {
+      const fade = Math.min(1.5, d / 4);
+      lines.push(`[${input}:a]${fmt},apad=whole_dur=${d},atrim=end=${d},afade=t=out:st=${d - fade}:d=${fade}[${label}]`);
+    }
+    labels.push(`[${label}]`);
+    k++;
+  }
+  lines.push(`${labels.join("")}concat=n=${labels.length}:v=0:a=1[music]`);
+  return lines;
 }
 
 function srtTime(s: number): string {
@@ -643,6 +717,7 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
     "-f", "concat", "-safe", "0", "-i", join(partsDir, "parts.txt"),
     ...timeline.scenes.flatMap((s) => ["-i", join(runDir, s.audio)]),
     ...(timeline.narration ? ["-i", join(runDir, timeline.narration)] : []),
+    ...musicInputs(timeline).flatMap((m) => ["-i", join(runDir, m.file)]),
     "-filter_complex", audioFilterGraph(timeline),
     "-map", "0:v", "-map", "[aout]",
     "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
