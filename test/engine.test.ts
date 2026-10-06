@@ -423,7 +423,7 @@ test("references for a big cast are made in batches of 3, and earlier batches su
   await log.load();
   // Grow the cast to 7 characters by patching the bible through the log.
   const extra = Array.from({ length: 5 }, (_, k) => ({ id: `extra${k}`, name: `Extra ${k}` }));
-  await log.append("scene_committed", { index: 1, patch: { upsertCharacters: extra }, prose: "The extras gather.\n\nThey wait.", beat: (log.events[0].data as SceneCommittedData).beat });
+  await log.append("scene_committed", { index: 1, patch: { upsertCharacters: extra }, prose: "The extras gather.\n\nThey wait.\n\nThey go.", beat: (log.events[0].data as SceneCommittedData).beat });
 
   const roles = buildRoleProviders(config);
   const batches: Array<{ characterIds: string[]; locationIds: string[] }> = [];
@@ -438,9 +438,11 @@ test("references for a big cast are made in batches of 3, and earlier batches su
       }
       const out = await real(req);
       if (ctx.mode !== "scene") return out;
-      // Every character is on screen in the first shot.
+      // Every character is on screen somewhere, three to a shot (the most a shot may name).
       const parsed = JSON.parse(out);
-      parsed.shots[0].characters = ctx.knownIds;
+      const ids: string[] = ctx.knownIds;
+      const base = parsed.shots[0];
+      parsed.shots = Array.from({ length: Math.ceil(ids.length / 3) }, (_, k) => ({ ...base, start_paragraph: k + 1, characters: ids.slice(k * 3, k * 3 + 3) }));
       return JSON.stringify(parsed);
     }
   };

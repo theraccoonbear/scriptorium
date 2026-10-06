@@ -478,3 +478,14 @@ test("a role takes its provider's timeout when it sets none (a slow thinking mod
   assert.equal(roles.director.timeoutMs, 1000);
   assert.equal(roles.continuist.timeoutMs, 180000);
 });
+
+test("a shot names at most three characters (more and the image model blends their features)", async () => {
+  const { normalizeShots, ARTDIRECTOR_SYSTEM: SYSTEM, MAX_SHOT_CHARACTERS } = await import("../src/roles.ts");
+  const known = { characters: new Set(["a", "b", "c", "d", "e"]), locations: new Set<string>(), props: new Set<string>() };
+  const shots = normalizeShots({ shots: [{ start_paragraph: 1, prompt: "the whole company", characters: ["a", "b", "c", "d", "e"] }] }, 3, known);
+  assert.equal(MAX_SHOT_CHARACTERS, 3);
+  assert.deepEqual(shots[0].characters, ["a", "b", "c"]);
+  assert.ok(SYSTEM.includes("At most THREE named characters"));
+  const { INSPECTOR_SYSTEM } = await import("../src/artist.ts");
+  assert.ok(INSPECTOR_SYSTEM.includes("CHARACTER MIX-UP"), "the inspector checks no one wears someone else's features");
+});

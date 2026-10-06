@@ -868,7 +868,7 @@ export async function planReferences({ config, log, roles, runDir, redo = [], no
 
 // The shots phase's planning: shots for every scene that has none yet, and the
 // cover when it's missing or out of date. Directed shots are kept as they are.
-export async function planShots({ config, log, roles, runDir }: { config: StoryConfig; log: EventLog; roles: Roles; runDir?: string }): Promise<number> {
+export async function planShots({ config, log, roles, runDir, replan = [] }: { config: StoryConfig; log: EventLog; roles: Roles; runDir?: string; replan?: number[] }): Promise<number> {
   const artRole = roles.artdirector;
   if (!artRole) throw new Error("config has no artdirector role");
   await log.load();
@@ -877,7 +877,8 @@ export async function planShots({ config, log, roles, runDir }: { config: StoryC
   const recordRefs = async (out: RoleOutput<ArtDirection>) => {
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-references", out);
   };
-  const directed = new Set(log.events.filter((e) => e.type === "scene_art").map((e) => (e.data as SceneArtData).sceneIndex));
+  // replan: scene indexes whose shots are planned again (the newest scene_art wins).
+  const directed = new Set(log.events.filter((e) => e.type === "scene_art").map((e) => (e.data as SceneArtData).sceneIndex).filter((i) => !replan.includes(i)));
   const events = [...log.events];
   let planned = 0;
   for (const [n, e] of events.entries()) {
