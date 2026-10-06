@@ -214,6 +214,13 @@ test("make runs a review phase on its own, routing --redo to it", async () => {
   assert.deepEqual(calls, ["characters", "refs", "refs character:nell older", "voices nell"]);
   await assert.rejects(make(file, { only: "art", redo: ["character:nell"], steps }), /refs phase/);
   await assert.rejects(make(file, { only: "refs", notes: "x", steps }), /--note goes with --redo/);
+
+  // Shots (#100): one by key with the author's note, or a scene re-planned; only in the art step.
+  const shots: unknown[] = [];
+  const art = { ...steps, art: async (_s: unknown, _e: unknown, redo?: unknown) => { shots.push(redo); } };
+  await make(file, { only: "art", redo: ["scene-04-07", "scene:5"], notes: "seven legs", steps: art });
+  assert.deepEqual(shots, [{ redo: ["scene-04-07"], replan: [4], note: "seven legs" }]);
+  await assert.rejects(make(file, { only: "refs", redo: ["scene-04-07"], steps: art }), /shots are redone in the art step/);
 });
 
 test("story files carry a title, subtitle and series, and video titles settings; malformed ones are rejected", async () => {

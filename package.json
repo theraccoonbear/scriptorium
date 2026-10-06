@@ -19,7 +19,8 @@
     "cast": "node --env-file-if-exists=.env src/cli.ts cast",
     "pitch": "node --env-file-if-exists=.env src/cli.ts pitch",
     "approve": "node src/cli.ts approve",
-    "review": "node src/cli.ts review"
+    "review": "node src/cli.ts review",
+    "reshoot": "node --env-file-if-exists=.env src/cli.ts reshoot"
   },
   "engines": {
     "node": ">=20"

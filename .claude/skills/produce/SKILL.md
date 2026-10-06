@@ -65,6 +65,8 @@ After `--only voices`, build the reel (`npm run review -- <story.json> voices`) 
 ## Phase 4: shots
 
 `--only art` plans shots for every scene that has none, then renders them. Send the shots contact sheet (`npm run review -- <story.json> shots`), scene by scene. Approve good shots by key (`scene-03-07`); approved images are never redone.
+- **Redo a shot:** `npm run make -- <story.json> --only art --redo scene-03-07 --note "what's wrong"` (the note stays with that shot). `--redo scene:3` re-plans scene 3's shots.
+- **Reshoots:** after any reference changes, `npm run reshoot -- <story.json>` lists the shots drawn from the old version (⟳ on the contact sheet) with the cost. `--only art` reshoots the unapproved ones. Pitch it like any paid phase.
 
 ## Phases 5–6
 

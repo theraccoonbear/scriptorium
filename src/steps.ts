@@ -177,6 +177,8 @@ async function castPreviewInner(opts: CastPreviewOptions) {
 export interface ArtPhase {
   only?: "references";
   redo?: string[];     // "kind:id"
+  shotRedo?: string[]; // shot keys to render again (scene-04-07, cover), with notes as the author's correction
+  replan?: number[];   // scene indexes whose shots are planned again
   notes?: string;
 }
 
@@ -195,15 +197,19 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
         if (stale.length) console.error(`[scriptorium] ${c.dim(`character sheet changed for ${stale.join(", ")} — new portraits`)}`);
         if (made.length) console.error(`[scriptorium] ${c.ok(`${made.length} reference${made.length === 1 ? "" : "s"} planned`)} ${c.dim(made.join(", "))}`);
       } else {
-        if (phase.redo?.length) throw new Error("--redo applies to the refs step (make --only refs --redo kind:id)");
-        const planned = await planShots({ config, log, roles, runDir });
+        if (phase.redo?.length) throw new Error("--redo kind:id applies to the refs step (make --only refs --redo kind:id)");
+        const locked = (phase.shotRedo ?? []).filter((k) => approved.has(k));
+        if (locked.length) throw new Error(`${locked.join(", ")} ${locked.length === 1 ? "is" : "are"} approved — revoke the approval before redoing`);
+        // The author's correction rides with the shot's prompt from now on.
+        if (phase.notes) for (const key of phase.shotRedo ?? []) await log.append("shot_note", { key, note: phase.notes });
+        const planned = await planShots({ config, log, roles, runDir, ...(phase.replan?.length ? { replan: phase.replan } : {}) });
         if (planned) console.error(`[scriptorium] ${c.ok(`shots planned for ${planned} scene${planned === 1 ? "" : "s"}`)}`);
       }
       events = log.events;
     } else if (phase.only === "references" || phase.redo?.length) {
       throw new Error("the refs step needs a config with an artdirector role");
     }
-    return artStepInner(runDir, config, events, force, { approved, ...(phase.only ? { only: phase.only } : {}) });
+    return artStepInner(runDir, config, events, force, { approved, ...(phase.only ? { only: phase.only } : {}), ...(phase.shotRedo?.length ? { redoKeys: phase.shotRedo } : {}) });
   });
 }
 
@@ -230,7 +236,7 @@ function triageCap(runDir: string, config: StoryConfig, _events: StoryEvent[]): 
   };
 }
 
-async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, lock: { approved?: ReadonlySet<string>; only?: "references" } = {}) {
+async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, lock: { approved?: ReadonlySet<string>; only?: "references"; redoKeys?: string[] } = {}) {
   const artist = resolveArtistConfig(config.artist);
   // Batch Mode: every image a stage asks for goes out together, at half price.
   const batch = artist.batch === true && artist.image.type === "gemini";
@@ -257,6 +263,7 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
       else if (event.type === "job_failed") console.error(`[scriptorium] ${c.fail(`${event.key} failed: ${event.error}`)}`);
       else if (event.type === "triage") console.error(`[scriptorium] ${c.blue(c.bold(`triage: ${event.scored} images scored — retaking the worst ${event.retakes}`))}`);
       else if (event.type === "names_removed") console.error(`[scriptorium]   ${c.retry(`${event.key}: removed names from the image prompt: ${event.names.join(", ")}`)}`);
+      else if (event.type === "stale_approved") console.error(`[scriptorium]   ${c.retry(`${event.key}: drawn from ${event.refs.join(", ")}, which changed — approved, so it stays (revoke to reshoot)`)}`);
       else if (event.type === "retake_done") console.error(`[scriptorium]   ${event.kept ? c.ok(`${event.key}: retake kept (severity ${event.before} → ${event.after})`) : c.dim(`${event.key}: retake no better (${event.before} → ${event.after}) — kept the first`)}`);
     }
   });

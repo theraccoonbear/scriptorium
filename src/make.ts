@@ -289,12 +289,15 @@ export interface MakeOptions {
   steps?: Partial<StepRunners>;  // injectable for tests
 }
 
+// Shots to redo in the art step: by key (with the author's note), or whole scenes re-planned.
+export interface ShotRedo { redo: string[]; replan: number[]; note?: string }
+
 export interface StepRunners {
   story: (story: ResolvedStory) => Promise<void>;
   characters: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   refs: (story: ResolvedStory, events: StoryEvent[], redo: string[], notes?: string) => Promise<void>;
   voices: (story: ResolvedStory, events: StoryEvent[], redo: string[]) => Promise<void>;
-  art: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
+  art: (story: ResolvedStory, events: StoryEvent[], shots?: ShotRedo) => Promise<void>;
   audiobook: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   music: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   video: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
@@ -318,7 +321,7 @@ const defaultRunners: StepRunners = {
   refs: async (s, events, redo, notes) => { await artStep(s.runDir, s.config, events, false, { only: "references", redo, ...(notes ? { notes } : {}) }); },
   voices: async (s, events, redo) => { await voicesStep(s.runDir, events, { ...audiobookOptions(s), redo }); },
   // make never re-renders finished work; the individual commands take --force for that.
-  art: async (s, events) => { await artStep(s.runDir, s.config, events, false); },
+  art: async (s, events, shots) => { await artStep(s.runDir, s.config, events, false, shots ? { shotRedo: shots.redo, replan: shots.replan, ...(shots.note ? { notes: shots.note } : {}) } : {}); },
   audiobook: async (s, events) => { await audiobookStep(s.runDir, events, audiobookOptions(s)); },
   // Off unless the story file has a "music" block.
   music: async (s) => {
@@ -413,10 +416,14 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   const run = { ...defaultRunners, ...opts.steps };
   const redo = opts.redo ?? [];
   const redoVoices = redo.filter((r) => r.startsWith("voice:")).map((r) => r.slice("voice:".length));
-  const redoRefs = redo.filter((r) => !r.startsWith("voice:"));
+  // Shots: scene-04-07 (one shot), scene:4 (re-plan a scene's shots).
+  const redoShots = redo.filter((r) => /^scene-\d+-\d+$/.test(r) || r === "cover");
+  const replanScenes = redo.filter((r) => /^scene:\d+$/.test(r)).map((r) => Number(r.slice("scene:".length)) - 1);
+  const redoRefs = redo.filter((r) => !r.startsWith("voice:") && !redoShots.includes(r) && !/^scene:\d+$/.test(r));
   if (redoRefs.length && !steps.includes("refs")) throw new Error(`--redo ${redoRefs.join(",")}: references are remade in the refs phase (--only refs)`);
   if (redoVoices.length && !steps.includes("voices")) throw new Error(`--redo voice:…: voices are recast in the voices phase (--only voices)`);
-  if (opts.notes && redoRefs.length === 0) throw new Error("--note goes with --redo <kind>:<id>");
+  if ((redoShots.length || replanScenes.length) && !steps.includes("art")) throw new Error(`--redo scene-…: shots are redone in the art step (--only art)`);
+  if (opts.notes && redoRefs.length === 0 && redoShots.length === 0) throw new Error("--note goes with --redo <kind>:<id> or --redo scene-NN-MM");
   await mkdir(story.runDir, { recursive: true });
 
   // Guard the story in progress against changed settings.
@@ -471,7 +478,8 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
       throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
     }
     // Both finish (or fail) before the first failure is reported.
-    const results = await Promise.allSettled(stage.map((step) => run[step as "art" | "audiobook" | "music" | "video"](story, events)));
+    const shots: ShotRedo = { redo: redoShots, replan: replanScenes, ...(opts.notes && redoShots.length ? { note: opts.notes } : {}) };
+    const results = await Promise.allSettled(stage.map((step) => (step === "art" ? run.art(story, events, shots) : run[step as "audiobook" | "music" | "video"](story, events))));
     const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
     if (failed) throw failed.reason;
   }
