@@ -366,7 +366,8 @@ MODES:
     - Even quiet moments are composed like film frames: an intimate close-up on hands or eyes, a figure small against a vast landscape, a silhouette in a doorway — not two people standing face to face, centered.
     - Match the scene's tone: kinetic and close in action, still and wide in awe or dread — but always a deliberate shot.
   - Vary the framing across shots: wide establishing views, medium shots of characters interacting, close-ups on hands, faces, and objects that matter.
-  - characters: the ids of every character visible in the shot (empty for none). location: the id of the place the shot is set ("" if none fits). props: the ids of KNOWN PROPS visible in the shot. Their reference images are given to the image model.
+  - At most THREE named characters in any shot; favour singles and two-shots. Image models blend the features of a crowd of specific people. When more of the company are present, they are unnamed, out-of-focus background figures: leave them out of characters and don't describe them.
+  - characters: the ids of every named character visible in the shot (empty for none; never more than three). location: the id of the place the shot is set ("" if none fits). props: the ids of KNOWN PROPS visible in the shot. Their reference images are given to the image model.
 - COVER: one montage/compilation image that sums up the whole story's action, for a video thumbnail and opening card. Combine the key characters, places, and conflicts into a single composition with a clear focal point — dramatic and in motion, like a film poster, not a lineup of standing figures.
   Output ONLY JSON:
   {"prompt":string}
@@ -1316,6 +1317,8 @@ export function shotCountFor(paragraphs: string[], wordsPerShot = DEFAULT_WORDS_
 // Validates the model's shots: in-range 1-based starts converted to 0-based,
 // sorted, one shot per start, and the first shot pinned to the scene's start.
 // A shot's characters, location and props are kept only if they're known ids.
+export const MAX_SHOT_CHARACTERS = 3;
+
 export function normalizeShots(raw: unknown, paragraphCount: number, known?: KnownRefIds): ArtShot[] {
   const list = Array.isArray((raw as { shots?: unknown })?.shots) ? (raw as { shots: unknown[] }).shots : [];
   const byStart = new Map<number, ArtShot>();
@@ -1328,7 +1331,8 @@ export function normalizeShots(raw: unknown, paragraphCount: number, known?: Kno
     const shot: ArtShot = { startParagraph: start - 1, prompt: r.prompt.trim() };
     if (known) {
       const ids = (v: unknown, set: ReadonlySet<string>) => [...new Set((Array.isArray(v) ? v : []).map(String).filter((id) => set.has(id)))];
-      shot.characters = ids(r.characters, known.characters);
+      // Three at most: more named people in one frame and the image model mixes up their features.
+      shot.characters = ids(r.characters, known.characters).slice(0, MAX_SHOT_CHARACTERS);
       if (typeof r.location === "string" && known.locations.has(r.location)) shot.location = r.location;
       const props = ids(r.props, known.props);
       if (props.length > 0) shot.props = props;
