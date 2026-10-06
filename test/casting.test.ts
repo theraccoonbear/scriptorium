@@ -44,7 +44,7 @@ test("casting picks a library voice for each speaker (not for characters who nev
     prompts.push(req.prompt);
     return JSON.stringify({ narrator: "en-gb-storyteller-1", characters: { nell: "en-ie-friend-2", edrick: "en-gb-advisor-9" }, reasons: { nell: "Dublin, firm", edrick: "low, older", narrator: "storyteller" } });
   } } };
-  const voices = await castVoiceRun({ events: log.events, role, runDir, library: async () => LIB, log: () => {} });
+  const voices = await castVoiceRun({ castMin: 0, events: log.events, role, runDir, library: async () => LIB, log: () => {} });
   assert.deepEqual(voices, { nell: "en-ie-friend-2", edrick: "en-gb-advisor-9", narrator: "en-gb-storyteller-1" });
   assert.ok(!prompts[0].includes("kelsa"), "Kelsa never speaks, so she isn't cast");
   assert.match(prompts[0], /nell \(Nell Ashby, female\): sounds: thirty, firm, Dublin/);
@@ -53,7 +53,7 @@ test("casting picks a library voice for each speaker (not for characters who nev
   assert.equal(sheet.characters.nell.reason, "Dublin, firm");
 
   // Again: everyone is already cast, so nobody is asked.
-  await castVoiceRun({ events: log.events, role, runDir, library: async () => LIB, log: () => {} });
+  await castVoiceRun({ castMin: 0, events: log.events, role, runDir, library: async () => LIB, log: () => {} });
   assert.equal(prompts.length, 1);
 });
 
@@ -69,11 +69,11 @@ test("a shared cast list carries voices across chapters; only new speakers are c
     assert.match(req.prompt, /ALREADY TAKEN \(don't reuse\): en-ie-friend-2, en-gb-storyteller-1/);
     return JSON.stringify({ narrator: null, characters: { edrick: "en-gb-advisor-9" }, reasons: {} });
   } } };
-  const voices = await castVoiceRun({ events: log.events, role, runDir, castingFile, library: async () => LIB, log: () => {} });
+  const voices = await castVoiceRun({ castMin: 0, events: log.events, role, runDir, castingFile, library: async () => LIB, log: () => {} });
   assert.deepEqual(asked, [["edrick"]]);
   assert.equal(voices.nell, "en-ie-friend-2", "kept from the earlier chapter");
   assert.equal(JSON.parse(await readFile(castingFile, "utf8")).characters.edrick.voice, "en-gb-advisor-9");
-  const pinned = await castVoiceRun({ events: log.events, role, runDir, castingFile, pinned: { edrick: "Algenib" }, library: async () => LIB, log: () => {} });
+  const pinned = await castVoiceRun({ castMin: 0, events: log.events, role, runDir, castingFile, pinned: { edrick: "Algenib" }, library: async () => LIB, log: () => {} });
   assert.equal(pinned.edrick, "Algenib");
 });
 
@@ -83,11 +83,11 @@ test("a lead can get a designed voice, made once from their vocal description", 
   const designs: { name: string; description: string }[] = [];
   const design = async (spec: { name: string; description: string }) => { designs.push(spec); return { id: "voice_abc123", preview: Buffer.from("RIFF") }; };
   const role: Role = { provider: { complete: async () => JSON.stringify({ narrator: "en-gb-storyteller-1", characters: {}, reasons: {} }) } };
-  const voices = await castVoiceRun({ events: log.events, role, runDir, designVoices: ["edrick"], design, library: async () => LIB, log: () => {} });
+  const voices = await castVoiceRun({ castMin: 0, events: log.events, role, runDir, designVoices: ["edrick"], design, library: async () => LIB, log: () => {} });
   assert.equal(voices.edrick, "voice_abc123");
   assert.match(designs[0].description, /fifties, low, gravelly\. male voice\. Speaks: sparse/);
   assert.equal((await readFile(join(runDir, "audiobook", "voices", "edrick.wav"))).toString(), "RIFF");
-  await castVoiceRun({ events: log.events, role, runDir, designVoices: ["edrick"], design, library: async () => LIB, log: () => {} });
+  await castVoiceRun({ castMin: 0, events: log.events, role, runDir, designVoices: ["edrick"], design, library: async () => LIB, log: () => {} });
   assert.equal(designs.length, 1, "designed once");
 });
 
@@ -145,9 +145,9 @@ test("a recast speaker is cast afresh from their current vocal description; the 
   const prompts: string[] = [];
   let pick = { narrator: "en-gb-storyteller-1", characters: { nell: "en-ie-friend-2", edrick: "en-gb-advisor-9" } as Record<string, string> };
   const role: Role = { provider: { complete: async (req) => { prompts.push(req.prompt); return JSON.stringify({ ...pick, reasons: {} }); } } };
-  await castVoiceRun({ events: log.events, role, runDir, library: async () => LIB, log: () => {} });
+  await castVoiceRun({ castMin: 0, events: log.events, role, runDir, library: async () => LIB, log: () => {} });
   pick = { narrator: "", characters: { nell: "kore" } } as typeof pick;
-  const voices = await castVoiceRun({ events: log.events, role, runDir, recast: ["nell"], library: async () => LIB, log: () => {} });
+  const voices = await castVoiceRun({ castMin: 0, events: log.events, role, runDir, recast: ["nell"], library: async () => LIB, log: () => {} });
   assert.equal(voices.nell, "kore");
   assert.equal(voices.edrick, "en-gb-advisor-9");
   assert.match(prompts[1], /nell \(Nell Ashby/);

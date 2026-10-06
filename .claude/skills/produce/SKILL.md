@@ -38,13 +38,14 @@ Run `npm run pitch -- <story.json> --only <phase>` and tell the author, in a lin
 
 ## Phase 1: the character sheet
 
-`characters.json` holds one entry per character: `name`, `gender`, `appearance`, `background`, `vocal`, `portrait`, and optionally `reference`. `reference` is the author's own drawing or design of the character (a .png/.jpg/.webp, relative to `characters.json`); the portrait is drawn from it. Filled fields override everything the pipeline generated — portraits, voice casting, and any later writing. Empty fields leave the generated values alone.
+`characters.json` holds one entry per character: `name`, `gender`, `appearance`, `background`, `vocal`, `portrait`, `voiced`, and optionally `reference`. `reference` is the author's own drawing or design of the character (a .png/.jpg/.webp, relative to `characters.json`); the portrait is drawn from it. Filled fields override everything the pipeline generated — portraits, voice casting, and any later writing. Empty fields leave the generated values alone.
 
 - Show the author what the run knows about a character: their sheet entry, their bible entry (`node src/cli.ts bible --out <run>`), how the prose describes them (grep `story.md`), and the source material (contexts/, or the author's notes). Point out where the prose contradicts the source.
 - Ask what they remember or want; write it into the sheet in their spirit: `appearance` is concrete and visual (build, age, face, hair, clothing, signature gear); `background` is the history the story leaves out; `vocal` is how they SOUND (age, pitch, texture, accent, pace).
 - If the author has art of a character (a drawing, a commission, a mini), set `reference` to it **and** write the `appearance` from it. The image steers the portrait, and the words carry the look into every shot.
 - Keep secrets out of `background`: it feeds later writing. Anything the story must never reveal stays off the sheet.
 - Set `"portrait": false` for characters who don't need one (bit parts, creatures that only appear once) — ask first.
+- `voiced` decides who gets a cast voice. Unset, a speaker is cast when they say at least `audiobook.castMin` characters (default 120) in the story; everyone else is read by the narrator, lightly in character. `"voiced": true` casts them anyway; `"voiced": false` always gives them to the narrator.
 - Re-run `--only characters` after edits: it records them (and adds any new characters without touching the author's text).
 
 ## Phase 2: portraits
@@ -57,10 +58,11 @@ Send the new contact sheet after every round. Move on when the author has approv
 
 ## Phase 3: voices
 
-After `--only voices`, build the reel (`npm run review -- <story.json> voices`) and send it with its legend (who speaks when, with which voice). Then:
+After `--only voices`, build the reel (`npm run review -- <story.json> voices`) and send it with its legend (who speaks when, with which voice; walk-on parts the narrator reads are listed at the end). Then:
 - **Approve:** `npm run approve -- <story.json> voice:narrator voice:lemuel ...`
 - **Recast:** edit the character's `vocal` on the sheet if the description is the problem, then `npm run make -- <story.json> --only voices --redo voice:lemuel`.
 - A voice can also be pinned by hand in the story file: `audiobook.geminiVoices: { "lemuel": "<voice id>" }`.
+- **Narrator or own voice:** `"voiced": true|false` on the sheet moves a speaker between the cast and the narrator (then re-run `--only voices`).
 
 ## Phase 4: shots
 

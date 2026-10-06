@@ -50,6 +50,8 @@ export interface SheetReference {
 
 // One character on the author's sheet. Filled fields override the generated
 // bible; empty ones leave it alone. portrait: false = no reference portrait.
+// voiced: true = a voice of their own however little they say; false = always
+// read by the narrator (unset: decided by their vocal and how much they say).
 export interface SheetCharacter {
   name?: string;
   gender?: string;
@@ -57,6 +59,7 @@ export interface SheetCharacter {
   background?: string;
   vocal?: string;
   portrait?: boolean;
+  voiced?: boolean;
   // The author's drawing or design of the character: a .png, .jpg or .webp,
   // relative to characters.json (or absolute). Their portrait follows it.
   reference?: string;

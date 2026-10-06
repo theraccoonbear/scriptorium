@@ -7,7 +7,7 @@ import { planReferences, planShots, runStory } from "./engine.ts";
 import { readApprovals } from "./approvals.ts";
 import { syncCharacterSheet } from "./characterSheet.ts";
 import { geminiSpeaker } from "./geminiTts.ts";
-import { needAuditions, renderVoiceSamples } from "./voiceSamples.ts";
+import { lineCounts, needAuditions, renderVoiceSamples } from "./voiceSamples.ts";
 import { generateAudiobook, voicedBible, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
 import { prepareTitles } from "./titles.ts";
@@ -22,7 +22,7 @@ import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
 import { designRun, needsTagging, proseHash, sceneTags, tagRun } from "./tagging.ts";
 import { writeAuditions } from "./roles.ts";
-import { castVoiceRun } from "./casting.ts";
+import { castVoiceRun, narratorReads } from "./casting.ts";
 import { geminiBatchJobs } from "./batchJobs.ts";
 import type { GeminiSpec } from "./types.ts";
 import type { TonePaletteData } from "./tagging.ts";
@@ -293,6 +293,7 @@ export interface AudiobookStepOptions {
   geminiBatch?: boolean;      // batched modes through Gemini Batch Mode (half price, slower)
   casting?: boolean;          // cast Gemini voices from the library (default true when Gemini speaks)
   castingFile?: string;       // a cast list shared across chapters
+  castMin?: number;           // characters spoken to earn a voice of their own; the rest are read by the narrator
   designVoices?: string[];    // characters to give a designed voice
   force?: boolean;
   config?: StoryConfig;  // for spend accounting (pricing, budget)
@@ -348,6 +349,8 @@ async function prepareVoices(runDir: string, events: StoryEvent[], opts: Audiobo
   // Casting: a voice from Gemini's library (or a designed one) for every speaker.
   let geminiVoices = opts.geminiVoices;
   const geminiSpeaks = opts.narration === "gemini" || opts.dialogue === "gemini";
+  // Walk-on parts are read by the narrator, not cast (#105).
+  const byNarrator = geminiSpeaks ? narratorReads(events, { min: opts.castMin, pinned: opts.geminiVoices }) : [];
   if (geminiSpeaks && opts.casting !== false) {
     const roles = opts.config ? buildRoleProviders(opts.config) : undefined;
     const role = roles?.voicedirector ?? roles?.continuist;
@@ -357,6 +360,7 @@ async function prepareVoices(runDir: string, events: StoryEvent[], opts: Audiobo
         ...(opts.castingFile ? { castingFile: opts.castingFile } : {}),
         ...(opts.designVoices ? { designVoices: opts.designVoices } : {}),
         pinned: opts.geminiVoices ?? {},
+        ...(opts.castMin !== undefined ? { castMin: opts.castMin } : {}),
         ...(recast.length ? { recast } : {}),
         log: (m) => console.error(m)
       });
@@ -364,7 +368,9 @@ async function prepareVoices(runDir: string, events: StoryEvent[], opts: Audiobo
       console.error(`[scriptorium] ${c.retry("no config — Gemini voices assigned by gender, not cast (pass --config)")}`);
     }
   }
-  return { events, palette, geminiVoices };
+  // A voice pinned in the story file for a walk-on part still wins.
+  if (geminiVoices) geminiVoices = Object.fromEntries(Object.entries(geminiVoices).filter(([id]) => !byNarrator.includes(id) || opts.geminiVoices?.[id]));
+  return { events, palette, geminiVoices, byNarrator };
 }
 
 // The voices phase: tag and cast the story, then a short sample of every cast
@@ -382,27 +388,35 @@ export async function voicesStep(runDir: string, events: StoryEvent[], opts: Aud
     await syncCharacterSheet(runDir, log);
     events = log.events;
     const prepared = await prepareVoices(runDir, events, opts, opts.redo);
-    const voices = prepared.geminiVoices ?? {};
+    // Only this story's speakers (a cast list shared across chapters holds others).
+    const speaking = lineCounts(prepared.events);
+    const voices = Object.fromEntries(Object.entries(prepared.geminiVoices ?? {}).filter(([id]) => speaking.has(id)));
     // Speakers the story gives too little to judge a voice by read an audition line instead (written once, kept).
     const need = needAuditions(prepared.events, Object.keys(voices));
     let auditions: Record<string, string> = {};
     if (need.length) {
       const bible = voicedBible(prepared.events);
-      const speakers = need.map((id) => ({ id, name: bible.characters[id]?.name ?? id, description: [bible.characters[id]?.vocal, bible.characters[id]?.traits].filter(Boolean).join(". ") || "a minor character" }));
-      const source = proseHash(JSON.stringify(speakers));
-      const kept = [...log.events].reverse().find((e) => e.type === "audition_lines" && (e.data as { source: string }).source === source);
-      if (kept) auditions = (kept.data as { lines: Record<string, string> }).lines;
-      else {
-        const roles = opts.config ? buildRoleProviders(opts.config) : undefined;
-        const role = roles?.voicedirector ?? roles?.continuist;
-        if (role) {
-          auditions = (await writeAuditions(role, { tone: bible.tone, speakers })).result;
-          await log.append("audition_lines", { source, lines: auditions });
-          console.error(`[scriptorium] ${c.dim(`audition lines written for ${need.join(", ")} (the story gives them too little to judge by)`)}`);
-        }
+      const all = need.map((id) => ({ id, name: bible.characters[id]?.name ?? id, description: [bible.characters[id]?.vocal, bible.characters[id]?.traits].filter(Boolean).join(". ") || "a minor character" }));
+      // Kept per speaker: a line is rewritten only when that speaker's description changes.
+      type Kept = { source: string; lines: Record<string, string>; sources?: Record<string, string> };
+      const kept = log.events.filter((e) => e.type === "audition_lines").map((e) => e.data as Kept);
+      for (const s of all) {
+        const source = proseHash(JSON.stringify(s));
+        const hit = [...kept].reverse().find((k) => k.lines[s.id] && (k.sources ? k.sources[s.id] === source : true));  // lines written before per-speaker keys: kept
+        if (hit) auditions[s.id] = hit.lines[s.id];
+      }
+      const speakers = all.filter((s) => !auditions[s.id]);
+      const roles = speakers.length && opts.config ? buildRoleProviders(opts.config) : undefined;
+      const role = roles?.voicedirector ?? roles?.continuist;
+      if (role) {
+        const lines = (await writeAuditions(role, { tone: bible.tone, speakers })).result;
+        await log.append("audition_lines", { source: proseHash(JSON.stringify(speakers)), lines, sources: Object.fromEntries(speakers.map((s) => [s.id, proseHash(JSON.stringify(s))])) });
+        Object.assign(auditions, lines);
+        console.error(`[scriptorium] ${c.dim(`audition lines written for ${speakers.map((s) => s.id).join(", ")} (the story gives them too little to judge by)`)}`);
       }
     }
-    const samples = await renderVoiceSamples(prepared.events, { runDir, voices, auditions, speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}) }) });
+    if (prepared.byNarrator.length) console.error(`[scriptorium] ${c.dim(`read by the narrator (too little to cast): ${prepared.byNarrator.join(", ")}`)}`);
+    const samples = await renderVoiceSamples(prepared.events, { runDir, voices, auditions, narrated: prepared.byNarrator, speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}) }) });
     for (const s of samples) console.error(`[scriptorium] ${s.made ? c.ok(`${s.name}: ${s.voice}${s.source === "audition" ? " (audition line)" : ""}`) : c.dim(`${s.name}: ${s.voice} (sample unchanged)`)}${approved.has(s.id) ? c.dim(" — approved") : ""} ${c.dim(s.file)}`);
     return samples;
   });
@@ -411,7 +425,7 @@ export async function voicesStep(runDir: string, events: StoryEvent[], opts: Aud
 async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: AudiobookStepOptions) {
   const prepared = await prepareVoices(runDir, events, opts);
   events = prepared.events;
-  const { palette, geminiVoices } = prepared;
+  const { palette, geminiVoices, byNarrator } = prepared;
   const result = await generateAudiobook(events, {
     runDir,
     narratorVoice: opts.narratorVoice,
@@ -421,6 +435,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     dialogue: opts.dialogue,
     geminiModel: opts.geminiModel,
     geminiVoices,
+    ...(byNarrator.length ? { narratorReads: byNarrator } : {}),
     kokoroVoices: opts.kokoroVoices,
     characterVoices: opts.characterVoices,
     geminiMode: opts.geminiMode,

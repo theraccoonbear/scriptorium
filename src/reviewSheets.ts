@@ -153,6 +153,7 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
     await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", wavFile, "-codec:a", "libmp3lame", "-q:a", "4", mp3]);
     // And one file per voice, numbered in reel order, to skip around on a phone.
     const each = join(outDir, "voices");
+    await rm(each, { recursive: true, force: true });  // no files left over from voices no longer cast
     await mkdir(each, { recursive: true });
     for (const [n, s] of samples.entries()) {
       const one = buildReel([s], new Set(approvals.voices));
@@ -161,7 +162,9 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
       await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", `${file}.wav`, "-codec:a", "libmp3lame", "-q:a", "4", `${file}.mp3`]);
       await rm(`${file}.wav`);
     }
-    const legend = formatLegend(reel.legend);
+    let narrated: { id: string; name: string }[] = [];
+    try { narrated = JSON.parse(await readFile(join(dir, "narrated.json"), "utf8")); } catch { /* samples made before #105 */ }
+    const legend = formatLegend(reel.legend) + (narrated.length ? `\n\nRead by the narrator, in character (too little to cast): ${narrated.map((n) => n.name).join(", ")}` : "");
     await writeFile(join(outDir, "voices.txt"), legend + "\n");
     return { files: [mp3], legend };
   }

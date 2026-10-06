@@ -1,3 +1,5 @@
+import { narratorReads } from "./casting.ts";
+import { lineCounts } from "./voiceSamples.ts";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -58,6 +60,7 @@ export interface StoryFile {
     geminiConcurrency?: number;                  // batched modes: voice batches at once (default 2; 1 = one at a time)
     geminiBatch?: boolean;                       // batched modes through Gemini Batch Mode (half price, slower)
     castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
+    castMin?: number;                            // characters spoken to earn a voice of their own (default 120); the rest are read by the narrator
     designVoices?: string[];                     // character ids to give a designed voice
   };
   music?: MusicSettings | false;       // the score (off unless present): { style, duck, volume, model, maxTakes }
@@ -347,7 +350,7 @@ function audiobookOptions(s: ResolvedStory): AudiobookStepOptions {
     narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
     kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
     geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
-    casting: a.casting, geminiConcurrency: a.geminiConcurrency, geminiBatch: a.geminiBatch, castingFile: a.castingFile, designVoices: a.designVoices,
+    casting: a.casting, geminiConcurrency: a.geminiConcurrency, geminiBatch: a.geminiBatch, castingFile: a.castingFile, castMin: a.castMin, designVoices: a.designVoices,
     config: s.config
   };
 }
@@ -370,7 +373,7 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     audio: {
       narration: story.audiobook.narration, dialogue: story.audiobook.dialogue, geminiMode: story.audiobook.geminiMode, geminiConcurrency: story.audiobook.geminiConcurrency, geminiBatch: story.audiobook.geminiBatch,
       skip: !(steps.includes("audiobook") || steps.includes("voices")),
-      ...(steps.includes("voices") && !steps.includes("audiobook") ? { samplesOnly: true, speakers: Object.keys(replay(events).characters).length + 1 } : {})
+      ...(steps.includes("voices") && !steps.includes("audiobook") ? { samplesOnly: true, speakers: lineCounts(events).size - narratorReads(events, { min: story.audiobook.castMin, pinned: story.audiobook.geminiVoices }).length } : {})
     },
     ...(story.config.budget ? { budgetUsd: story.config.budget.usd } : {}),
     ...readJson<Record<string, { prompt: string }>>(join(story.runDir, "art", "art.json"), (m) => ({ artManifest: m })),

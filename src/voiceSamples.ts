@@ -66,6 +66,7 @@ export function lineCounts(events: StoryEvent[]): Map<string, number> {
   return counts;
 }
 
+const humanName = (id: string) => id.replace(/[_-]+/g, " ").replace(/^\w/, (ch) => ch.toUpperCase());
 const hash = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 12);
 
 export async function renderVoiceSamples(events: StoryEvent[], opts: {
@@ -74,6 +75,7 @@ export async function renderVoiceSamples(events: StoryEvent[], opts: {
   speak: Speak;
   only?: string[];                    // just these speakers
   auditions?: Record<string, string>; // audition lines for speakers the story gives too little
+  narrated?: string[];                // walk-on parts the narrator reads: listed in the reel, no sample
 }): Promise<VoiceSample[]> {
   const dir = join(opts.runDir, "audiobook", "samples");
   await mkdir(join(dir, "slates"), { recursive: true });
@@ -82,6 +84,9 @@ export async function renderVoiceSamples(events: StoryEvent[], opts: {
   try { index = JSON.parse(await readFile(indexFile, "utf8")); } catch { /* first samples */ }
   const bible = voicedBible(events);
   const counts = lineCounts(events);
+  // Speakers no longer cast (now read by the narrator) leave the reel.
+  for (const id of Object.keys(index)) if (!opts.voices[id]) delete index[id];
+  await writeFile(join(dir, "narrated.json"), JSON.stringify((opts.narrated ?? []).map((id) => ({ id, name: bible.characters[id]?.name || humanName(id) })), null, 2) + "\n");
   const narrator = opts.voices.narrator;
   // The narrator first, then whoever speaks most.
   const ids = Object.keys(opts.voices).sort((a, b) => (a === "narrator" ? -1 : b === "narrator" ? 1 : (counts.get(b) ?? 0) - (counts.get(a) ?? 0) || a.localeCompare(b)));
@@ -94,7 +99,7 @@ export async function renderVoiceSamples(events: StoryEvent[], opts: {
     if (!text) continue;
     const source = story ? "story" : "audition";
     const c = bible.characters[id];
-    const name = id === "narrator" ? "The narrator" : c?.name || id.replace(/[_-]+/g, " ").replace(/^\w/, (ch) => ch.toUpperCase());
+    const name = id === "narrator" ? "The narrator" : c?.name || humanName(id);
     const file = join(dir, `${id}.wav`);
     const prev = index[id];
     let made = false;
