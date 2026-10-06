@@ -102,6 +102,23 @@ Re-running `make` finishes whatever's missing: the story resumes from its event 
 
 The individual commands below still work for one-off steps.
 
+## Run with Docker
+
+The image has Node, ffmpeg, ImageMagick, fontconfig and the npm dependencies installed (about 1 GB). Your checkout is mounted at `/app`, so stories, contexts, runs and `.env` stay on your machine. Rebuild only when `package-lock.json` changes.
+
+```bash
+docker compose build
+docker compose run --rm scriptorium doctor                              # what your keys and tools can make
+docker compose run --rm scriptorium make stories/mock.json              # a free mock run
+docker compose run --rm scriptorium make stories/foo.json --only story  # any CLI command
+docker compose run --rm --entrypoint npm scriptorium test
+```
+
+- Files written to `runs/` belong to UID/GID 1000. If yours differ, `export UID=$(id -u) GID=$(id -g)` first.
+- **Rootless Podman:** add the override so files stay yours: `podman-compose -f docker-compose.yml -f compose.podman.yml run --rm scriptorium doctor`.
+- Kokoro's voice model and the Gemini voice list are cached in the `cache` volume, so they download once.
+- To run Claude Code's `produce` and `setup` skills, run Claude Code on your machine as usual. Its commands work the same through `docker compose run --rm scriptorium …`.
+
 ## Commands
 
 | Command | What it does |

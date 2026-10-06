@@ -1,0 +1,5 @@
+# Rootless Podman: run as you, so files in runs/ stay yours.
+#   podman-compose -f docker-compose.yml -f compose.podman.yml run --rm scriptorium doctor
+services:
+  scriptorium:
+    userns_mode: keep-id
