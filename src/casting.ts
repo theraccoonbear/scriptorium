@@ -1,7 +1,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { buildScenes, voicedBible } from "./audiobook.ts";
+import { recordedSheet } from "./characterSheet.ts";
 import { castVoices } from "./roles.ts";
+import { lineCounts } from "./voiceSamples.ts";
 import { designVoice, fetchLibrary, voiceLine } from "./voiceLibrary.ts";
 import type { LibraryVoice } from "./voiceLibrary.ts";
 import type { Role, StoryEvent } from "./types.ts";
@@ -11,6 +13,23 @@ import type { Role, StoryEvent } from "./types.ts";
 // kept — a run's audiobook/casting.json, or a castingFile shared by every
 // chapter of a series — so a character sounds the same every time, and only
 // new speakers are cast.
+
+// Who gets a voice of their own (#105). A walk-on part is read by the narrator,
+// in character, as a human narrator would: a cast voice for two words costs the
+// author a review and the listener a stranger. A speaker gets their own voice
+// when the author's sheet says voiced: true, when the story file pins one, or
+// when they say at least `min` characters in the whole story (a fair sample's
+// worth). voiced: false always goes to the narrator.
+export const CAST_MIN = 120;
+
+export function narratorReads(events: StoryEvent[], opts: { min?: number; pinned?: Record<string, string> } = {}): string[] {
+  const sheet = recordedSheet(events) ?? {};
+  const counts = lineCounts(events);
+  // Not a vocal line on the sheet: the writer gives every speaker one, and the
+  // sheet is drafted (and later bibles re-recorded) from it, so it can't say who the author meant.
+  const own = (id: string) => sheet[id]?.voiced ?? (Boolean(opts.pinned?.[id]) || (counts.get(id) ?? 0) >= (opts.min ?? CAST_MIN));
+  return [...counts.keys()].filter((id) => id !== "narrator" && !own(id)).sort();
+}
 
 export interface VoiceCastEntry { voice: string; name?: string; reason?: string; designed?: boolean }
 export interface VoiceCastSheet { narrator?: VoiceCastEntry; characters: Record<string, VoiceCastEntry> }
@@ -24,6 +43,7 @@ export interface VoiceCastOptions {
   designVoices?: string[];             // character ids to give a designed voice
   pinned?: Record<string, string>;     // geminiVoices from the story file: always win
   recast?: string[];                   // speaker ids (or "narrator") to cast afresh
+  castMin?: number;                    // characters spoken to earn a voice of their own (default CAST_MIN)
   library?: () => Promise<LibraryVoice[]>;                              // injectable
   design?: typeof designVoice;                                          // injectable
   log?: (msg: string) => void;
@@ -40,7 +60,8 @@ export async function castVoiceRun(o: VoiceCastOptions): Promise<Record<string, 
   const sheet = await loadVoiceCastSheet(file);
   const pinned = o.pinned ?? {};
   const bible = voicedBible(o.events);
-  const speakers = [...new Set(buildScenes(o.events).flatMap((s) => s.segments.map((x) => x.speaker)))].filter((id) => id !== "narrator");
+  const byNarrator = new Set(narratorReads(o.events, { min: o.castMin, pinned }));
+  const speakers = [...new Set(buildScenes(o.events).flatMap((s) => s.segments.map((x) => x.speaker)))].filter((id) => id !== "narrator" && !byNarrator.has(id));
   let changed = false;
   for (const id of o.recast ?? []) {
     if (id === "narrator") delete sheet.narrator;
@@ -92,7 +113,8 @@ export async function castVoiceRun(o: VoiceCastOptions): Promise<Record<string, 
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, JSON.stringify(sheet, null, 2) + "\n");
   }
-  const voices: Record<string, string> = Object.fromEntries(Object.entries(sheet.characters).map(([id, c]) => [id, c.voice]));
+  // A cast list shared across chapters keeps everyone's voice; walk-on parts here go to the narrator.
+  const voices: Record<string, string> = Object.fromEntries(Object.entries(sheet.characters).filter(([id]) => !byNarrator.has(id)).map(([id, c]) => [id, c.voice]));
   if (sheet.narrator) voices.narrator = sheet.narrator.voice;
   return { ...voices, ...pinned };
 }

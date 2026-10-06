@@ -333,6 +333,7 @@ export interface AudiobookOptions {
   dialogue?: TtsEngine;   // default "kokoro"
   geminiModel?: string;
   geminiVoices?: Record<string, string>;  // character id (or "narrator") -> Gemini voice name
+  narratorReads?: string[];  // walk-on parts read in the narrator's voice (see casting.ts narratorReads)
   // How Gemini lines are requested: "line" (one request each, own direction — the
   // default), "palette" (batched by speaker and palette tone), "speaker" (batched by
   // speaker, no direction). See geminiBatch.ts.
@@ -528,6 +529,17 @@ export function sceneContext(text: string): string {
 // speaking (from the bible), what just happened (the preceding text), then the
 // line. A failed Gemini line falls back to the speaker's Kokoro voice, so one
 // bad request never sinks the audiobook.
+// Who a Gemini line is read as: the narrator, a character, or the narrator
+// voicing a walk-on part (#105) — in the narrator's voice, lightly in character.
+export function ttsSpeaker(bible: Bible, speaker: string, byNarrator?: ReadonlySet<string>): { name: string; profile: string; narrating: boolean } {
+  const ch = bible.characters[speaker];
+  const narrator = `The narrator of a story. Tone: ${bible.tone || "measured, warm storytelling"}.`;
+  if (speaker === "narrator" || !ch) return { name: "Narrator", profile: narrator, narrating: true };
+  const desc = [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" ");
+  if (byNarrator?.has(speaker)) return { name: "Narrator", profile: `${narrator} Here the narrator voices a minor character, ${ch.name}${desc ? ` (${desc})` : ""}: suggest them with a light shift in delivery, in the narrator's own voice.`, narrating: false };
+  return { name: ch.name, profile: desc, narrating: false };
+}
+
 export function hybridVoicing(p: {
   bible: Bible;
   assignment: VoiceAssignment;
@@ -535,6 +547,7 @@ export function hybridVoicing(p: {
   dialogue: TtsEngine;
   kokoroSynth: Synthesize;
   speak: Speak;
+  byNarrator?: ReadonlySet<string>;  // walk-on parts the narrator reads
   onFallback?: (speaker: string, error: string) => void;
   // A Gemini line that keeps failing: "kokoro" reads it with Kokoro; "gemini"
   // keeps it in Gemini (a bare retry, then the best take). Default: kokoro when
@@ -559,11 +572,11 @@ export function hybridVoicing(p: {
       return;
     }
     const speaker = ctx?.speaker ?? "narrator";
-    const ch = bible.characters[speaker];
+    const who = ttsSpeaker(bible, speaker, p.byNarrator);
     const scene = sceneContext(ctx?.context ?? "");
-    const prompt = buildTtsPrompt(speaker === "narrator" || !ch
-      ? { name: "Narrator", profile: `The narrator of a story. Tone: ${bible.tone || "measured, warm storytelling"}.`, scene, notes: ctx?.delivery ? `Storytelling narration, ${ctx.delivery}.` : "Storytelling narration: clear, engaged, natural pace; let the drama of the moment color the read without over-acting.", line: text }
-      : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" "), scene, ...(ctx?.delivery ? { notes: ctx.delivery } : {}), line: text });
+    const prompt = buildTtsPrompt(who.narrating
+      ? { name: who.name, profile: who.profile, scene, notes: ctx?.delivery ? `Storytelling narration, ${ctx.delivery}.` : "Storytelling narration: clear, engaged, natural pace; let the drama of the moment color the read without over-acting.", line: text }
+      : { name: who.name, profile: who.profile, scene, ...(ctx?.delivery ? { notes: ctx.delivery } : {}), line: text });
     // A reply far longer than the line could take means the model spoke
     // something else too (direction, context): retry, then fall back.
     const geminiVoice = voice.slice("gemini:".length);
@@ -611,6 +624,7 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
   bible: Bible;
   voiceFor: (speaker: string) => string;
   speak: Speak;
+  byNarrator?: ReadonlySet<string>;  // walk-on parts the narrator reads
   toneOf?: (scene: number, paragraph: number, speaker: string) => string | undefined;
   cache?: BatchCache;   // takes already paid for (see geminiBatch.ts)
   model?: string;
@@ -631,10 +645,8 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
   const voiceNext = async (batch: Batch) => {
     const i = done++;
     const batches = done + queue.length;
-    const ch = p.bible.characters[batch.speaker];
-    const who = batch.speaker === "narrator" || !ch
-      ? { name: "Narrator", profile: `The narrator of a story. Tone: ${p.bible.tone || "measured, warm storytelling"}.` }
-      : { name: ch.name, profile: [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" ") };
+    const { name, profile } = ttsSpeaker(p.bible, batch.speaker, p.byNarrator);
+    const who = { name, profile };
     try {
       let cached = false;
       const audio = await voiceBatch(p.speak, batch, p.voiceFor(batch.speaker).slice("gemini:".length), who, SAMPLE_RATE, 3, { cache: p.cache, model: p.model, onCached: () => { cached = true; } });
@@ -696,7 +708,8 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     ...(usesGemini ? { narration, dialogue, geminiModel: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, geminiVoices: opts.geminiVoices ?? {} } : {}),
     ...(usesGemini && (opts.geminiMode ?? "line") !== "line" ? { geminiMode: opts.geminiMode, pauseScale: opts.pauseScale ?? 1, ...(opts.geminiMode === "palette" ? { palette: opts.palette?.source ?? null } : {}) } : {}),
     ...(opts.kokoroVoices ? { kokoroVoices: opts.kokoroVoices } : {}),
-    ...(opts.characterVoices ? { characterVoices: opts.characterVoices } : {})
+    ...(opts.characterVoices ? { characterVoices: opts.characterVoices } : {}),
+    ...(opts.narratorReads?.length ? { narratorReads: [...opts.narratorReads].sort() } : {})
   };
 
   // Skip scenes whose WAV exists and was made from the same text and settings.
@@ -771,6 +784,12 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     const g = assignVoices(Object.keys(bible.characters), Object.keys(GEMINI_VOICES), "Charon", { genders, voiceGenders: GEMINI_VOICES });
     assignment.gemini = applyGeminiVoices(g, opts.geminiVoices ?? {});
   }
+  // Walk-on parts are read in the narrator's voice.
+  const byNarrator = new Set(opts.narratorReads ?? []);
+  for (const id of byNarrator) {
+    assignment.characters[id] = assignment.narrator;
+    if (assignment.gemini) assignment.gemini.characters[id] = assignment.gemini.narrator;
+  }
   manifest.voices = assignment;
 
   // tts.stream(text, opts) — the plain-string convenience form — pushes text
@@ -788,7 +807,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   };
   const speak = opts.speak ?? geminiSpeaker({ model: opts.geminiModel, minIntervalMs: Math.ceil(60000 / (opts.geminiRpm ?? 9)) });
   const { voiceFor, synth: lineSynth } = hybridVoicing({
-    bible, assignment, narration, dialogue, kokoroSynth, speak, fallback: opts.geminiFallback,
+    bible, assignment, narration, dialogue, kokoroSynth, speak, byNarrator, fallback: opts.geminiFallback,
     onFallback: (speaker, error) => onProgress({ type: "line_fallback", speaker, error }),
     onKeptLong: (speaker, seconds) => onProgress({ type: "line_kept_long", speaker, seconds })
   });
@@ -812,7 +831,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   for (const scene of todo) {
     const segments = scene.segments.length;
     onProgress({ type: "scene_start", index: scene.index, total: scenes.length, segments });
-    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak: batchSpeak ?? speak, toneOf, onProgress, cache: fileBatchCache(`${outDir}/batches`, SAMPLE_RATE), model: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, concurrency: batchSpeak ? 10000 : opts.geminiConcurrency ?? 2 });
+    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak: batchSpeak ?? speak, byNarrator, toneOf, onProgress, cache: fileBatchCache(`${outDir}/batches`, SAMPLE_RATE), model: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, concurrency: batchSpeak ? 10000 : opts.geminiConcurrency ?? 2 });
     const { audio, paragraphStarts } = await synthesizeScene(
       scene,
       voiceFor,
