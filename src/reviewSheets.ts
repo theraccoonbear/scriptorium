@@ -6,6 +6,8 @@ import { readApprovals } from "./approvals.ts";
 import { decodeWav } from "./geminiTts.ts";
 import { encodeWav } from "./geminiBatch.ts";
 import type { ArtManifest } from "./artist.ts";
+import { staleShots } from "./artist.ts";
+import { EventLog } from "./eventlog.ts";
 
 // Review sheets for the author, one file per phase in <run>/review/, small
 // enough to send to a phone: a labeled contact sheet of the reference
@@ -20,9 +22,10 @@ export interface SheetTile { label: string; file: string }
 
 // The tiles of each contact sheet: one each for the character, location and
 // prop references, one per scene of shots (the cover on its own), in art.json order.
-export function contactSheets(manifest: ArtManifest, kind: "refs" | "shots", approved: ReadonlySet<string>, artDir: string): Map<string, SheetTile[]> {
+export function contactSheets(manifest: ArtManifest, kind: "refs" | "shots", approved: ReadonlySet<string>, artDir: string, stale: ReadonlySet<string> = new Set()): Map<string, SheetTile[]> {
   const sheets = new Map<string, SheetTile[]>();
-  const tile = (key: string): SheetTile => ({ label: `${approved.has(key) ? "✓ " : ""}${key}`, file: join(artDir, manifest[key].file) });
+  // ✓ approved; ⟳ drawn from a reference that has changed since (a reshoot).
+  const tile = (key: string): SheetTile => ({ label: `${approved.has(key) ? "✓ " : ""}${stale.has(key) ? "⟳ " : ""}${key}`, file: join(artDir, manifest[key].file) });
   const keys = Object.keys(manifest);
   if (kind === "refs") {
     for (const kind of ["character", "location", "prop"] as const) {
@@ -120,7 +123,8 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
   const present = new Set(await readdir(artDir));
   for (const k of Object.keys(manifest)) if (!present.has(manifest[k].file)) delete manifest[k];
   const files: string[] = [];
-  for (const [name, tiles] of contactSheets(manifest, kind, new Set(approvals.art), artDir)) {
+  const stale = kind === "shots" ? new Set((await staleShots(await new EventLog(runDir).load(), runDir)).map((s) => s.key)) : new Set<string>();
+  for (const [name, tiles] of contactSheets(manifest, kind, new Set(approvals.art), artDir, stale)) {
     const out = join(outDir, `${name}.jpg`);
     await run("magick", montageArgs(tiles, out));
     files.push(out);

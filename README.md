@@ -232,6 +232,11 @@ Output goes to `<run>/art/`: `character-<id>`, `location-<id>`, `prop-<id>`, `sc
 
 **Fixing a bad reference:** run `artdirect --redo prop:<id> --note "what's wrong and what it should be"`. The note is passed to the art director as a correction from you.
 
+**Reshoots:** each shot records which reference images it was drawn from, with a fingerprint of each.
+- **When a reference changes** (a remade portrait, a new prop design, your own drawing), every shot drawn from the old version is out of date. The next `make --only art` reshoots just those, and approved shots stay with a warning. `npm run reshoot -- <story>` lists them by scene with the cost first. On the shots contact sheets they're marked ⟳.
+- **One shot:** `make --only art --redo scene-04-07 --note "lying flat, seen from above"` redoes that shot. The note stays with its prompt. `--redo scene:4` re-plans scene 4's shots.
+- **The video follows:** a reshot scene re-renders only its own video section and the final join.
+
 **Your own drawing of a character:** give their entry on the character sheet (`<run>/characters.json`) a `"reference"`: a `.png`, `.jpg` or `.webp` path, relative to `characters.json`. For example, `"reference": "../../contexts/rantouls-mushrooms/Lemuel-drawing.png"`.
 - **Portrait:** their portrait is drawn with the image as your design. It keeps the face, hair, colouring, clothing and gear, but redraws them in the story's art style.
 - **Checking:** the inspector checks the portrait follows the drawing, and never mistakes the drawing for a real person.

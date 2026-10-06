@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { postJson, requireKey } from "./providers.ts";
@@ -169,7 +170,75 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
       ...(props.length > 0 ? { props } : {})
     });
   }
-  return withCurrentStyle([...refJobs, ...jobs], events);
+  return withShotNotes(withCurrentStyle([...refJobs, ...jobs], events), events);
+}
+
+// ---- reshoots ----
+
+// The reference images a shot is drawn with, as renderArt picks them (up to
+// maxPortraits characters, its location, two props; only references that
+// exist), each with a hash of its image file.
+export async function shotInputs(job: ArtJob, manifest: ArtManifest, artDir: string, maxPortraits = 3): Promise<Record<string, string>> {
+  const have = (key: string) => Boolean(manifest[key]);
+  const keys = [
+    ...(job.characters ?? []).map((id) => refKey("character", id)).filter(have).slice(0, maxPortraits),
+    ...(job.location ? [refKey("location", job.location)] : []).filter(have),
+    ...(job.props ?? []).map((id) => refKey("prop", id)).filter(have).slice(0, 2)
+  ];
+  return refHashes(keys, manifest, artDir);
+}
+
+// Hashes of these references' images as they are now (a missing one is absent).
+export async function refHashes(keys: string[], manifest: ArtManifest, artDir: string): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const key of keys) {
+    const bytes = manifest[key] ? await readFile(join(artDir, manifest[key].file)).catch(() => undefined) : undefined;
+    if (bytes) out[key] = createHash("sha1").update(bytes).digest("hex").slice(0, 12);
+  }
+  return out;
+}
+
+// The references a shot was drawn from whose image has changed (or gone) since.
+// Only the images it used count: a shot re-planned to use others is a new prompt, not a reshoot.
+export function changedRefs(was: Record<string, string>, now: Record<string, string>): string[] {
+  return Object.keys(was).filter((k) => now[k] !== was[k]).sort();
+}
+
+export interface StaleShot { key: string; refs: string[]; approved: boolean }
+
+// Every shot drawn from a reference that has changed since: the reshoot list.
+export async function staleShots(events: StoryEvent[], runDir: string, approved: ReadonlySet<string> = new Set(), maxPortraits = 3): Promise<StaleShot[]> {
+  const artDir = join(runDir, "art");
+  let manifest: ArtManifest = {};
+  try { manifest = JSON.parse(await readFile(join(artDir, "art.json"), "utf8")); } catch { return []; }
+  const out: StaleShot[] = [];
+  for (const job of buildArtJobs(events)) {
+    const prior = manifest[job.key];
+    if (job.ref || !prior?.refs) continue;
+    const refs = changedRefs(prior.refs, await refHashes(Object.keys(prior.refs), manifest, artDir));
+    if (refs.length) out.push({ key: job.key, refs, approved: approved.has(job.key) });
+  }
+  return out;
+}
+
+// The reshoot list for the author: by scene, what changed, what it costs.
+export function formatReshoot(stale: StaleShot[], batch: boolean, perImageUsd = 0.09): string {
+  if (stale.length === 0) return "nothing to reshoot: every shot was drawn from the current references";
+  const todo = stale.filter((s) => !s.approved);
+  const byScene = new Map<string, StaleShot[]>();
+  for (const s of stale) { const k = s.key.match(/^scene-\d+/)?.[0] ?? s.key; byScene.set(k, [...(byScene.get(k) ?? []), s]); }
+  const lines = [...byScene].map(([scene, shots]) => `${scene}: ${shots.map((s) => `${s.key.replace(/^scene-\d+-/, "")}${s.approved ? " (approved — stays)" : ""} ← ${s.refs.join(", ")}`).join("; ")}`);
+  const usd = todo.length * perImageUsd * (batch ? 0.5 : 1);
+  return [...lines, `${todo.length} shot${todo.length === 1 ? "" : "s"} to reshoot, ~$${usd.toFixed(2)}${batch ? " (batch)" : ""} — run make --only art${stale.length > todo.length ? `; ${stale.length - todo.length} approved stay (revoke to reshoot them)` : ""}`].join("\n");
+}
+
+// The author's correction for a shot (shot_note events, newest per shot),
+// added to its prompt: a new note is a new prompt, so the shot is redone.
+function withShotNotes(jobs: ArtJob[], events: StoryEvent[]): ArtJob[] {
+  const notes = new Map<string, string>();
+  for (const e of events) if (e.type === "shot_note") { const d = e.data as { key: string; note: string }; notes.set(d.key, d.note); }
+  if (notes.size === 0) return jobs;
+  return jobs.map((j) => (notes.get(j.key)?.trim() ? { ...j, prompt: `${j.prompt}\n\nAUTHOR NOTE — a correction for this shot: ${notes.get(j.key)!.trim()}` } : j));
 }
 
 // The art director writes the art style verbatim into every prompt. When the
@@ -221,6 +290,9 @@ export interface ManifestEntry {
   issues: string[];
   severity?: number;    // the inspector's 0-10 score for the kept image
   retaken?: boolean;    // triage replaced the first image with a better retake
+  // A shot's inputs: each reference image it was drawn with (art key -> hash of
+  // the image). A reference that changes afterwards makes the shot out of date.
+  refs?: Record<string, string>;
 }
 
 export type ArtManifest = Record<string, ManifestEntry>;
@@ -233,7 +305,8 @@ export type ArtProgress =
   | { type: "job_failed"; key: string; error: string }
   | { type: "triage"; scored: number; retakes: number }
   | { type: "retake_done"; key: string; before: number; after: number; kept: boolean }
-  | { type: "names_removed"; key: string; names: string[] };
+  | { type: "names_removed"; key: string; names: string[] }
+  | { type: "stale_approved"; key: string; refs: string[] };
 
 export interface ArtOptions {
   runDir: string;
@@ -258,6 +331,7 @@ export interface ArtOptions {
   approved?: ReadonlySet<string>;
   only?: "references";     // render just the reference portraits, places and props
   keys?: string[];         // render just these shots (and the cover, if named); references still load
+  redoKeys?: string[];     // render these shots again even if nothing changed (not approved ones)
   // Longest side, in px, of images sent as references (default 768) and of the
   // candidate sent for inspection (default 1024); 0 sends them full size. Files
   // on disk stay full size. References are most of each request's size.
@@ -379,10 +453,16 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const one = async (job: ArtJob, index: number) => {
     const prior = manifest[job.key];
     const approved = Boolean(opts.approved?.has(job.key) && prior && existing.has(prior.file));
-    if (approved || (!opts.force && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && prior.photos === job.photoKey && existing.has(prior.file))) {
+    // A shot drawn from a reference that has since changed is out of date (a reshoot).
+    const changed = !job.ref && prior?.refs ? changedRefs(prior.refs, await refHashes(Object.keys(prior.refs), manifest, outDir)) : [];
+    if (approved && changed.length) emit({ type: "stale_approved", key: job.key, refs: changed });
+    const redo = opts.redoKeys?.includes(job.key) ?? false;
+    if (approved || (!opts.force && !redo && changed.length === 0 && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && prior.photos === job.photoKey && existing.has(prior.file))) {
       // Same image, but keep its placement current in case the shot's anchor moved.
       prior.sceneIndex = job.sceneIndex;
       prior.startParagraph = job.startParagraph;
+      // A shot made before inputs were recorded takes today's references as its baseline.
+      if (!job.ref && !prior.refs) { prior.refs = await shotInputs(job, manifest, outDir, maxPortraits); await saveManifest(); }
       emit({ type: "job_skipped", key: job.key, file: prior.file });
       await keep(job, { data: await readFile(join(outDir, prior.file)), mimeType: mimeFor(prior.file) });
       result.skipped++;
@@ -406,6 +486,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         ...(style ? { style } : {}),
         ...(direction ? { direction } : {}),
         ...(job.photoKey ? { photos: job.photoKey } : {}),
+        ...(job.ref ? {} : { refs: await shotInputs(job, manifest, outDir, maxPortraits) }),
         attempts: entry.attempts,
         accepted: entry.accepted,
         issues: entry.issues,

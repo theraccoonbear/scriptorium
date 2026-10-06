@@ -10,8 +10,9 @@ import { parseVoiceGenders } from "./audiobook.ts";
 import { accounted, artStep, castPreviewStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
 import { formatSummary, readLedger, summarize } from "./usage.ts";
 import { loadStoryFile, make, planSteps, STEP_ORDERS, storyPitch } from "./make.ts";
-import { setApproval } from "./approvals.ts";
+import { readApprovals, setApproval } from "./approvals.ts";
 import { buildReview, REVIEW_KINDS } from "./reviewSheets.ts";
+import { formatReshoot, staleShots } from "./artist.ts";
 import type { ReviewKind } from "./reviewSheets.ts";
 import { formatPitch } from "./pitch.ts";
 import type { StepOrder } from "./make.ts";
@@ -32,6 +33,7 @@ const USAGE = `scriptorium <command> [options]
         [--redo character:<id>,voice:<id>,...] [--note "..."]
                        remake these references (with your corrections) or recast these voices
   review <story.json> refs|shots|voices|music
+  reshoot <story.json>                                   list shots drawn from references that changed since (make --only art reshoots them)
         build the review files for a phase in <run>/review/: a labeled contact sheet of the
         portraits (or one per scene of shots), or one reel of every voice sample with a legend
   approve <story.json> <key>... [--revoke]
@@ -245,6 +247,18 @@ async function main() {
     const out = await buildReview(story.runDir, kind as ReviewKind);
     for (const f of out.files) console.log(f);
     if (out.legend) console.log(`\n${out.legend}`);
+    return;
+  }
+
+  if (command === "reshoot") {
+    const [storyFile] = positionals;
+    if (!storyFile) throw new Error("usage: reshoot <story.json>  (lists shots drawn from references that have changed)");
+    const story = await loadStoryFile(storyFile);
+    const log = new EventLog(story.runDir);
+    await log.load();
+    const approved = new Set((await readApprovals(story.runDir)).art);
+    const stale = await staleShots(log.events, story.runDir, approved);
+    console.log(formatReshoot(stale, story.config.artist?.batch === true));
     return;
   }
 
