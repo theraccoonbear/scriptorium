@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { readApprovals } from "./approvals.ts";
@@ -7,6 +7,8 @@ import { decodeWav } from "./geminiTts.ts";
 import { encodeWav } from "./geminiBatch.ts";
 import type { ArtManifest } from "./artist.ts";
 import { staleShots } from "./artist.ts";
+import { voicedBible } from "./audiobook.ts";
+import type { SampleIndexEntry } from "./voiceSamples.ts";
 import { EventLog } from "./eventlog.ts";
 
 // Review sheets for the author, one file per phase in <run>/review/, small
@@ -50,20 +52,34 @@ export function montageArgs(tiles: SheetTile[], out: string): string[] {
   return ["montage", ...tiles.flatMap((t) => ["-label", t.label, t.file]), "-tile", `${Math.min(4, tiles.length)}x`, "-geometry", "960x960>+12+12", "-pointsize", "30", "-background", "#1e1e1e", "-fill", "#f0f0f0", "-quality", "88", out];
 }
 
-export interface ReelEntry { id: string; start: number; seconds: number; voice: string; approved: boolean }
+export interface ReelEntry { id: string; start: number; seconds: number; voice: string; approved: boolean; name?: string; source?: "story" | "audition"; description?: string }
+
+export interface ReelSample {
+  id: string;
+  voice: string;
+  audio: { samples: Float32Array; sampleRate: number };
+  slate?: { samples: Float32Array; sampleRate: number };  // the narrator announcing the name
+  name?: string;
+  source?: "story" | "audition";
+  description?: string;
+}
 
 // One WAV of every sample (narrator first), a second of silence between.
-export function buildReel(samples: { id: string; voice: string; audio: { samples: Float32Array; sampleRate: number } }[], approved: ReadonlySet<string>, gap = 1): { audio: Float32Array; sampleRate: number; legend: ReelEntry[] } {
+// One reel: for each voice, its name announced, a short pause, the sample,
+// then a longer pause before the next, so the voices never run together.
+export function buildReel(samples: ReelSample[], approved: ReadonlySet<string>, gap = 2, afterSlate = 0.6): { audio: Float32Array; sampleRate: number; legend: ReelEntry[] } {
   const sampleRate = samples[0]?.audio.sampleRate ?? 24000;
-  const silence = Math.round(gap * sampleRate);
+  const quiet = (sec: number) => new Float32Array(Math.round(sec * sampleRate));
   const legend: ReelEntry[] = [];
   const parts: Float32Array[] = [];
   let at = 0;
+  const push = (a: Float32Array) => { parts.push(a); at += a.length; };
   for (const [i, s] of samples.entries()) {
-    if (i > 0) { parts.push(new Float32Array(silence)); at += silence; }
-    legend.push({ id: s.id, start: at / sampleRate, seconds: s.audio.samples.length / sampleRate, voice: s.voice, approved: approved.has(s.id) });
-    parts.push(s.audio.samples);
-    at += s.audio.samples.length;
+    if (i > 0) push(quiet(gap));
+    const start = at / sampleRate;
+    if (s.slate) { push(resampleTo(s.slate, sampleRate)); push(quiet(afterSlate)); }
+    legend.push({ id: s.id, start, seconds: s.audio.samples.length / sampleRate, voice: s.voice, approved: approved.has(s.id), ...(s.name ? { name: s.name } : {}), ...(s.source ? { source: s.source } : {}), ...(s.description ? { description: s.description } : {}) });
+    push(resampleTo(s.audio, sampleRate));
   }
   const audio = new Float32Array(at);
   let o = 0;
@@ -71,10 +87,22 @@ export function buildReel(samples: { id: string; voice: string; audio: { samples
   return { audio, sampleRate, legend };
 }
 
+// Every voice in one reel shares a sample rate (Gemini's is 24 kHz; resample anything else).
+function resampleTo(a: { samples: Float32Array; sampleRate: number }, rate: number): Float32Array {
+  if (a.sampleRate === rate) return a.samples;
+  const ratio = a.sampleRate / rate;
+  const out = new Float32Array(Math.floor(a.samples.length / ratio));
+  for (let i = 0; i < out.length; i++) out[i] = a.samples[Math.min(a.samples.length - 1, Math.round(i * ratio))];
+  return out;
+}
+
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 export function formatLegend(legend: ReelEntry[], names: Record<string, string> = {}): string {
-  return legend.map((e) => `${clock(e.start)}  ${e.approved ? "✓ " : ""}${names[e.id] ?? e.id} — ${e.voice}`).join("\n");
+  return legend.map((e) => {
+    const head = `${clock(e.start)}  ${e.approved ? "✓ " : ""}${names[e.id] ?? e.name ?? e.id} (voice:${e.id}) — ${e.voice}${e.source === "audition" ? " — audition line, not from the story" : ""}`;
+    return e.description ? `${head}\n       ${e.description}` : head;
+  }).join("\n");
 }
 
 // Builds the review files for one phase; returns their paths and, for voices, the legend.
@@ -104,15 +132,35 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
   }
   if (kind === "voices") {
     const dir = join(runDir, "audiobook", "samples");
-    let index: Record<string, { voice: string; text: string }> = {};
+    let index: Record<string, SampleIndexEntry> = {};
     try { index = JSON.parse(await readFile(join(dir, "samples.json"), "utf8")); } catch { throw new Error(`no voice samples in ${dir} — run make --only voices first`); }
-    const ids = Object.keys(index).sort((a, b) => (a === "narrator" ? -1 : b === "narrator" ? 1 : a.localeCompare(b)));
-    const samples = await Promise.all(ids.map(async (id) => ({ id, voice: index[id].voice, audio: decodeWav(await readFile(join(dir, `${id}.wav`))) })));
+    const bible = voicedBible(await new EventLog(runDir).load());
+    // In the order the voices phase set: the narrator, then whoever speaks most.
+    const ids = Object.keys(index).sort((a, b) => (index[a].order ?? 999) - (index[b].order ?? 999) || a.localeCompare(b));
+    const wav = async (f: string) => readFile(f).then((b) => decodeWav(b), () => undefined);
+    const samples: ReelSample[] = [];
+    for (const id of ids) {
+      const audio = await wav(join(dir, `${id}.wav`));
+      if (!audio) continue;
+      const slate = await wav(join(dir, "slates", `${id}.wav`));
+      const description = id === "narrator" ? undefined : [bible.characters[id]?.vocal, bible.characters[id]?.traits, bible.characters[id]?.voice].find((d) => d?.trim());
+      samples.push({ id, voice: index[id].voice, audio, ...(slate ? { slate } : {}), ...(index[id].name ? { name: index[id].name } : {}), ...(index[id].source ? { source: index[id].source } : {}), ...(description ? { description } : {}) });
+    }
     const reel = buildReel(samples, new Set(approvals.voices));
-    const wav = join(outDir, "voices.wav");
-    await writeFile(wav, encodeWav(reel.audio, reel.sampleRate));
+    const wavFile = join(outDir, "voices.wav");
+    await writeFile(wavFile, encodeWav(reel.audio, reel.sampleRate));
     const mp3 = join(outDir, "voices.mp3");
-    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", wav, "-codec:a", "libmp3lame", "-q:a", "4", mp3]);
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", wavFile, "-codec:a", "libmp3lame", "-q:a", "4", mp3]);
+    // And one file per voice, numbered in reel order, to skip around on a phone.
+    const each = join(outDir, "voices");
+    await mkdir(each, { recursive: true });
+    for (const [n, s] of samples.entries()) {
+      const one = buildReel([s], new Set(approvals.voices));
+      const file = join(each, `${String(n + 1).padStart(2, "0")}-${s.id}-${s.voice}`);
+      await writeFile(`${file}.wav`, encodeWav(one.audio, one.sampleRate));
+      await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", `${file}.wav`, "-codec:a", "libmp3lame", "-q:a", "4", `${file}.mp3`]);
+      await rm(`${file}.wav`);
+    }
     const legend = formatLegend(reel.legend);
     await writeFile(join(outDir, "voices.txt"), legend + "\n");
     return { files: [mp3], legend };

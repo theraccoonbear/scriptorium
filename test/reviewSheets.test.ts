@@ -32,10 +32,14 @@ test("contact sheets: references split into characters, locations and props; sho
   assert.ok(args.includes("960x960>+12+12"), "tiles big enough to judge on a phone");
 });
 
-test("the voice reel puts every sample in one file, a second apart, with a legend of who speaks when", () => {
+test("the voice reel: each voice announced, then its sample, two seconds apart; the legend names, voices and describes them", () => {
   const audio = (secs: number) => ({ samples: new Float32Array(10 * secs), sampleRate: 10 });
-  const reel = buildReel([{ id: "narrator", voice: "storyteller", audio: audio(3) }, { id: "lemuel", voice: "algenib", audio: audio(2) }], new Set(["lemuel"]));
-  assert.equal(reel.audio.length, 10 * (3 + 1 + 2));
-  assert.deepEqual(reel.legend.map((e) => [e.id, e.start, e.seconds, e.approved]), [["narrator", 0, 3, false], ["lemuel", 4, 2, true]]);
-  assert.equal(formatLegend(reel.legend, { lemuel: "Lemuel" }), "0:00  narrator — storyteller\n0:04  ✓ Lemuel — algenib");
+  const reel = buildReel([
+    { id: "narrator", voice: "storyteller", audio: audio(3), slate: audio(1), name: "The narrator" },
+    { id: "lemuel", voice: "algenib", audio: audio(2), slate: audio(1), name: "Lemuel Braunschweiger", source: "audition", description: "Early twenties, high rasping tenor" }
+  ], new Set(["lemuel"]));
+  // slate 1 + 0.6 + sample 3, gap 2, slate 1 + 0.6 + sample 2
+  assert.equal(reel.audio.length, 10 * (1 + 0.6 + 3 + 2 + 1 + 0.6 + 2));
+  assert.deepEqual(reel.legend.map((e) => [e.id, e.start, e.seconds, e.approved]), [["narrator", 0, 3, false], ["lemuel", 6.6, 2, true]]);
+  assert.equal(formatLegend(reel.legend), "0:00  The narrator (voice:narrator) — storyteller\n0:06  ✓ Lemuel Braunschweiger (voice:lemuel) — algenib — audition line, not from the story\n       Early twenties, high rasping tenor");
 });

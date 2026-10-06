@@ -10,7 +10,7 @@ import { planReferences, staleCharacterRefs } from "../src/engine.ts";
 import { buildRoleProviders } from "../src/providers.ts";
 import { AUTHOR_DESIGN_LABEL, INSPECTOR_SYSTEM, MockImageBackend, buildArtJobs, renderArt } from "../src/artist.ts";
 import { parseApprovalTarget, readApprovals, setApproval } from "../src/approvals.ts";
-import { renderVoiceSamples, sampleText } from "../src/voiceSamples.ts";
+import { needAuditions, renderVoiceSamples, sampleText } from "../src/voiceSamples.ts";
 import { planSteps } from "../src/make.ts";
 import { pitch } from "../src/pitch.ts";
 import { readVisualRefs } from "../src/visualrefs.ts";
@@ -137,21 +137,28 @@ test("approvals: images by key, voices by voice:<id>, and revoking", async () =>
   assert.deepEqual(await readApprovals(runDir), { art: ["character-nell"], voices: ["nell"] });
 });
 
-test("voice samples read each speaker's own first lines, and are only remade when the voice changes", async () => {
+test("voice samples: a fair stretch of each speaker's own lines, or an audition line when the story gives too little; each announced by name; remade only when the voice changes", async () => {
   const { runDir, log } = await run();
-  assert.ok(sampleText(log.events, "lemuel")!.includes("Everyone up"));
-  assert.ok(!sampleText(log.events, "lemuel")!.includes("Quiet"), "only their own lines");
-  assert.ok(sampleText(log.events, "ivana")!.includes("Quiet"));
-  assert.ok(sampleText(log.events, "narrator")!.includes("The road was empty."));
+  // The test story gives Lemuel and Ivana a line each: too little to judge a voice by.
+  assert.equal(sampleText(log.events, "lemuel"), undefined, "a few words is not a sample");
+  assert.equal(sampleText(log.events, "narrator", 10), "The road was empty.");
+  assert.equal(sampleText(log.events, "lemuel", 10), "Up, Everyone up.", "their own words only (not the narration between them), without the quotation marks");
+  assert.deepEqual(needAuditions(log.events, ["narrator", "lemuel", "ivana"]), ["lemuel", "ivana"]);
   const spoken: string[] = [];
-  const speak = async (prompt: string, voice: string) => { spoken.push(voice); return { samples: new Float32Array(2400), sampleRate: 24000 }; };
+  const speak = async (prompt: string, voice: string) => { spoken.push(`${voice}:${prompt.includes("casting reel") ? "slate" : "sample"}`); return { samples: new Float32Array(2400), sampleRate: 24000 }; };
   const voices = { narrator: "en-us-storyteller-13", lemuel: "algenib", ivana: "kore" };
-  const first = await renderVoiceSamples(log.events, { runDir, voices, speak });
-  assert.deepEqual(first.map((s) => s.id), ["narrator", "ivana", "lemuel"], "narrator first");
-  assert.equal(spoken.length, 3);
-  const again = await renderVoiceSamples(log.events, { runDir, voices: { ...voices, ivana: "leda" }, speak });
+  const auditions = { lemuel: "Everyone up, I said. The road won't walk itself, and neither will you, so up.", ivana: "Quiet. Something is moving out there, and it is not a sheep." };
+  const first = await renderVoiceSamples(log.events, { runDir, voices, speak, auditions });
+  assert.equal(first[0].id, "narrator", "narrator first");
+  assert.deepEqual(first.filter((s) => s.id !== "narrator").map((s) => s.source), ["audition", "audition"]);
+  assert.ok(first.every((s) => s.slate), "each one announced by name");
+  assert.equal(spoken.filter((x) => x.endsWith("slate")).length, 3);
+  assert.ok(spoken.filter((x) => x.endsWith("slate")).every((x) => x.startsWith("en-us-storyteller-13")), "the narrator announces them");
+  spoken.length = 0;
+  const again = await renderVoiceSamples(log.events, { runDir, voices: { ...voices, ivana: "leda" }, speak, auditions });
   assert.deepEqual(again.filter((s) => s.made).map((s) => s.id), ["ivana"]);
-  assert.match(first[1].file, /audiobook\/samples\/ivana\.wav$/);
+  assert.deepEqual(spoken, ["leda:sample"], "only her sample is remade; the announcements are kept");
+  assert.match(again.find((s) => s.id === "ivana")!.file, /audiobook\/samples\/ivana\.wav$/);
 });
 
 test("review phases run only when asked for, before the steps they feed", () => {
