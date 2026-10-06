@@ -256,6 +256,7 @@ export interface ArtOptions {
   // when their prompt changes or force is set, and never retaken.
   approved?: ReadonlySet<string>;
   only?: "references";     // render just the reference portraits, places and props
+  keys?: string[];         // render just these shots (and the cover, if named); references still load
   // Longest side, in px, of images sent as references (default 768) and of the
   // candidate sent for inspection (default 1024); 0 sends them full size. Files
   // on disk stay full size. References are most of each request's size.
@@ -423,7 +424,10 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
 
   // References first (every shot uses them), then each scene's first shot (the
   // anchors), then every other shot, then the cover — each stage in parallel.
-  const indexed = jobs.map((job, index) => ({ job, index }));
+  // A preview or a reshoot: just the named shots. References always go through
+  // (approved and finished ones are only loaded), so the shots get them.
+  const picked = opts.keys ? new Set(opts.keys) : undefined;
+  const indexed = jobs.map((job, index) => ({ job, index })).filter(({ job }) => !picked || job.ref || picked.has(job.key));
   const refJobs = indexed.filter(({ job }) => job.ref);
   const stages = [
     refJobs.slice(0, 1),
