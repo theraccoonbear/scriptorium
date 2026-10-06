@@ -80,6 +80,7 @@ Before the video, check the story file has a `title` (and `subtitle`, and `serie
 
 ## House rules
 
+- **A missing key or tool:** when a phase fails on one, run `npm run doctor -- <story.json>` and fix what it marks ✗ (the `setup` skill covers getting keys).
 - **Never spend without the pitch and a yes.** Free phases (characters, video, review) need no pitch.
 - **Sign-off before the next phase.** Don't chain paid phases on your own.
 - **Never use Kokoro on a story whose audiobook is set to Gemini**, and never change a story's voice settings to make a run succeed — stop and ask.

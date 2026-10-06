@@ -19,6 +19,7 @@ import type { StepOrder } from "./make.ts";
 import { GEMINI_MODES } from "./geminiBatch.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 import { c } from "./colors.ts";
+import { doctor, systemDeps } from "./doctor.ts";
 
 const USAGE = `scriptorium <command> [options]
 
@@ -60,6 +61,8 @@ const USAGE = `scriptorium <command> [options]
                                                          existing run, then render the images
             [--redo <kind>:<id>,...] [--note "..."]     also recreate these references (e.g. prop:horn),
                                                          with your corrections in --note
+  doctor [<story.json>]                                 what your API keys and tools can make (free);
+                                                         with a story file, whether it can run
   pitch <story.json>                                    what the story will need and cost, before spending
   cast  <story.json> [--as "..."]                      preview the story's cast: describe each member from
                                                          their photos and render one portrait each
@@ -207,6 +210,14 @@ async function main() {
       throw new Error(`--provider must be one of: ${Object.keys(config.providers).join(", ")}`);
     }
     console.log((await listModels(spec)).join("\n"));
+    return;
+  }
+
+  if (command === "doctor") {
+    const story = positionals[0] ? await loadStoryFile(positionals[0]) : undefined;
+    const { text, ready } = await doctor(systemDeps(), story);
+    console.log(text);
+    if (!ready) process.exitCode = 1;
     return;
   }
 
