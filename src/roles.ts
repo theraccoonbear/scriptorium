@@ -957,6 +957,38 @@ export async function directMusic(role: Role, params: { tone: string; artStyle?:
   throw new Error(`music cue sheet failed: ${problem}`);
 }
 
+export const AUDITION_SYSTEM = `You write audition lines for an audiobook's casting reel. Some characters say too little in the story to judge a voice by; give each one a short speech to read.
+
+Output ONLY JSON:
+{"lines":{"<character id>":string}}
+
+- One entry per character listed, by id. 2-3 sentences, 120-250 characters: something this character would plausibly say in this story, in their own manner, in the story's TONE.
+- Spoken words only: no quotation marks, no stage directions, no narration, no other characters' names.
+- Give the voice something to do: a little range (a question, an aside, a firm statement), not a list.`;
+
+// Short in-character speeches for speakers the story gives too little to cast by.
+export async function writeAuditions(role: Role, params: { tone: string; speakers: { id: string; name: string; description: string }[] }): Promise<RoleOutput<Record<string, string>>> {
+  let prompt = [
+    `TONE: ${params.tone}`,
+    `CHARACTERS:\n${params.speakers.map((s) => `- ${s.id} (${s.name}): ${s.description}`).join("\n")}`
+  ].join("\n\n");
+  let problem = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = await callJson(role, { role: "voicedirector", system: AUDITION_SYSTEM, prompt, ctx: { task: "audition", ids: params.speakers.map((s) => s.id) } });
+    const raw = ((out.result ?? {}) as { lines?: Record<string, unknown> }).lines ?? {};
+    const lines: Record<string, string> = {};
+    for (const s of params.speakers) {
+      const line = String(raw[s.id] ?? "").replace(/["“”]/g, "").replace(/\s+/g, " ").trim();
+      if (line.length >= 60) lines[s.id] = line;
+    }
+    const missing = params.speakers.filter((s) => !lines[s.id]).map((s) => s.id);
+    problem = missing.length ? `no usable line for ${missing.join(", ")}` : "";
+    if (!problem) return { ...out, result: lines };
+    prompt = `${prompt}\n\nYour last reply was unusable: ${problem}. Reply again.`;
+  }
+  throw new Error(`audition lines failed: ${problem}`);
+}
+
 export const CASTING_SYSTEM = `You are the casting director for an audiobook. Choose a voice from the VOICE LIBRARY for each character listed, and for the NARRATOR if asked.
 
 Output ONLY JSON:

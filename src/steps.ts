@@ -7,8 +7,8 @@ import { planReferences, planShots, runStory } from "./engine.ts";
 import { readApprovals } from "./approvals.ts";
 import { syncCharacterSheet } from "./characterSheet.ts";
 import { geminiSpeaker } from "./geminiTts.ts";
-import { renderVoiceSamples } from "./voiceSamples.ts";
-import { generateAudiobook, writeVoiceMap } from "./audiobook.ts";
+import { needAuditions, renderVoiceSamples } from "./voiceSamples.ts";
+import { generateAudiobook, voicedBible, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
 import { prepareTitles } from "./titles.ts";
 import { cueSheetFor, cuesFromSheet, generateCues, geminiVoiceCheck, lyriaComposer, MUSIC_DEFAULTS, prepareMusic, sceneSeconds } from "./music.ts";
@@ -20,7 +20,8 @@ import type { ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
-import { designRun, needsTagging, sceneTags, tagRun } from "./tagging.ts";
+import { designRun, needsTagging, proseHash, sceneTags, tagRun } from "./tagging.ts";
+import { writeAuditions } from "./roles.ts";
 import { castVoiceRun } from "./casting.ts";
 import { geminiBatchJobs } from "./batchJobs.ts";
 import type { GeminiSpec } from "./types.ts";
@@ -382,8 +383,27 @@ export async function voicesStep(runDir: string, events: StoryEvent[], opts: Aud
     events = log.events;
     const prepared = await prepareVoices(runDir, events, opts, opts.redo);
     const voices = prepared.geminiVoices ?? {};
-    const samples = await renderVoiceSamples(prepared.events, { runDir, voices, speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}) }) });
-    for (const s of samples) console.error(`[scriptorium] ${s.made ? c.ok(`${s.name}: ${s.voice}`) : c.dim(`${s.name}: ${s.voice} (sample unchanged)`)}${approved.has(s.id) ? c.dim(" — approved") : ""} ${c.dim(s.file)}`);
+    // Speakers the story gives too little to judge a voice by read an audition line instead (written once, kept).
+    const need = needAuditions(prepared.events, Object.keys(voices));
+    let auditions: Record<string, string> = {};
+    if (need.length) {
+      const bible = voicedBible(prepared.events);
+      const speakers = need.map((id) => ({ id, name: bible.characters[id]?.name ?? id, description: [bible.characters[id]?.vocal, bible.characters[id]?.traits].filter(Boolean).join(". ") || "a minor character" }));
+      const source = proseHash(JSON.stringify(speakers));
+      const kept = [...log.events].reverse().find((e) => e.type === "audition_lines" && (e.data as { source: string }).source === source);
+      if (kept) auditions = (kept.data as { lines: Record<string, string> }).lines;
+      else {
+        const roles = opts.config ? buildRoleProviders(opts.config) : undefined;
+        const role = roles?.voicedirector ?? roles?.continuist;
+        if (role) {
+          auditions = (await writeAuditions(role, { tone: bible.tone, speakers })).result;
+          await log.append("audition_lines", { source, lines: auditions });
+          console.error(`[scriptorium] ${c.dim(`audition lines written for ${need.join(", ")} (the story gives them too little to judge by)`)}`);
+        }
+      }
+    }
+    const samples = await renderVoiceSamples(prepared.events, { runDir, voices, auditions, speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}) }) });
+    for (const s of samples) console.error(`[scriptorium] ${s.made ? c.ok(`${s.name}: ${s.voice}${s.source === "audition" ? " (audition line)" : ""}`) : c.dim(`${s.name}: ${s.voice} (sample unchanged)`)}${approved.has(s.id) ? c.dim(" — approved") : ""} ${c.dim(s.file)}`);
     return samples;
   });
 }
