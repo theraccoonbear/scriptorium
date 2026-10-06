@@ -20,7 +20,8 @@
     "pitch": "node --env-file-if-exists=.env src/cli.ts pitch",
     "approve": "node src/cli.ts approve",
     "review": "node src/cli.ts review",
-    "reshoot": "node --env-file-if-exists=.env src/cli.ts reshoot"
+    "reshoot": "node --env-file-if-exists=.env src/cli.ts reshoot",
+    "doctor": "node src/cli.ts doctor"
   },
   "engines": {
     "node": ">=20"

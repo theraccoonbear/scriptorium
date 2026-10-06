@@ -20,13 +20,23 @@ npm install
 npm run story:mock -- --scenes 3          # offline: mock models, placeholder art
 ```
 
-For real runs, put your keys in `.env`:
+For real runs, put your keys in `.env` (`cp .env.example .env`):
 
 ```
-OPENCODE_API_KEY=...     # if your config uses opencode-go providers
-ANTHROPIC_API_KEY=...    # if your config uses anthropic providers
-GEMINI_API_KEY=...       # image generation and inspection
+ANTHROPIC_API_KEY=...    # writing (anthropic providers)
+GEMINI_API_KEY=...       # images and their checks, acted voices, music
+OPENAI_API_KEY=...       # optional: responses providers
+OPENCODE_API_KEY=...     # optional: opencode-go providers
 ```
+
+Then check what your keys and tools can make (free; it only lists each service's models):
+
+```bash
+npm run doctor                          # ✓ / ✗ for writing, images, voices, music, video, review sheets
+npm run doctor -- stories/keeper.json   # can this story run with these keys?
+```
+
+In Claude Code, the `setup` skill walks you through all of this: what each phase needs, where to get the keys, and a first mock run.
 
 The easiest way to make a story is a **story file**: one JSON file holding everything about a story, which `make` turns into a finished video:
 
