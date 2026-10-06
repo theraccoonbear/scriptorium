@@ -114,7 +114,7 @@ docker compose run --rm scriptorium make stories/foo.json --only story  # any CL
 docker compose run --rm --entrypoint npm scriptorium test
 ```
 
-- Files written to `runs/` belong to UID/GID 1000. If yours differ, `export UID=$(id -u) GID=$(id -g)` first.
+- Files written to `runs/` belong to UID/GID 1000. If yours differ, `export SCRIPTORIUM_UID=$(id -u) SCRIPTORIUM_GID=$(id -g)` first (bash won't let you set `UID`).
 - **Rootless Podman:** add the override so files stay yours: `podman-compose -f docker-compose.yml -f compose.podman.yml run --rm scriptorium doctor`.
 - Kokoro's voice model and the Gemini voice list are cached in the `cache` volume, so they download once.
 - To run Claude Code's `produce` and `setup` skills, run Claude Code on your machine as usual. Its commands work the same through `docker compose run --rm scriptorium …`.

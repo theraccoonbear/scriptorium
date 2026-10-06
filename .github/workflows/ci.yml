@@ -6,12 +6,47 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [24, 26]   # engines.node is >=24
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
       - run: npx tsc
       - run: npm test
+
+  # The Docker image (#107): it builds, its tools work, the suite and a whole
+  # mock story run inside it, and what it writes belongs to the host user.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run as the runner's user
+        run: echo "SCRIPTORIUM_UID=$(id -u)" >> "$GITHUB_ENV" && echo "SCRIPTORIUM_GID=$(id -g)" >> "$GITHUB_ENV"
+      - run: docker compose build
+      - name: doctor finds every tool (no keys here, so services are "not set up")
+        run: |
+          docker compose run --rm -T scriptorium doctor | tee doctor.txt
+          for row in "Video & audio mixing (ffmpeg)" "Review sheets (ImageMagick)" "System title fonts (fontconfig)" "Voices, local (Kokoro)"; do
+            grep -F "$row" doctor.txt | grep -q "✓" || { echo "::error::doctor: $row isn't ✓"; exit 1; }
+          done
+      - run: docker compose run --rm -T --entrypoint npm scriptorium test
+      - name: a whole mock story, written as the host user
+        run: |
+          docker compose run --rm -T scriptorium make stories/mock.json
+          test -s runs/mock-story/video/story.mp4
+          test "$(stat -c %u runs/mock-story/video/story.mp4)" = "$(id -u)"
+      - name: Kokoro speaks with the image's pruned runtime
+        run: |
+          docker compose run --rm -T --entrypoint node scriptorium --input-type=module -e '
+            import { KokoroTTS } from "kokoro-js";
+            import { env } from "@huggingface/transformers";
+            env.cacheDir = "/cache/scriptorium/models";
+            const tts = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", { dtype: "q8", device: "cpu" });
+            const out = await tts.generate("The road was empty.", { voice: "af_heart" });
+            if (!(out.audio.length > 1000)) throw new Error("no audio");
+            console.log("kokoro ok:", out.audio.length, "samples");'

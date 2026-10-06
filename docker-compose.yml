@@ -8,8 +8,8 @@ services:
   scriptorium:
     build: .
     image: scriptorium
-    # Files written to runs/ belong to you (export UID and GID if yours aren't 1000).
-    user: "${UID:-1000}:${GID:-1000}"
+    # Files written to runs/ belong to you (set SCRIPTORIUM_UID and SCRIPTORIUM_GID if yours aren't 1000).
+    user: "${SCRIPTORIUM_UID:-1000}:${SCRIPTORIUM_GID:-1000}"
     volumes:
       - .:/app:z
       - /app/node_modules     # hide a host node_modules: the image's own are used
