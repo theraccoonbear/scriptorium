@@ -487,3 +487,17 @@ test("a changed art style reaches prompts written before the change: the old sty
   assert.equal(jobs.find((j) => j.key === "character-liam")!.prompt, "Portrait of a halfling. Photoreal, ordinary people with original faces.");
   assert.ok(jobs.every((j) => !j.prompt.includes("real actors")));
 });
+
+test("renderArt can render just the named shots, with every reference loaded for them", async () => {
+  const { renderArt, MockImageBackend } = await import("../src/artist.ts");
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-keys-"));
+  const events = [
+    { seq: 0, type: "visual_ref", ts: "t", data: { kind: "character", id: "ada", appearance: "a", prompt: "portrait ada" } },
+    { seq: 1, type: "scene_art", ts: "t", data: { sceneIndex: 0, prompt: "s1", shots: [{ startParagraph: 0, prompt: "shot one", characters: ["ada"] }, { startParagraph: 3, prompt: "shot two", characters: ["ada"] }, { startParagraph: 6, prompt: "shot three" }] } },
+    { seq: 2, type: "cover_art", ts: "t", data: { sceneCount: 1, prompt: "cover" } }
+  ];
+  const backend = new MockImageBackend();
+  await renderArt(events as never, { runDir, backend, keys: ["scene-01-02"] });
+  assert.deepEqual(backend.calls.map((c) => c.prompt), ["portrait ada", "shot two"], "the reference it needs, then only the named shot");
+  assert.ok(backend.calls[1].references.some((r) => r.label?.startsWith("Canonical look")), "the shot gets the character's portrait");
+});
