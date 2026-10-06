@@ -711,7 +711,9 @@ async function directSceneShots(
   const first = await directSceneArt(role, config, bible, beat, prose, sceneIndex, previousPrompts, refAppearances(log.events), storyArtStyle(log.events));
   const have = refAppearances(log.events);
   const shots = first.result.shots ?? [];
-  const characterIds = [...new Set(shots.flatMap((s) => s.characters ?? []))].filter((id) => !have.characters[id]);
+  // The author's "portrait": false holds here too: those characters are drawn from their description alone.
+  const wanted = new Set(portraitIds(log.events));
+  const characterIds = [...new Set(shots.flatMap((s) => s.characters ?? []))].filter((id) => !have.characters[id] && wanted.has(id));
   const locationIds = [...new Set(shots.flatMap((s) => (s.location ? [s.location] : [])))].filter((id) => !have.locations[id]);
   if (characterIds.length + locationIds.length === 0) return { drafts: [first], made: [] };
   const known = new Set(Object.keys(bible.characters));

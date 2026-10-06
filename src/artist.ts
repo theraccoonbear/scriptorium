@@ -427,7 +427,9 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   // A preview or a reshoot: just the named shots. References always go through
   // (approved and finished ones are only loaded), so the shots get them.
   const picked = opts.keys ? new Set(opts.keys) : undefined;
-  const indexed = jobs.map((job, index) => ({ job, index })).filter(({ job }) => !picked || job.ref || picked.has(job.key));
+  // With keys, a reference renders only if a named shot uses it (finished ones still load).
+  const needed = new Set(jobs.filter((j) => picked?.has(j.key)).flatMap((j) => [...(j.characters ?? []).map((id) => `character-${id}`), ...(j.location ? [`location-${j.location}`] : []), ...(j.props ?? []).map((id) => `prop-${id}`)]));
+  const indexed = jobs.map((job, index) => ({ job, index })).filter(({ job }) => !picked || picked.has(job.key) || (job.ref && (needed.has(job.key) || Boolean(manifest[job.key]))));
   const refJobs = indexed.filter(({ job }) => job.ref);
   const stages = [
     refJobs.slice(0, 1),
