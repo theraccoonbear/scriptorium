@@ -1,0 +1,4 @@
+# The image is built from the package files only; everything else is mounted.
+*
+!package.json
+!package-lock.json
