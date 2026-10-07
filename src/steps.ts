@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import type { Pronunciations } from "./geminiTts.ts";
 import { basename, join } from "node:path";
 import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
@@ -296,7 +297,7 @@ export interface AudiobookStepOptions {
   casting?: boolean;          // cast Gemini voices from the library (default true when Gemini speaks)
   castingFile?: string;       // a cast list shared across chapters
   castMin?: number;           // characters spoken to earn a voice of their own; the rest are read by the narrator
-  pronunciations?: Record<string, string>;  // how to say the story's hard words, for every Gemini line
+  pronunciations?: Pronunciations;  // how to say the story's hard words, for every Gemini line
   designVoices?: string[];    // characters to give a designed voice
   force?: boolean;
   config?: StoryConfig;  // for spend accounting (pricing, budget)
@@ -501,7 +502,7 @@ export async function musicStep(runDir: string, config: StoryConfig, settings: M
 }
 
 export interface VideoStepOptions {
-  pronunciations?: Record<string, string>;  // for the narrated title
+  pronunciations?: Pronunciations;  // for the narrated title
   encoder?: EncoderChoice;
   parallel?: number;
   titles?: TitleSettings | false;   // false: the plain cut, no cards

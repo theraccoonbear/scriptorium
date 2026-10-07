@@ -50,9 +50,16 @@ test("a check that fails to run counts as a failed check, not a pass", async () 
 
 test("a line with a hard word gets its pronunciation in the direction; the words stay as written", async () => {
   const { withPronunciations } = await import("../src/geminiTts.ts");
-  const guide = { McPoyle: "mick-POYL (rhymes with boil)", Riann: "REE-ann" };
+  const guide = { McPoyle: "mick-POYL (rhymes with boil)", Riann: "REE-ann" } as Record<string, string | { say: string }>;
   assert.deepEqual(withPronunciations({ text: "Liam McPoyle.", style: "plainly" }, guide), { text: "Liam McPoyle.", style: "plainly. Pronounce McPoyle as mick-POYL (rhymes with boil)" });
   assert.match(withPronunciations({ text: "The McPoyles came; McPoyle's cart too." }, guide).style!, /^Pronounce McPoyle as/, "plurals and possessives");
   assert.equal(withPronunciations({ text: "Brianna said." }, guide).style, undefined, "a whole word, not part of one");
   assert.equal(withPronunciations({ text: "riann!" }, guide).style, "Pronounce Riann as REE-ann", "any case");
+});
+
+test("a word the model reads by its spelling is said as written in the guide; only what's spoken changes", async () => {
+  const { withPronunciations } = await import("../src/geminiTts.ts");
+  const guide = { Riann: { say: "Ryan" }, McPoyle: "mick-POYL" };
+  assert.deepEqual(withPronunciations({ text: "Riann McPoyle, and Riann's cart.", style: "plainly" }, guide), { text: "Ryan McPoyle, and Ryan's cart.", style: "plainly. Pronounce McPoyle as mick-POYL" });
+  assert.deepEqual(withPronunciations({ text: "Brianna." }, guide), { text: "Brianna." });
 });

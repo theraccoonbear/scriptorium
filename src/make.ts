@@ -1,4 +1,5 @@
 import { narratorReads } from "./casting.ts";
+import type { Pronunciations } from "./geminiTts.ts";
 import { changedKeys, imageRound, snapshotArt } from "./rounds.ts";
 import type { ArtSnapshot } from "./rounds.ts";
 import { lineCounts } from "./voiceSamples.ts";
@@ -63,7 +64,7 @@ export interface StoryFile {
     geminiBatch?: boolean;                       // batched modes through Gemini Batch Mode (half price, slower); not for 3.8+ TTS, which is voiced live (#114)
     castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
     castMin?: number;                            // characters spoken to earn a voice of their own (default 120); the rest are read by the narrator
-    pronunciations?: Record<string, string>;     // how to say the story's hard words: { "McPoyle": "mick-POYL, rhymes with boil" }
+    pronunciations?: Pronunciations;     // how to say the story's hard words: { "McPoyle": "mick-POYL, rhymes with boil" }
     designVoices?: string[];                     // character ids to give a designed voice
   };
   music?: MusicSettings | false;       // the score (off unless present): { style, duck, volume, model, maxTakes }

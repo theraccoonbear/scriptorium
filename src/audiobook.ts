@@ -5,6 +5,7 @@
 //   with `narrator:` or a bible character id, and each speaker gets their own
 //   voice. Detection is per scene, not per run — a run can mix both.
 import { createHash } from "node:crypto";
+import type { Pronunciations } from "./geminiTts.ts";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -337,7 +338,7 @@ export interface AudiobookOptions {
   geminiModel?: string;
   geminiVoices?: Record<string, string>;  // character id (or "narrator") -> Gemini voice name
   narratorReads?: string[];  // walk-on parts read in the narrator's voice (see casting.ts narratorReads)
-  pronunciations?: Record<string, string>;  // how to say the story's hard words (see geminiTts.ts)
+  pronunciations?: Pronunciations;  // how to say the story's hard words (see geminiTts.ts)
   // How Gemini lines are requested: "line" (one request each, own direction — the
   // default), "palette" (batched by speaker and palette tone), "speaker" (batched by
   // speaker, no direction). See geminiBatch.ts.
