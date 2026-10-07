@@ -105,6 +105,16 @@ export function formatLegend(legend: ReelEntry[], names: Record<string, string> 
   }).join("\n");
 }
 
+// The reel's cast list for people outside the production: who speaks when.
+export function formatShareList(legend: ReelEntry[], narrated: string[] = []): string {
+  return [
+    "Voice casting",
+    "",
+    ...legend.map((e) => `${clock(e.start)}  ${e.name ?? e.id}${e.source === "audition" ? " (a test line, not from the story)" : ""}`),
+    ...(narrated.length ? ["", `Read by the narrator, in character: ${narrated.join(", ")}`] : [])
+  ].join("\n");
+}
+
 // Builds the review files for one phase; returns their paths and, for voices, the legend.
 export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ files: string[]; legend?: string }> {
   const outDir = join(runDir, "review");
@@ -151,6 +161,7 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
     await writeFile(wavFile, encodeWav(reel.audio, reel.sampleRate));
     const mp3 = join(outDir, "voices.mp3");
     await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", wavFile, "-codec:a", "libmp3lame", "-q:a", "4", mp3]);
+    await rm(wavFile, { force: true });
     // And one file per voice, numbered in reel order, to skip around on a phone.
     const each = join(outDir, "voices");
     await rm(each, { recursive: true, force: true });  // no files left over from voices no longer cast
@@ -166,6 +177,8 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
     try { narrated = JSON.parse(await readFile(join(dir, "narrated.json"), "utf8")); } catch { /* samples made before #105 */ }
     const legend = formatLegend(reel.legend) + (narrated.length ? `\n\nRead by the narrator, in character (too little to cast): ${narrated.map((n) => n.name).join(", ")}` : "");
     await writeFile(join(outDir, "voices.txt"), legend + "\n");
+    // The same, for sharing: names and times only.
+    await writeFile(join(outDir, "voices-share.txt"), formatShareList(reel.legend, narrated.map((n) => n.name)) + "\n");
     return { files: [mp3], legend };
   }
   const artDir = join(runDir, "art");

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { join } from "node:path";
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { EventLog } from "./eventlog.ts";
@@ -20,6 +21,9 @@ import { GEMINI_MODES } from "./geminiBatch.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 import { c } from "./colors.ts";
 import { doctor, systemDeps } from "./doctor.ts";
+import { formatAudition, pickAudition, runAudition } from "./auditions.ts";
+import { geminiSpeaker } from "./geminiTts.ts";
+import { fetchLibrary } from "./voiceLibrary.ts";
 
 const USAGE = `scriptorium <command> [options]
 
@@ -61,6 +65,12 @@ const USAGE = `scriptorium <command> [options]
                                                          existing run, then render the images
             [--redo <kind>:<id>,...] [--note "..."]     also recreate these references (e.g. prop:horn),
                                                          with your corrections in --note
+  audition <story.json> <speaker> [--direction "..."] [--voices a,b] [--count N]
+                                                         their reel line in their current voice and a few
+                                                         others (the voice director's picks, or yours), as
+                                                         a review round
+  audition <story.json> <speaker> --pick N [--round NN] pin candidate N; a new direction becomes their
+                                                         vocal line; remakes their sample and the reel
   doctor [<story.json>]                                 what your API keys and tools can make (free);
                                                          with a story file, whether it can run
   pitch <story.json>                                    what the story will need and cost, before spending
@@ -198,7 +208,12 @@ async function main() {
       parallel: { type: "string" },
       note: { type: "string" },
       revoke: { type: "boolean" },
-      as: { type: "string" }
+      as: { type: "string" },
+      direction: { type: "string" },
+      voices: { type: "string" },
+      count: { type: "string" },
+      pick: { type: "string" },
+      round: { type: "string" }
     }
   });
 
@@ -279,6 +294,37 @@ async function main() {
     const story = await loadStoryFile(storyFile);
     const a = await setApproval(story.runDir, targets, !values.revoke);
     console.log(`${c.ok(values.revoke ? "revoked" : "approved")} ${targets.join(", ")} ${c.dim(`(art: ${a.art.length} approved, voices: ${a.voices.length} approved)`)}`);
+    return;
+  }
+
+  if (command === "audition") {
+    const [storyFile, id] = positionals;
+    if (!storyFile || !id) throw new Error('usage: audition <story.json> <speaker id> [--direction "..."] [--voices a,b,c] [--count N] | --pick N [--round NN]');
+    const story = await loadStoryFile(storyFile);
+    if ((await readApprovals(story.runDir)).voices.includes(id)) throw new Error(`voice:${id} is approved — revoke it before auditioning (npm run approve -- ${storyFile} voice:${id} --revoke)`);
+    if (values.pick) {
+      const picked = await pickAudition({ storyFile, runDir: story.runDir, id, pick: Number(values.pick), ...(values.round ? { round: Number(values.round) } : {}) });
+      console.error(`[scriptorium] ${c.ok(`${id}: ${picked.voice} (round ${picked.round.name}), pinned in ${storyFile}`)}${picked.vocal ? c.dim(`\n[scriptorium] vocal line on the sheet: ${picked.vocal}`) : ""}`);
+      // Their reel sample in the new voice, and the reel.
+      await make(storyFile, { only: "voices" });
+      const out = await buildReview(story.runDir, "voices");
+      for (const f of out.files) console.log(f);
+      return;
+    }
+    const events = await new EventLog(story.runDir).load();
+    const roles = buildRoleProviders(story.config);
+    const voices = (values.voices ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+    const { round, info } = await accounted(story.runDir, story.config, "voices", () => runAudition({
+      runDir: story.runDir, events, id,
+      speak: geminiSpeaker({ ...(story.audiobook.geminiModel ? { model: story.audiobook.geminiModel } : {}) }),
+      ...(values.direction ? { direction: values.direction } : {}),
+      ...(voices.length ? { voices } : {}),
+      ...(values.count ? { count: Number(values.count) } : {}),
+      ...(roles.voicedirector ?? roles.continuist ? { role: (roles.voicedirector ?? roles.continuist)! } : {}),
+      library: () => fetchLibrary(story.audiobook.language ?? "en")
+    }));
+    console.log(join(round.dir, "all.mp3"));
+    console.log(`\n${formatAudition(info, round.number)}`);
     return;
   }
 

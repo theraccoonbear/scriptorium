@@ -989,6 +989,38 @@ export async function writeAuditions(role: Role, params: { tone: string; speaker
   throw new Error(`audition lines failed: ${problem}`);
 }
 
+// Voices worth auditioning for one character (see auditions.ts).
+export const SUGGEST_SYSTEM = `You are the casting director for an audiobook, auditioning new voices for one character. From the VOICE LIBRARY, choose the voices most worth hearing for how the character should SOUND.
+
+Output ONLY JSON:
+{"voices":[{"id":voiceId,"reason":string}]}
+
+- Exactly the number of voices asked for, all different, all from the library, none from NOT THESE.
+- Match the DIRECTION first (pitch, texture, age, accent, attitude), then the character. Give a short reason for each: what in the library description fits.
+- Range: if several fit, vary them (accent, texture), so the author hears real alternatives.`;
+
+export async function suggestVoices(role: Role, p: { name: string; gender?: string; direction: string; library: { id: string; gender?: string; line: string }[]; exclude: string[]; count: number }): Promise<{ id: string; reason: string }[]> {
+  const exclude = new Set(p.exclude);
+  const library = p.library.filter((v) => !exclude.has(v.id) && (!p.gender || !v.gender || v.gender === p.gender));
+  const ids = new Set(library.map((v) => v.id));
+  let prompt = [
+    `CHARACTER: ${p.name}${p.gender ? ` (${p.gender})` : ""}`,
+    `DIRECTION: ${p.direction}`,
+    `VOICES WANTED: ${p.count}`,
+    `NOT THESE: ${[...exclude].join(", ") || "none"}`,
+    `VOICE LIBRARY (id | gender | pitch | accent | persona | description):\n${library.map((v) => v.line).join("\n")}`
+  ].join("\n\n");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const out = await callJson(role, { role: "voicedirector", system: SUGGEST_SYSTEM, prompt, ctx: { task: "suggest", count: p.count, libraryIds: library.map((v) => v.id) } });
+    const voices = ((out.result as { voices?: { id?: unknown; reason?: unknown }[] })?.voices ?? [])
+      .map((v) => ({ id: String(v.id), reason: String(v.reason ?? "") }))
+      .filter((v, i, all) => ids.has(v.id) && all.findIndex((w) => w.id === v.id) === i);
+    if (voices.length >= Math.min(p.count, ids.size)) return voices.slice(0, p.count);
+    prompt += `\n\nYour last reply had ${voices.length} usable voices (unknown, repeated or excluded ids). Reply again with ${p.count}.`;
+  }
+  throw new Error("the voice director couldn't suggest voices from the library");
+}
+
 export const CASTING_SYSTEM = `You are the casting director for an audiobook. Choose a voice from the VOICE LIBRARY for each character listed, and for the NARRATOR if asked.
 
 Output ONLY JSON:

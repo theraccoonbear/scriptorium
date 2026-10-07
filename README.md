@@ -132,10 +132,38 @@ docker compose run --rm --entrypoint npm scriptorium test
 | `artdirect --out <dir> [--config <file>] [--redo kind:id,…] [--note ".."]` | Redo the art direction for an existing run (references, shots, cover), then render. |
 | `video --out <dir> [--force]` | Assemble art + audiobook into `video/story.mp4`. |
 | `cast <story.json> [--as "..."]` | Preview a story's cast: describe each member from their photos and render one portrait each into `<run>/cast/preview/`. |
+| `review <story.json> refs\|shots\|voices\|music` | Rebuild the run's current review files in `<run>/review/`: contact sheets, the voice reel and its legends. |
+| `approve <story.json> <key>… [--revoke]` | Lock approved images (`scene-03-07`, `character-nell`) and voices (`voice:nell`) so nothing redoes them. |
+| `audition <story.json> <speaker> [--direction ".."] [--voices a,b] [--count N]` | Their reel line in their current voice and a few others (the voice director's picks, or yours), as a review round. `--pick N` pins candidate N in the story file, makes the new direction their vocal line, and remakes their sample and the reel. |
 | `cost --out <dir>` | What a run has spent, by step, role and model. |
 | `models --config <file> --provider <name>` | List the model ids a provider serves. |
 
 npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, `video`, `test`, `typecheck`. Run `node src/cli.ts` with no command for the full usage text.
+
+## What's in a run folder
+
+A story file's `"out"` folder holds everything the pipeline made for that story. Some of it is **canon**: the story itself and your decisions, which can't be remade. Some is **paid for**: it can be remade, but that costs money and won't come out the same. The rest can be **rebuilt for free**.
+
+| Path | What it is | Delete it? |
+|---|---|---|
+| `events.jsonl` | **Canon.** The story's event log: every committed scene, the bible, art direction, speaker tags, voice palettes and audition lines. Everything else is built from it. | Never. |
+| `characters.json` | **Canon.** Your character sheet. Filled fields override the generated bible. | Never. |
+| `references/` | **Canon.** Your own drawings of characters (copied from the sheet's `reference`). | Never. |
+| `approvals.json` | **Canon.** What you've signed off on. Approved work is never redone. | Never. |
+| `story-settings.json` | The settings the story was written under, so `make` can warn when the story file changes them. | No. |
+| `usage.jsonl` | The spend ledger. The budget cap is checked against it. | No: deleting it resets the budget. |
+| `art/` | **Paid for.** Portraits, shots and the cover, plus `art.json`, which records which prompt made each image. `batch-jobs.json` tracks batch jobs still in flight. | Only to redo all the art, at full cost. Approved images can't be reproduced. |
+| `audiobook/casting.json` | The cast: who has which voice. Voices pinned in the story file (`audiobook.geminiVoices`) win over it. | No: deleting it recasts every voice that isn't pinned. |
+| `audiobook/` (the rest) | **Paid for.** Scene audio, timings, `samples/` (the casting reel's samples) and the batch cache. | Remade on the next run, at cost. |
+| `music/` | **Paid for.** The score's cues. | Remade on the next run, at cost. |
+| `video/` | The finished video, its parts and titles. Made locally. | Yes: free to rebuild (`--only video`). |
+| `review/` | The current review files: contact sheets, the voice reel and its legends. | Yes: `npm run review` rebuilds it. |
+| `review/rounds/` | Every audition, redo and retake, numbered in order (`07-auditions-hellga/`). Each holds one file to look at (`changed.jpg` or `all.mp3`), a `legend.txt` and a `round.json`. | Yes, once you've decided. An audition's `--pick` needs its round. |
+| `story.md` | The story as markdown, rewritten from `events.jsonl`. | Yes: `show --out <run>` prints it again. |
+| `threads/` | Every model call's prompt and reply, numbered, for debugging. | Yes. |
+| `logs/`, `notes/`, `backups/` | Yours or your assistant's: run logs, working notes, event-log backups. | Yours to decide. |
+
+Outside the run folder, the story file in `stories/`, your `contexts/` and any `castingFile` shared across chapters are canon too.
 
 ## The roles
 
