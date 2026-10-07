@@ -321,6 +321,17 @@ Output goes to `<run>/art/`: `character-<id>`, `location-<id>`, `prop-<id>`, `sc
 
 The most specific setting wins. Changing one re-makes only the extras it applies to.
 
+With a `title` in the story file, the extras phase also builds, in code and for free:
+
+- **A title logo,** typeset so it has true transparency and exact spelling. The art director designs it: one of the bundled fantasy display fonts, a finish (bevelled gilded, bronze, silver or iron; parchment; plain) and an optional arch. It's written as one line (`logo.png`), stacked (`logo-stacked.png`) and in white for spines and small sizes (`logo-mono.png`).
+  - `"mode": "drawn"` has the image model letter it instead, from the art director's brief. It's drawn on green that's keyed out, checked letter by letter, and falls back to typeset after three tries. With no real alpha, it doesn't blend as well.
+  - `--redo extra-logo` redraws a drawn logo.
+  - **Your own logo:** `"logo": { "file": "logo.png", "stackedFile": "logo-two-lines.png" }`. Give a PNG with real transparency around the lettering; paths are relative to the story file, and `stackedFile` is optional. It's used as-is, its white version comes from its alpha, and a file with no transparency is refused.
+- **Shelf covers:** the key art with the logo over it, at the sizes streaming apps use: `cover-2x3.jpg` (2000×3000), `cover-16x9.jpg` (3840×2160) and `cover-1x1.jpg` (2000×2000).
+- **Box art:** a VHS/DVD case laid out flat, back, spine and front, in `box/box.jpg`. The back has a tagline, four approved stills, a synopsis, a billing block and a rating box. The art director writes the copy once (it's rewritten only when the title or story changes).
+
+All of these go in `art/extra/`, and `npm run review -- <story.json> extras` adds `review/extras-covers.jpg`. To set the logo yourself, use `"extras": { "logo": { "mode": "typeset", "font": "Uncial Antiqua", "treatment": "bronze", "arc": 18 } }`. The bundled fonts are Cinzel, Cinzel Decorative, EB Garamond, IM Fell English SC, MedievalSharp, Metamorphous, New Rocker, Pirata One and Uncial Antiqua (all OFL, in `assets/fonts/`); a system font name also works. `"box": false` skips the box.
+
 ## Video
 
 `video` turns a run's art and audiobook into:

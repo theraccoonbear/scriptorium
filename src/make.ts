@@ -334,7 +334,7 @@ const defaultRunners: StepRunners = {
   // make never re-renders finished work; the individual commands take --force for that.
   art: async (s, events, shots) => { await artStep(s.runDir, s.config, events, false, shots ? { shotRedo: shots.redo, replan: shots.replan, ...(shots.note ? { notes: shots.note } : {}) } : {}); },
   // --redo extras directs the key art and cast photo again; --redo extra-cast just retakes one.
-  extras: async (s, events, redo, notes) => { await extrasStep(s.runDir, s.config, events, false, { redo: redo.filter((r) => r !== "extras"), redirect: redo.includes("extras"), ...(notes ? { notes } : {}) }); },
+  extras: async (s, events, redo, notes) => { await extrasStep(s.runDir, s.config, events, false, { redo: redo.filter((r) => r !== "extras"), redirect: redo.includes("extras"), ...(notes ? { notes } : {}), ...(s.title ? { title: s.title } : {}), ...(s.subtitle ? { subtitle: s.subtitle } : {}), base: dirname(resolve(s.file)) }); },
   audiobook: async (s, events) => { await audiobookStep(s.runDir, events, audiobookOptions(s)); },
   // Off unless the story file has a "music" block.
   music: async (s) => {
@@ -451,7 +451,7 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   // Shots: scene-04-07 (one shot), scene:4 (re-plan a scene's shots).
   const redoShots = redo.filter((r) => /^scene-\d+-\d+$/.test(r) || r === "cover");
   const replanScenes = redo.filter((r) => /^scene:\d+$/.test(r)).map((r) => Number(r.slice("scene:".length)) - 1);
-  const redoExtras = redo.filter((r) => r === "extras" || r.startsWith("extra-"));
+  const redoExtras = redo.filter((r) => r === "extras" || r.startsWith("extra-"));  // extra-logo redraws the logo
   if (redoExtras.length && !steps.includes("extras")) throw new Error(`--redo ${redoExtras.join(",")}: extras are redone in the extras phase (--only extras)`);
   const redoRefs = redo.filter((r) => !r.startsWith("voice:") && !redoShots.includes(r) && !redoExtras.includes(r) && !/^scene:\d+$/.test(r));
   if (redoRefs.length && !steps.includes("refs")) throw new Error(`--redo ${redoRefs.join(",")}: references are remade in the refs phase (--only refs)`);

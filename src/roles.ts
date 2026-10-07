@@ -995,6 +995,85 @@ export async function writeAuditions(role: Role, params: { tone: string; speaker
   throw new Error(`audition lines failed: ${problem}`);
 }
 
+// The title logo's design (#128): the art director picks the lettering and its
+// finish from what can be typeset exactly (no image model draws the text).
+export const LOGO_SYSTEM = `You design the title logo for a film made from a story: the lettering on its poster, streaming tile and box. It will be typeset exactly, so you choose from the fonts and finishes given.
+
+Output ONLY JSON:
+{"font":string,"treatment":string,"arc":number,"caps":boolean,"reason":string}
+
+- font: one of the FONTS, by name — the one whose feel best fits the story's genre and tone.
+- treatment: one of the TREATMENTS — gilded, bronze, silver and iron are bevelled metal; parchment and plain are flat.
+- arc: 0-30 degrees to arch the title like a classic fantasy-adventure logo (0 for straight; 12-22 is a confident arch).
+- caps: true for all capitals.
+- reason: one sentence.
+Match the genre first (a tabletop fantasy adventure wants a fantasy-adventure logo, not a literary one), then the tone.`;
+
+export async function designLogo(role: Role, p: { title: string; tone: string; artStyle?: string; fonts: Record<string, string>; treatments: readonly string[] }): Promise<RoleOutput<{ font: string; treatment: string; arc: number; caps: boolean; reason: string }>> {
+  const prompt = [
+    `TITLE: ${p.title}`,
+    `TONE: ${p.tone}`,
+    p.artStyle ? `ART STYLE: ${p.artStyle}` : "",
+    `FONTS:\n${Object.entries(p.fonts).map(([n, d]) => `- ${n}: ${d}`).join("\n")}`,
+    `TREATMENTS: ${p.treatments.join(", ")}`
+  ].filter(Boolean).join("\n\n");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = await callJson(role, { role: "artdirector", system: LOGO_SYSTEM, prompt, ctx: { task: "logo", fonts: Object.keys(p.fonts), treatments: p.treatments } });
+    const r = (out.result ?? {}) as Record<string, unknown>;
+    const font = Object.keys(p.fonts).find((f) => f.toLowerCase() === String(r.font ?? "").toLowerCase());
+    const treatment = p.treatments.find((t) => t === String(r.treatment ?? "").toLowerCase());
+    if (font && treatment) return { ...out, result: { font, treatment, arc: Math.max(0, Math.min(30, Number(r.arc) || 0)), caps: r.caps !== false, reason: String(r.reason ?? "") } };
+  }
+  throw new Error("logo design: no usable font and treatment");
+}
+
+// A drawn title logo (#128): the art director's brief for the image model.
+export const LOGO_ART_SYSTEM = `You art-direct the title logo for a film made from a story — the designed lettering on its poster, streaming tile and box, like a real film's title treatment.
+
+Output ONLY JSON:
+{"prompt":string}
+
+- prompt: 40-90 words describing ONLY the lettering's design: letterforms (e.g. carved, hand-cut, blackletter, uncial, Roman capitals), material and finish (hammered gold, weathered bronze, carved stone, iron), depth, edges, lighting, and any ornament woven into the letters (a vine, a blade, a mushroom cap) that fits the story. Make it fit the story's genre first (a tabletop fantasy adventure wants a bold fantasy-adventure logo), then its tone.
+- Never write the title's words or any names in the prompt: the lettering text is added separately.
+- No scene, no characters, no background: just the logo.`;
+
+export async function briefLogoArt(role: Role, p: { title: string; tone: string; artStyle?: string }): Promise<RoleOutput<{ prompt: string }>> {
+  const prompt = [`TITLE: ${p.title}`, `TONE: ${p.tone}`, p.artStyle ? `ART STYLE (of the film): ${p.artStyle}` : ""].filter(Boolean).join("\n\n");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = await callJson(role, { role: "artdirector", system: LOGO_ART_SYSTEM, prompt, ctx: { task: "logoart" } });
+    const r = (out.result ?? {}) as { prompt?: unknown };
+    if (typeof r.prompt === "string" && r.prompt.trim()) return { ...out, result: { prompt: r.prompt.trim() } };
+  }
+  throw new Error("logo brief: no prompt");
+}
+
+// The copy on the back of the box (#128): a tagline, a synopsis that sells the
+// story without spoiling its ending, and a film-style billing block.
+export const BOX_COPY_SYSTEM = `You write the copy for the back of a film's box (a DVD/VHS case) for a story that's been made into a film.
+
+Output ONLY JSON:
+{"tagline":string,"synopsis":string,"credits":string}
+
+- tagline: one line, under 12 words, in the story's tone: the hook, not a summary.
+- synopsis: 70-110 words, present tense, in the voice of back-of-box copy for this story's tone. Set up the premise, the characters and what's at stake; never reveal how it ends.
+- credits: a film billing block on one line, in the usual shape: "A <studio> Production · a film by <director> · starring <the principal characters' names, as if they were the actors> · music by … · written by …". Use the story's character names for the cast; invent plausible, clearly fictional names for the crew. Never use real people's names.`;
+
+export async function writeBoxCopy(role: Role, p: { bible: Bible; title: string; beats: { location: string; goal: string; conflict: string }[] }): Promise<RoleOutput<{ tagline: string; synopsis: string; credits: string }>> {
+  const prompt = [
+    `TITLE: ${p.title}`,
+    `TONE: ${p.bible.tone}`,
+    `PRINCIPAL CHARACTERS:\n${Object.values(p.bible.characters).slice(0, 10).map((c) => `- ${c.name}: ${c.traits}`).join("\n")}`,
+    `THE STORY (one line per scene):\n${p.beats.map((b, n) => `${n + 1}. [${b.location}] ${b.goal} — ${b.conflict}`).join("\n")}`
+  ].join("\n\n");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = await callJson(role, { role: "artdirector", system: BOX_COPY_SYSTEM, prompt, ctx: { task: "boxcopy" } });
+    const r = (out.result ?? {}) as Record<string, unknown>;
+    const pick = (k: string) => (typeof r[k] === "string" ? (r[k] as string).trim() : "");
+    if (pick("tagline") && pick("synopsis") && pick("credits")) return { ...out, result: { tagline: pick("tagline"), synopsis: pick("synopsis"), credits: pick("credits") } };
+  }
+  throw new Error("box copy: no tagline, synopsis or credits");
+}
+
 // Voices worth auditioning for one character (see auditions.ts).
 export const SUGGEST_SYSTEM = `You are the casting director for an audiobook, auditioning new voices for one character. From the VOICE LIBRARY, choose the voices most worth hearing for how the character should SOUND.
 

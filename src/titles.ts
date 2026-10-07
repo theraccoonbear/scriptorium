@@ -161,7 +161,26 @@ async function libraryDisplayNames(language = "en"): Promise<Record<string, stri
 const FONT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "assets", "fonts");
 export const BUNDLED_FONTS: Record<string, string> = {
   "eb garamond": join(FONT_DIR, "EBGaramond.ttf"),
-  "cinzel": join(FONT_DIR, "Cinzel.ttf")
+  "cinzel": join(FONT_DIR, "Cinzel.ttf"),
+  "cinzel decorative": join(FONT_DIR, "CinzelDecorative.ttf"),
+  "im fell english sc": join(FONT_DIR, "IMFellEnglishSC.ttf"),
+  "medievalsharp": join(FONT_DIR, "MedievalSharp.ttf"),
+  "metamorphous": join(FONT_DIR, "Metamorphous.ttf"),
+  "new rocker": join(FONT_DIR, "NewRocker.ttf"),
+  "pirata one": join(FONT_DIR, "PirataOne.ttf"),
+  "uncial antiqua": join(FONT_DIR, "UncialAntiqua.ttf")
+};
+
+// The display fonts a logo can be set in, and the feel of each (for the art director).
+export const LOGO_FONTS: Record<string, string> = {
+  "Cinzel": "engraved Roman capitals: classical, epic, restrained",
+  "Cinzel Decorative": "Roman capitals with flourished swashes: grand epic fantasy, heraldic",
+  "IM Fell English SC": "old printed-book small caps, slightly worn: storybook, folk tale, historical",
+  "MedievalSharp": "pen-drawn medieval book hand: tabletop adventure, tavern, roleplaying game",
+  "Metamorphous": "sharp-cut medieval capitals: dark fantasy, sword and sorcery",
+  "New Rocker": "heavy, spiky gothic capitals: rowdy, swashbuckling, heavy-metal fantasy adventure",
+  "Pirata One": "condensed blackletter: grim, old-world, piratical",
+  "Uncial Antiqua": "Celtic uncial: druidic, folkloric, whimsical old magic"
 };
 
 // A bundled font by name, a font file by path, or a system family through fontconfig.
