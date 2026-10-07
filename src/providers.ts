@@ -123,6 +123,12 @@ export class MockProvider {
             ]
           });
         }
+        if (ctx.task === "logoart") {
+          return JSON.stringify({ prompt: "Bold carved gold letters with a weathered edge." });
+        }
+        if (ctx.task === "logo") {
+          return JSON.stringify({ font: (ctx.fonts ?? ["Cinzel"])[0], treatment: "gilded", arc: 12, caps: true, reason: "mock" });
+        }
         if (ctx.task === "boxcopy") {
           return JSON.stringify({ tagline: "Mock tagline.", synopsis: "Mock synopsis of the story.", credits: "A Mock Production · starring Everyone" });
         }

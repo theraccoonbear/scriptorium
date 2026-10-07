@@ -1,11 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { boxArt, renderLogo, SHELF, shelfCover } from "./titleArt.ts";
-import type { BoxCopy } from "./titleArt.ts";
+import { boxArt, drawLogo, exists, renderLogo, SHELF, shelfCover, TREATMENTS } from "./titleArt.ts";
+import type { BoxCopy, LogoSettings } from "./titleArt.ts";
+import { LOGO_FONTS } from "./titles.ts";
 import type { Pronunciations } from "./geminiTts.ts";
 import { basename, join } from "node:path";
 import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
-import { buildRoleProviders } from "./providers.ts";
+import { buildRoleProviders, postJson, requireKey } from "./providers.ts";
 import { planExtras, planReferences, planShots, runStory } from "./engine.ts";
 import { readApprovals } from "./approvals.ts";
 import { syncCharacterSheet } from "./characterSheet.ts";
@@ -18,13 +19,13 @@ import { cueSheetFor, cuesFromSheet, generateCues, geminiVoiceCheck, lyriaCompos
 import type { Compose, MusicSettings, VoiceCheck } from "./music.ts";
 import type { TitleSettings } from "./titles.ts";
 import type { EncoderChoice } from "./video.ts";
-import { BatchImageBackend, CAST_PHOTO_KEY, CAST_PHOTO_LABEL, KEY_ART, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig } from "./artist.ts";
+import { BatchImageBackend, CAST_PHOTO_KEY, CAST_PHOTO_LABEL, KEY_ART, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig, storyNames, stripNames } from "./artist.ts";
 import type { ArtManifest, ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
 import { designRun, needsTagging, proseHash, sceneTags, tagRun } from "./tagging.ts";
-import { writeAuditions, writeBoxCopy } from "./roles.ts";
+import { briefLogoArt, designLogo, writeAuditions, writeBoxCopy } from "./roles.ts";
 import { castVoiceRun, narratorReads } from "./casting.ts";
 import { speechCheckRound } from "./rounds.ts";
 import type { CheckReport } from "./speechCheck.ts";
@@ -240,19 +241,65 @@ export async function extrasStep(runDir: string, config: StoryConfig, events: St
     const look = (own?: { style?: string; direction?: string }) => ({ ...(own?.style ?? x.style ? { style: own?.style ?? x.style } : {}), ...(own?.direction ?? x.direction ? { direction: own?.direction ?? x.direction } : {}) });
     const overrides = Object.fromEntries([...Object.keys(KEY_ART).map((k) => [k, look(x.keyArt)]), [CAST_PHOTO_KEY, look(x.castPhoto)]].filter(([, o]) => Object.keys(o as object).length));
     const result = await artStepInner(runDir, config, log.events, force, { approved, keys, ...(Object.keys(overrides).length ? { overrides } : {}), ...(opts.redo?.length ? { redoKeys: opts.redo } : {}) });
-    await composeExtras(runDir, config, log, roles, { ...(opts.title ? { title: opts.title } : {}), ...(opts.subtitle ? { subtitle: opts.subtitle } : {}), ...(opts.base ? { base: opts.base } : {}) });
+    await composeExtras(runDir, config, log, roles, { ...(opts.title ? { title: opts.title } : {}), ...(opts.subtitle ? { subtitle: opts.subtitle } : {}), ...(opts.base ? { base: opts.base } : {}), ...(opts.redo?.includes("extra-logo") ? { redoLogo: true } : {}) });
     return result;
   });
 }
 
+// What text an image shows (the drawn logo's spelling check).
+async function readLettering(spec: { model?: string; apiKeyEnv?: string }, img: { data: Buffer; mimeType: string }): Promise<string> {
+  const model = spec.model ?? "gemini-3.8-flash";
+  const data = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, { "x-goog-api-key": requireKey(spec.apiKeyEnv ?? "GEMINI_API_KEY") },
+    { contents: [{ parts: [{ inlineData: { mimeType: img.mimeType, data: img.data.toString("base64") } }, { text: "Read the text written in this image, exactly as spelled, letter by letter. Output only that text." }] }], generationConfig: { temperature: 0 } },
+    { type: "gemini", model, role: "inspector", timeoutMs: 60000, retries: 1 });
+  return String(data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
+}
+
 // The title logo, shelf covers and box art (#128), composited in code from
 // the approved art: free, and rebuilt every time the extras run.
-async function composeExtras(runDir: string, config: StoryConfig, log: EventLog, roles: ReturnType<typeof buildRoleProviders>, o: { title?: string; subtitle?: string; base?: string }) {
+async function composeExtras(runDir: string, config: StoryConfig, log: EventLog, roles: ReturnType<typeof buildRoleProviders>, o: { title?: string; subtitle?: string; base?: string; redoLogo?: boolean }) {
   if (!o.title?.trim()) { console.error(`[scriptorium] ${c.dim("no title in the story file — no logo, covers or box")}`); return; }
   const artDir = join(runDir, "art");
   const extraDir = join(artDir, "extra");
   const manifest: ArtManifest = JSON.parse(await readFile(join(artDir, "art.json"), "utf8"));
-  const { logo, stacked, mono } = await renderLogo({ title: o.title, ...(o.subtitle ? { subtitle: o.subtitle } : {}), outDir: extraDir, ...(config.extras?.logo ? { settings: config.extras.logo } : {}), ...(o.base ? { base: o.base } : {}) });
+  // The logo: the art director's design (once; again when the title, tone or style changes), the author's settings over it.
+  const bible = replay(log.events);
+  const logoSource = proseHash(JSON.stringify({ title: o.title, tone: bible.tone, style: storyArtStyle(log.events) }));
+  let design = log.events.filter((e) => e.type === "logo_design").map((e) => e.data as { source: string } & LogoSettings).reverse().find((d) => d.source === logoSource);
+  if (!design && roles.artdirector) {
+    const out = await designLogo(roles.artdirector, { title: o.title, tone: bible.tone, ...(storyArtStyle(log.events) ? { artStyle: storyArtStyle(log.events) } : {}), fonts: LOGO_FONTS, treatments: TREATMENTS });
+    design = { source: logoSource, font: out.result.font, treatment: out.result.treatment as LogoSettings["treatment"], arc: out.result.arc, caps: out.result.caps };
+    await log.append("logo_design", { ...design, reason: out.result.reason });
+    console.error(`[scriptorium] ${c.ok(`logo designed: ${out.result.font}, ${out.result.treatment}${out.result.arc ? `, arched ${out.result.arc}°` : ""}`)} ${c.dim(out.result.reason)}`);
+  }
+  const settings: LogoSettings = { ...(design ? { font: design.font, treatment: design.treatment, arc: design.arc, caps: design.caps } : {}), ...config.extras?.logo };
+  // Drawn (the default with a real image model): the art director briefs, the image model letters it.
+  const artist = resolveArtistConfig(config.artist);
+  let letters: { logo: string; stacked: string; mono: string } | undefined;
+  if ((config.extras?.logo?.mode ?? "drawn") === "drawn" && artist.image.type === "gemini" && roles.artdirector) {
+    const record = join(extraDir, "logo.json");
+    let prev: { source?: string } = {};
+    try { prev = JSON.parse(await readFile(record, "utf8")); } catch { /* first logo */ }
+    if (prev.source === logoSource && !o.redoLogo && await exists(join(extraDir, "logo.png"))) {
+      letters = { logo: join(extraDir, "logo.png"), stacked: join(extraDir, "logo-stacked.png"), mono: join(extraDir, "logo-mono.png") };
+    } else {
+      const brief = (await briefLogoArt(roles.artdirector, { title: o.title, tone: bible.tone, ...(storyArtStyle(log.events) ? { artStyle: storyArtStyle(log.events) } : {}) })).result.prompt;
+      const backend = makeImageBackend(artist.image);
+      const inspector = artist.inspector && artist.inspector.type === "gemini" ? artist.inspector : { type: "gemini" as const, model: "gemini-3.8-flash" };
+      letters = await drawLogo({
+        title: o.title, brief: stripNames(brief, storyNames(log.events)).text, outDir: extraDir, log: (m) => console.error(`[scriptorium]   ${c.retry(m)}`),
+        draw: {
+          generate: async (req) => { const img = await backend.generate({ prompt: req.prompt, references: [], aspectRatio: req.aspectRatio, imageSize: req.imageSize }); return { data: Buffer.from(img.data), mimeType: img.mimeType }; },
+          read: (img) => readLettering(inspector, img)
+        }
+      });
+      if (letters) {
+        await writeFile(record, JSON.stringify({ source: logoSource, brief }, null, 2) + "\n");
+        console.error(`[scriptorium] ${c.ok("logo drawn")} ${c.dim(brief.slice(0, 140))}`);
+      } else console.error(`[scriptorium] ${c.retry("the drawn logo kept misspelling the title — typeset instead")}`);
+    }
+  }
+  const { logo, stacked, mono } = letters ?? await renderLogo({ title: o.title, ...(o.subtitle ? { subtitle: o.subtitle } : {}), outDir: extraDir, settings, ...(o.base ? { base: o.base } : {}) });
   for (const [name, c2] of Object.entries(SHELF)) {
     const key = manifest[`extra-${c2.from}`];
     if (key) await shelfCover(join(artDir, key.file), c2.stacked ? stacked : logo, join(extraDir, `${name}.jpg`), c2.size, c2.logoWidth);

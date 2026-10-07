@@ -13,22 +13,31 @@ import { resolveFont } from "./titles.ts";
 const run = promisify(execFile);
 const magick = (args: string[]) => run("magick", args, { maxBuffer: 64 * 1024 * 1024 });
 
+export const TREATMENTS = ["gilded", "bronze", "silver", "iron", "parchment", "plain"] as const;
+export type Treatment = (typeof TREATMENTS)[number];
 export interface LogoSettings {
-  font?: string;       // a bundled font (Cinzel, EB Garamond) or a system font name; default Cinzel
-  treatment?: "gilded" | "silver" | "plain";  // default gilded
+  font?: string;          // a bundled font (see LOGO_FONTS) or a system font name; default Cinzel
+  treatment?: Treatment;  // default gilded
+  arc?: number;           // degrees to arch the title (0-40, the classic fantasy title curve); default 0
+  caps?: boolean;         // all capitals (default true)
 }
 
-const FILLS: Record<NonNullable<LogoSettings["treatment"]>, { fill: string; edge: string }> = {
-  gilded: { fill: "#fff2b8-#b5822c", edge: "#2b1a06" },
-  silver: { fill: "#ffffff-#8d96a0", edge: "#14181c" },
-  plain: { fill: "#ffffff-#e8e2d6", edge: "#000000" }
+// Fill gradient, the dark edge round the letters, and whether they're bevelled (metal).
+const FILLS: Record<Treatment, { fill: string; edge: string; bevel: boolean }> = {
+  gilded: { fill: "#fff3be-#c8952f", edge: "#2b1a06", bevel: true },
+  bronze: { fill: "#f2c38a-#7a4a1e", edge: "#1e1006", bevel: true },
+  silver: { fill: "#ffffff-#7f8994", edge: "#121619", bevel: true },
+  iron: { fill: "#c9ccd0-#4a4f55", edge: "#0b0c0e", bevel: true },
+  parchment: { fill: "#f6ead0-#d8c49c", edge: "#2a1d10", bevel: false },
+  plain: { fill: "#ffffff-#e8e2d6", edge: "#000000", bevel: false }
 };
 
 // One line of lettering: a gradient fill through the text's shape, a dark
 // edge around it, a soft shadow beneath. Transparent PNG.
-async function letter(text: string, font: string, points: number, kerning: number, fill: string, edge: string, dir: string, name: string): Promise<string> {
+async function letter(text: string, font: string, points: number, kerning: number, fill: string, edge: string, dir: string, name: string, bevel = false, arc = 0): Promise<string> {
   const mask = join(dir, `${name}-mask.png`);
-  await magick(["-background", "none", "-fill", "white", "-font", font, "-pointsize", String(points), "-kerning", String(kerning), `label:${text}`, "-trim", "+repage", "-bordercolor", "none", "-border", String(Math.round(points / 6)), mask]);
+  await magick(["-background", "none", "-fill", "white", "-font", font, "-pointsize", String(points), "-kerning", String(kerning), `label:${text}`, "-trim", "+repage", "-bordercolor", "none", "-border", String(Math.round(points / 6)),
+    ...(arc > 0 ? ["-virtual-pixel", "transparent", "-distort", "Arc", String(arc), "-trim", "+repage", "-bordercolor", "none", "-border", String(Math.round(points / 6))] : []), mask]);
   const { stdout } = await magick(["identify", "-format", "%wx%h", mask]);
   const fillImg = join(dir, `${name}-fill.png`);
   await magick(["-size", stdout.trim(), `gradient:${fill}`, fillImg]);
@@ -36,7 +45,10 @@ async function letter(text: string, font: string, points: number, kerning: numbe
   const stroke = Math.max(2, Math.round(points / 40));
   await magick([
     "(", mask, "-morphology", "Dilate", `Disk:${stroke}`, "-fill", edge, "-colorize", "100", ")",
-    "(", fillImg, mask, "-compose", "CopyOpacity", "-composite", ")",
+    "(", fillImg,
+      // Metal: the letters' own relief (light from the upper left) worked into the fill.
+      ...(bevel ? ["(", mask, "-alpha", "extract", "-blur", `0x${Math.max(2, Math.round(points / 30))}`, "-shade", "135x35", "-auto-level", "-function", "polynomial", "3.5,-5.05,2.1,0.25", ")", "-compose", "Overlay", "-composite"] : []),
+      mask, "-compose", "CopyOpacity", "-composite", ")",
     "-compose", "Over", "-composite",
     "(", "+clone", "-background", "black", "-shadow", `75x${Math.round(points / 25)}+0+${Math.round(points / 40)}`, ")",
     "+swap", "-background", "none", "-layers", "merge", "+repage", out
@@ -54,7 +66,7 @@ export async function renderLogo(o: { title: string; subtitle?: string; outDir: 
     await mkdir(o.outDir, { recursive: true });
     // stacked: the title over two lines (balanced at a space), for tall and square covers.
     const build = async (fill: string, edge: string, file: string, stacked: boolean) => {
-      const title = o.title.toUpperCase();
+      const title = o.settings?.caps === false ? o.title : o.title.toUpperCase();
       const words = title.split(/\s+/);
       let split = 1;
       if (stacked && words.length > 1) {
@@ -66,8 +78,10 @@ export async function renderLogo(o: { title: string; subtitle?: string; outDir: 
       }
       const rows = stacked && words.length > 1 ? [words.slice(0, split).join(" "), words.slice(split).join(" ")] : [title];
       const lines: string[] = [];
-      for (const [i, row] of rows.entries()) lines.push(await letter(row, font, 360, 6, fill, edge, dir, `${file}-t${i}`));
-      if (o.subtitle?.trim()) lines.push(await letter(o.subtitle.toUpperCase(), font, 190, 30, fill, edge, dir, `${file}-sub`));
+      const bevel = file !== "logo-mono" && t.bevel;
+      const arc = Math.max(0, Math.min(40, o.settings?.arc ?? 0));
+      for (const [i, row] of rows.entries()) lines.push(await letter(row, font, 360, 6, fill, edge, dir, `${file}-t${i}`, bevel, i === 0 ? arc : 0));
+      if (o.subtitle?.trim()) lines.push(await letter(o.subtitle.toUpperCase(), font, 190, 30, fill, edge, dir, `${file}-sub`, bevel));
       const out = join(o.outDir, `${file}.png`);
       await magick(["-background", "none", ...lines, "-gravity", "center", "-append", "-trim", "+repage", out]);
       return out;
@@ -152,3 +166,71 @@ export async function exists(f: string): Promise<boolean> {
   try { await readFile(f); return true; } catch { return false; }
 }
 export { writeFile };
+
+// A drawn logo (#128): the image model letters the title from the art
+// director's brief, on flat green that's keyed out; a reader checks the
+// spelling, and a take that's wrong is redrawn. Two shapes: one line, stacked.
+export const LOGO_KEY = "#00ff00";
+export interface DrawLogo {
+  generate: (req: { prompt: string; aspectRatio: string; imageSize: string }) => Promise<{ data: Buffer; mimeType: string }>;
+  read: (image: { data: Buffer; mimeType: string }) => Promise<string>;  // the text it shows
+}
+
+// Whether a keyed logo is clean: its border fully transparent, and almost no
+// opaque green (a halo or an un-keyed patch) anywhere.
+export async function keyProblem(file: string): Promise<string | undefined> {
+  // The outer 2% on every side should be fully transparent.
+  const strips = ["100%x2%+0+0", "100%x2%+0+0", "2%x100%+0+0", "2%x100%+0+0"];
+  const sides = ["north", "south", "west", "east"];
+  for (const [i, crop] of strips.entries()) {
+    const { stdout } = await magick([file, "-alpha", "extract", "-gravity", sides[i], "-crop", crop, "+repage", "-format", "%[fx:maxima]", "info:"]);
+    if (Number(stdout) > 0.1) return "the background didn't key out at the edges";
+  }
+  const { stdout: green } = await magick([file, "-fx", "a>0.5 && g>r+0.25 && g>b+0.25 ? 1 : 0", "-format", "%[fx:mean]", "info:"]);
+  if (Number(green) > 0.004) return "green left after keying";
+  return undefined;
+}
+
+export const sameLetters = (a: string, b: string) => {
+  const norm = (x: string) => x.toUpperCase().replace(/[’']/g, "'").replace(/[^A-Z0-9']/g, "");
+  return norm(a) === norm(b);
+};
+
+export async function drawLogo(o: { title: string; brief: string; draw: DrawLogo; outDir: string; tries?: number; log?: (m: string) => void }): Promise<{ logo: string; stacked: string; mono: string } | undefined> {
+  const words = o.title.trim().split(/\s+/);
+  const half = Math.max(1, Math.round(words.length / 2));
+  const shapes = [
+    { file: "logo", aspectRatio: "21:9", layout: "on a single line" },
+    { file: "logo-stacked", aspectRatio: "4:3", layout: words.length > 1 ? `on two lines: "${words.slice(0, half).join(" ").toUpperCase()}" above "${words.slice(half).join(" ").toUpperCase()}"` : "on a single line" }
+  ];
+  await mkdir(o.outDir, { recursive: true });
+  const made: Record<string, string> = {};
+  for (const shape of shapes) {
+    let ok = false;
+    for (let t = 0; t < (o.tries ?? 3) && !ok; t++) {
+      const img = await o.draw.generate({
+        aspectRatio: shape.aspectRatio, imageSize: "2K",
+        prompt: `A film title logo. ${o.brief}\n\nThe lettering reads exactly "${o.title.toUpperCase()}", ${shape.layout}, spelled exactly so, with no other words, letters or text anywhere. Centered, filling most of the width, on a perfectly flat, pure bright green (${LOGO_KEY}) background with nothing else: no scene, no frame, no shadow on the background.`
+      });
+      const heard = await o.draw.read(img);
+      if (!sameLetters(heard, o.title)) { o.log?.(`logo (${shape.file}) reads "${heard.trim()}" — redrawing`); continue; }
+      const raw = join(o.outDir, `${shape.file}-raw.png`);
+      await writeFile(raw, img.data);
+      const out = join(o.outDir, `${shape.file}.png`);
+      // Key out the green, pull the green fringe off the edges, trim.
+      await magick([raw, "-fuzz", "28%", "-transparent", LOGO_KEY, "-channel", "G", "-fx", "min(g,(r+b)/2+0.08)", "+channel", out]);
+      // The key held only if the background came back flat: the edges all clear,
+      // and next to no strong green left anywhere. Otherwise, draw it again.
+      const problem = await keyProblem(out);
+      await rm(raw, { force: true });
+      if (problem) { o.log?.(`logo (${shape.file}): ${problem} — redrawing`); continue; }
+      await magick([out, "-trim", "+repage", out]);
+      made[shape.file] = out;
+      ok = true;
+    }
+    if (!ok) return undefined;
+  }
+  const mono = join(o.outDir, "logo-mono.png");
+  await magick([made.logo, "-alpha", "extract", "-background", "white", "-alpha", "shape", mono]);
+  return { logo: made.logo, stacked: made["logo-stacked"], mono };
+}

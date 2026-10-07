@@ -323,11 +323,16 @@ The most specific setting wins. Changing one re-makes only the extras it applies
 
 With a `title` in the story file, the extras phase also builds, in code and for free:
 
-- **A title logo:** the title and subtitle typeset in a gold-gilded treatment, so the spelling is always exact. It's written in three versions: `logo.png`, a two-line `logo-stacked.png`, and a white `logo-mono.png`.
+- **A title logo:** the art director briefs it and the image model letters it, as one line (`logo.png`) and stacked (`logo-stacked.png`).
+  - The image model draws it on flat green, which is keyed out to a transparent PNG.
+  - A reader checks every letter of the title. A take with a wrong letter, or a background that didn't key out cleanly (edges not clear, green left behind), is redrawn.
+  - After three failed tries it falls back to a typeset logo, for which the art director picks one of the bundled fantasy display fonts and a finish (gilded, bronze, silver, iron, parchment, plain), with an optional arch.
+  - `logo-mono.png` is a white version for spines and small sizes.
+  - `--redo extra-logo` draws it again.
 - **Shelf covers:** the key art with the logo over it, at the sizes streaming apps use: `cover-2x3.jpg` (2000×3000), `cover-16x9.jpg` (3840×2160) and `cover-1x1.jpg` (2000×2000).
 - **Box art:** a VHS/DVD case laid out flat, back, spine and front, in `box/box.jpg`. The back has a tagline, four approved stills, a synopsis, a billing block and a rating box. The art director writes the copy once (it's rewritten only when the title or story changes).
 
-All of these go in `art/extra/`, and `npm run review -- <story.json> extras` adds `review/extras-covers.jpg`. To change the logo, set `"extras": { "logo": { "font": "EB Garamond", "treatment": "silver" } }`. The font can be a bundled one or a system font, and the treatment `gilded`, `silver` or `plain`. `"box": false` skips the box.
+All of these go in `art/extra/`, and `npm run review -- <story.json> extras` adds `review/extras-covers.jpg`. To set the logo yourself, use `"extras": { "logo": { "mode": "typeset", "font": "Uncial Antiqua", "treatment": "bronze", "arc": 18 } }`. The bundled fonts are Cinzel, Cinzel Decorative, EB Garamond, IM Fell English SC, MedievalSharp, Metamorphous, New Rocker, Pirata One and Uncial Antiqua (all OFL, in `assets/fonts/`); a system font name also works. `"box": false` skips the box.
 
 ## Video
 

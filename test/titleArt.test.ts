@@ -27,3 +27,17 @@ test("the logo, its stacked and one-colour versions; covers at streaming sizes; 
   await boxArt({ front: join(dir, "cover.jpg"), mono, stills: [art, art, art, art], copy: { tagline: "A tagline.", synopsis: "A synopsis.", credits: "A Mock Production" }, out: join(dir, "box.jpg") });
   assert.equal(size(join(dir, "box.jpg")), "2640x1800", "back 1200 + spine 240 + front 1200");
 });
+
+test("a drawn logo's key is checked: a flat green keys clean; a gradient background is caught (and redrawn)", { skip: !hasMagick && "ImageMagick 7 (magick) not installed" }, async () => {
+  const { keyProblem, sameLetters } = await import("../src/titleArt.ts");
+  const dir = await mkdtemp(join(tmpdir(), "scriptorium-key-"));
+  const key = (bg: string, name: string) => {
+    execFileSync("magick", ["-size", "600x300", bg, "-fill", "gold", "-pointsize", "80", "-annotate", "+150+180", "HI", join(dir, `${name}.png`)]);
+    execFileSync("magick", [join(dir, `${name}.png`), "-fuzz", "28%", "-transparent", "#00ff00", join(dir, `${name}-k.png`)]);
+    return join(dir, `${name}-k.png`);
+  };
+  assert.equal(await keyProblem(key("xc:#00ff00", "flat")), undefined);
+  assert.match((await keyProblem(key("gradient:#00ff00-#2a7a10", "grad"))) ?? "", /didn't key out/);
+  assert.ok(sameLetters("Rantoul’s Mushrooms\n", "RANTOUL'S MUSHROOMS"), "curly apostrophes, case and spacing don't matter");
+  assert.ok(!sameLetters("RANTOUL'S MUSHROOOMS", "Rantoul's Mushrooms"), "letters do");
+});

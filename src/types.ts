@@ -329,7 +329,7 @@ export interface StoryConfig {
   extras?: ExtrasLook & {
     keyArt?: ExtrasLook;
     castPhoto?: ExtrasLook;
-    logo?: { font?: string; treatment?: "gilded" | "silver" | "plain" };  // the title logo (#128)
+    logo?: { mode?: "drawn" | "typeset"; font?: string; treatment?: "gilded" | "bronze" | "silver" | "iron" | "parchment" | "plain"; arc?: number; caps?: boolean };  // the title logo (#128): over the art director's design
     box?: boolean;  // the box art (default true)
   };
   artStyle?: string;

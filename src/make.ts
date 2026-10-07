@@ -451,7 +451,7 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   // Shots: scene-04-07 (one shot), scene:4 (re-plan a scene's shots).
   const redoShots = redo.filter((r) => /^scene-\d+-\d+$/.test(r) || r === "cover");
   const replanScenes = redo.filter((r) => /^scene:\d+$/.test(r)).map((r) => Number(r.slice("scene:".length)) - 1);
-  const redoExtras = redo.filter((r) => r === "extras" || r.startsWith("extra-"));
+  const redoExtras = redo.filter((r) => r === "extras" || r.startsWith("extra-"));  // extra-logo redraws the logo
   if (redoExtras.length && !steps.includes("extras")) throw new Error(`--redo ${redoExtras.join(",")}: extras are redone in the extras phase (--only extras)`);
   const redoRefs = redo.filter((r) => !r.startsWith("voice:") && !redoShots.includes(r) && !redoExtras.includes(r) && !/^scene:\d+$/.test(r));
   if (redoRefs.length && !steps.includes("refs")) throw new Error(`--redo ${redoRefs.join(",")}: references are remade in the refs phase (--only refs)`);
