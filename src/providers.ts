@@ -252,6 +252,23 @@ function sleep(ms: number): Promise<void> {
 interface HttpResult {
   status: number;
   data: string;
+  retryAfter?: string;  // the server's Retry-After header, when sent
+}
+
+// Retries back off exponentially with jitter (#126): about 1, 2, 4, 8, 16 s,
+// capped, each scaled by 0.5-1.5x so parallel requests don't retry in step. A
+// server's Retry-After (seconds or an HTTP date) wins, capped too.
+export const BACKOFF_CAP_MS = 30000;
+export const RETRY_AFTER_CAP_MS = 60000;
+export const OVERLOAD_RETRIES = 4;  // at least this many retries when the service is overloaded (429/503)
+export function backoffDelay(retry: number, retryAfter?: string, opts: { baseMs?: number; random?: () => number; now?: number } = {}): number {
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - (opts.now ?? Date.now());
+    if (Number.isFinite(ms) && ms >= 0) return Math.min(ms, RETRY_AFTER_CAP_MS);
+  }
+  const base = opts.baseMs ?? 1000;
+  return Math.round(Math.min(BACKOFF_CAP_MS, base * 2 ** retry) * (0.5 + (opts.random ?? Math.random)()));
 }
 
 function requestJson(
@@ -282,7 +299,8 @@ function requestJson(
           if (hdrs[k] !== undefined) rateInfo.push(`${k}=${hdrs[k]}`);
         }
         if (rateInfo.length) console.error(`[scriptorium]   headers: ${rateInfo.join(", ")}`);
-        resolve({ status: res.statusCode ?? 0, data });
+        const retryAfter = hdrs["retry-after"];
+        resolve({ status: res.statusCode ?? 0, data, ...(typeof retryAfter === "string" ? { retryAfter } : {}) });
       });
     });
     req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
@@ -292,10 +310,11 @@ function requestJson(
   });
 }
 
-// POST with timeout and retry on network errors, 429 and 5xx.
-// Timeout scales 1.5x per retry attempt.
+// POST with timeout and retry on network errors, 429 and 5xx, backing off
+// exponentially between tries (backoffDelay); an overloaded service gets more tries.
 export async function postJson(url: string, headers: Record<string, string | undefined>, body: unknown, spec: ProviderSpec & { role?: string } = { type: "" }): Promise<any> {
-  const attempts = (spec.retries ?? 1) + 1;
+  let attempts = (spec.retries ?? 1) + 1;
+  const backoffBase = typeof spec.backoffBaseMs === "number" ? spec.backoffBaseMs : undefined;  // tests
   const bodyStr = JSON.stringify(body);
   const allHeaders: Record<string, string | undefined> = { "user-agent": SCRIPTORIUM_UA, ...headers };
   let lastErr: unknown;
@@ -332,10 +351,12 @@ export async function postJson(url: string, headers: Record<string, string | und
       if (result.status !== 429 && result.status < 500) {
         throw lastErr;
       }
+      if (result.status === 429 || result.status === 503) attempts = Math.max(attempts, OVERLOAD_RETRIES + 1);
     }
     if (i < attempts - 1) {
-      console.error(`[scriptorium]   ${tag} ${c.retry(`(${i + 2}/${attempts})`)}`);
-      await sleep(500);
+      const wait = backoffDelay(i, result?.retryAfter, backoffBase !== undefined ? { baseMs: backoffBase } : {});
+      console.error(`[scriptorium]   ${tag} ${c.retry(`(${i + 2}/${attempts}) retrying in ${formatDuration(wait)}`)}`);
+      await sleep(wait);
     }
   }
   console.error(`[scriptorium]   ${tag} ${c.fail(`failed after ${attempts} attempts`)}`);
