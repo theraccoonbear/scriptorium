@@ -524,3 +524,16 @@ test("images live in one folder per kind; a run made before the folders is moved
   assert.equal(String(await readFile(join(art, "scene", "01", "02.jpg"))), "s");
   assert.equal(await organizeArt(art), 0, "a second run moves nothing");
 });
+
+test("a redo never destroys the image it replaces: it's kept in art/previous/<key>/", async () => {
+  const runDir = await tmp();
+  const events = storyEvents();
+  await renderArt(events, { runDir, backend: new MockImageBackend() });
+  const before = await readFile(join(runDir, "art", "cover", "cover.png"));
+  await renderArt(events, { runDir, backend: new MockImageBackend(), redoKeys: ["cover"] });
+  const kept = await readdir(join(runDir, "art", "previous", "cover"));
+  assert.equal(kept.length, 1);
+  assert.deepEqual(await readFile(join(runDir, "art", "previous", "cover", kept[0])), before);
+  const m: ArtManifest = JSON.parse(await readFile(join(runDir, "art", "art.json"), "utf8"));
+  assert.equal(m.cover.file, "cover/cover.png", "the new one in its place");
+});

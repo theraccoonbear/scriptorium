@@ -257,6 +257,8 @@ export function withCurrentStyle(jobs: ArtJob[], events: StoryEvent[]): ArtJob[]
   });
 }
 
+export const PREVIOUS_DIR = "previous";  // art/previous/<key>/: images a newer one replaced
+
 // Where a key's image lives under art/: one folder per kind — character/,
 // location/, prop/, scene/NN/, cover/, extra/ — not 150 files in one.
 export function artFile(key: string, ext: string): string {
@@ -419,6 +421,19 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   } catch { /* first render */ }
   const existing = new Set(await readdir(outDir, { recursive: true }));
+  // A new image never destroys the one it replaces: that's kept in
+  // art/previous/<key>/<when>.<ext>, so a redo can always be undone.
+  const keepPrevious = async (key: string) => {
+    const prior = manifest[key];
+    if (!prior?.file) return;
+    const to = join(outDir, PREVIOUS_DIR, key, `${new Date().toISOString().replace(/[:.]/g, "-")}${extname(prior.file)}`);
+    try {
+      await mkdir(dirname(to), { recursive: true });
+      await rename(join(outDir, prior.file), to);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+  };
   const maxAttempts = opts.maxAttempts ?? 3;
   const maxReferences = opts.maxReferences ?? 3;
   const emit = opts.onProgress ?? (() => {});
@@ -514,6 +529,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       const entry = await renderOne(job, references, opts.backend, opts.inspector, triage && !job.ref ? 1 : maxAttempts, emit, style, forInspection, direction, names);
       if (triage && !job.ref && entry.severity !== undefined) scored.set(job.key, { job, severity: entry.severity, ...(entry.retakePrompt ? { retakePrompt: entry.retakePrompt } : {}) });
       const file = artFile(job.key, extensionFor(entry.image.mimeType));
+      await keepPrevious(job.key);
       await mkdir(dirname(join(outDir, file)), { recursive: true });
       await writeFile(join(outDir, file), entry.image.data);
       manifest[job.key] = {
@@ -587,6 +603,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         const kept = after < severity;
         if (kept) {
           const file = artFile(job.key, extensionFor(again.image.mimeType));
+          await keepPrevious(job.key);
           await mkdir(dirname(join(outDir, file)), { recursive: true });
           await writeFile(join(outDir, file), again.image.data);
           const prior = manifest[job.key];
