@@ -57,6 +57,15 @@ test("rendering just the extras: each in its shape, the cast photo with every ca
   assert.ok(!backend.calls.some((c) => c.prompt === "bo"), "shots not asked for aren't rendered");
 });
 
+test("key art renders after the cover it's drawn from, in the same run", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-extras-"));
+  const backend = new MockImageBackend();
+  await renderArt(events, { runDir, backend, keys: ["cover", ...Object.keys(KEY_ART)] });
+  const order = backend.calls.filter((c) => c.prompt.startsWith("cover")).map((c) => (c.imageSize === "2K" ? "key" : "cover"));
+  assert.deepEqual(order, ["cover", "key", "key", "key"]);
+  assert.ok(backend.calls.filter((c) => c.imageSize === "2K").every((c) => /^THE image to reproduce/.test(c.references[0]?.label ?? "")), "each from the new cover");
+});
+
 test("key art is drawn from the rendered cover: that image is its one reference", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "scriptorium-extras-"));
   await renderArt(events, { runDir, backend: new MockImageBackend(), keys: ["cover"] });
@@ -85,4 +94,22 @@ test("the extras get their own contact sheet, and the pitch counts four images u
   const before = pitch({ events: events.filter((e) => e.type !== "extras_art"), scenes: 1, art: { extrasOnly: true } });
   assert.equal(before.images.shots, 4);
   assert.equal(before.images.references, 0);
+});
+
+test("the extras render only in their phase, and can override the story's look", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-extras-"));
+  const plain = new MockImageBackend();
+  await renderArt(events, { runDir, backend: plain });
+  assert.ok(!plain.calls.some((c) => c.imageSize === "2K"), "a plain art run leaves the extras alone");
+  const backend = new MockImageBackend();
+  await renderArt(events, { runDir, backend, keys: [...Object.keys(KEY_ART), CAST_PHOTO_KEY], overrides: { [CAST_PHOTO_KEY]: { style: "A candid on-set photograph.", direction: "Everyone laughing." } } });
+  const cast = backend.calls.find((c) => c.prompt.includes("the cast posing"))!;
+  assert.equal(cast.style, "A candid on-set photograph.");
+  assert.equal(cast.direction, "Everyone laughing.");
+  assert.ok(cast.prompt.endsWith("A candid on-set photograph.") && !cast.prompt.includes("Gritty live-action"), "the story's style in the prompt is swapped for the override");
+  const key = backend.calls.find((c) => c.aspectRatio === "2:3")!;
+  assert.equal(key.style, "Gritty live-action film still.", "no override: the story's look");
+  const again = new MockImageBackend();
+  await renderArt(events, { runDir, backend: again, keys: [CAST_PHOTO_KEY], overrides: { [CAST_PHOTO_KEY]: { style: "A candid on-set photograph.", direction: "Everyone laughing." } } });
+  assert.deepEqual(again.calls.filter((c) => c.imageSize === "2K"), [], "unchanged override: nothing redone");
 });

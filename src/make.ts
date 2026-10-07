@@ -81,6 +81,7 @@ export interface StoryFile {
   stepOrder?: StepOrder;
   maxDraftsPerScene?: number;          // hard stop for a scene that won't settle (default 20)
   pricing?: StoryConfig["pricing"];    // per-model USD per million tokens, over the defaults
+  extras?: StoryConfig["extras"];   // override the art style / direction for the extras (see StoryConfig)
   artStyle?: string;                   // prescriptive art style; overrides the Creator's
   artist?: StoryConfig["artist"];      // image settings over the config's (batch, retakes, concurrency...)
   critic?: StoryConfig["critic"];      // "blocking" (default), "advisory" or "off"
@@ -136,6 +137,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...baseConfig,
     ...(raw.direction || baseConfig.direction ? { direction: { ...baseConfig.direction, ...raw.direction } } : {}),
     ...(raw.artStyle ?? baseConfig.artStyle ? { artStyle: raw.artStyle ?? baseConfig.artStyle } : {}),
+    ...(raw.extras ?? baseConfig.extras ? { extras: { ...baseConfig.extras, ...raw.extras } } : {}),
     ...(raw.budget ?? baseConfig.budget ? { budget: raw.budget ?? baseConfig.budget } : {}),
     ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
     ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {}),

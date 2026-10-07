@@ -300,6 +300,8 @@ export interface WordBudget {
 export const CRITIC_MODES = ["blocking", "advisory", "off"] as const;
 export type CriticMode = (typeof CRITIC_MODES)[number];
 
+export interface ExtrasLook { style?: string; direction?: string }
+
 export interface StoryConfig {
   scenes?: number;
   // The author's pins, per scene in order; null leaves that scene to the models.
@@ -322,6 +324,9 @@ export interface StoryConfig {
   // follow), plus "artist" for every image request. See DIRECTION_LAYERS.
   direction?: Record<string, string>;
   // A prescriptive art style that overrides the Creator's choice.
+  // The author's overrides of the story's art style and art direction for the
+  // extras (#49): for all of them, or just the key art or the cast photo.
+  extras?: ExtrasLook & { keyArt?: ExtrasLook; castPhoto?: ExtrasLook };
   artStyle?: string;
   // How much say the critic has over a scene (see CRITIC_MODES). Default "blocking".
   critic?: CriticMode;

@@ -886,7 +886,7 @@ export async function planExtras({ config, log, roles, runDir, redo = false }: {
   return true;
 }
 
-export async function planShots({ config, log, roles, runDir, replan = [] }: { config: StoryConfig; log: EventLog; roles: Roles; runDir?: string; replan?: number[] }): Promise<number> {
+export async function planShots({ config, log, roles, runDir, replan = [], redirectCover = false }: { config: StoryConfig; log: EventLog; roles: Roles; runDir?: string; replan?: number[]; redirectCover?: boolean }): Promise<number> {
   const artRole = roles.artdirector;
   if (!artRole) throw new Error("config has no artdirector role");
   await log.load();
@@ -912,7 +912,7 @@ export async function planShots({ config, log, roles, runDir, replan = [] }: { c
   }
   const committed = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);
   const lastCover = log.events.filter((e) => e.type === "cover_art").at(-1)?.data as CoverArtData | undefined;
-  if (committed.length > 0 && (planned > 0 || lastCover?.sceneCount !== committed.length)) {
+  if (committed.length > 0 && (planned > 0 || redirectCover || lastCover?.sceneCount !== committed.length)) {
     const out = await directCoverArt(artRole, replay(log.events), committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
     await log.append("cover_art", { sceneCount: committed.length, prompt: out.result.prompt } satisfies CoverArtData);
