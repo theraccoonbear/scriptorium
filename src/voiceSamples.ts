@@ -67,6 +67,22 @@ export function lineCounts(events: StoryEvent[]): Map<string, number> {
 }
 
 const humanName = (id: string) => id.replace(/[_-]+/g, " ").replace(/^\w/, (ch) => ch.toUpperCase());
+// A name alone is a short line, and the speech model can read its direction
+// aloud with it ("…, plainly."): the direction has nothing in it worth
+// speaking, and a take far longer than the name is tried again (the shortest kept).
+const SLATE_VERSION = 2;  // slates made before the length check are remade
+export const slateMaxSeconds = (name: string) => 1.5 + 0.6 * name.split(/\s+/).filter(Boolean).length;
+
+export async function speakSlate(speak: Speak, name: string, voice: string, tries = 3): Promise<{ samples: Float32Array; sampleRate: number }> {
+  let best: { samples: Float32Array; sampleRate: number } | undefined;
+  for (let i = 0; i < tries; i++) {
+    const audio = await speak(buildTtsPrompt({ name: "Narrator", profile: "The storyteller of this tale.", notes: "Read the transcript only.", line: `${name}.` }), voice);
+    if (!best || audio.samples.length / audio.sampleRate < best.samples.length / best.sampleRate) best = audio;
+    if (audio.samples.length / audio.sampleRate <= slateMaxSeconds(name)) break;
+  }
+  return best!;
+}
+
 const hash = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 12);
 
 export async function renderVoiceSamples(events: StoryEvent[], opts: {
@@ -113,12 +129,12 @@ export async function renderVoiceSamples(events: StoryEvent[], opts: {
     let slate: string | undefined;
     if (narrator) {
       slate = join(dir, "slates", `${id}.wav`);
-      if (!(prev?.slate === hash(name) && prev?.slateVoice === narrator)) {
-        const audio = await opts.speak(buildTtsPrompt({ name: "Narrator", profile: "Announcing the next voice in a casting reel, plainly.", line: `${name}.` }), narrator);
+      if (!(prev?.slate === hash(`${SLATE_VERSION}:${name}`) && prev?.slateVoice === narrator)) {
+        const audio = await speakSlate(opts.speak, name, narrator);
         await writeFile(slate, encodeWav(audio.samples, audio.sampleRate));
       }
     }
-    index[id] = { voice, text, source, name, order, ...(slate ? { slate: hash(name), slateVoice: narrator } : {}) };
+    index[id] = { voice, text, source, name, order, ...(slate ? { slate: hash(`${SLATE_VERSION}:${name}`), slateVoice: narrator } : {}) };
     await writeFile(indexFile, JSON.stringify(index, null, 2) + "\n");
     out.push({ id, name, voice, text, source, file, ...(slate ? { slate } : {}), made });
   }

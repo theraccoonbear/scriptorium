@@ -83,3 +83,19 @@ test("the casting reel drops a speaker who's no longer cast and lists who the na
   assert.deepEqual(Object.keys(JSON.parse(await readFile(join(dir, "samples.json"), "utf8"))).sort(), ["narrator", "nell"]);
   assert.deepEqual(JSON.parse(await readFile(join(dir, "narrated.json"), "utf8")), [{ id: "guard", name: "Gate Guard" }]);
 });
+
+test("a name slate that comes back far longer than the name (its direction read aloud) is tried again; the shortest take is kept", async () => {
+  const { speakSlate, slateMaxSeconds } = await import("../src/voiceSamples.ts");
+  assert.equal(slateMaxSeconds("Ivana de Donder"), 3.3);
+  const lengths = [6.3, 5.0, 1.4];
+  const calls: string[] = [];
+  const speak = async (prompt: string) => { calls.push(prompt); return { samples: new Float32Array(Math.round(24000 * lengths[calls.length - 1])), sampleRate: 24000 }; };
+  const take = await speakSlate(speak, "Ivana de Donder", "algenib");
+  assert.equal(calls.length, 3);
+  assert.equal(take.samples.length, 24000 * 1.4);
+  assert.match(calls[0], /#### TRANSCRIPT\nIvana de Donder\.$/);
+  assert.doesNotMatch(calls[0], /plainly|casting reel/, "nothing in the direction worth reading aloud");
+  const once: string[] = [];
+  await speakSlate(async (p) => { once.push(p); return { samples: new Float32Array(24000), sampleRate: 24000 }; }, "Reeve", "algenib");
+  assert.equal(once.length, 1, "a good take is kept first time");
+});
