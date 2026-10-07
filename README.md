@@ -152,7 +152,7 @@ A story file's `"out"` folder holds everything the pipeline made for that story.
 | `approvals.json` | **Canon.** What you've signed off on. Approved work is never redone. | Never. |
 | `story-settings.json` | The settings the story was written under, so `make` can warn when the story file changes them. | No. |
 | `usage.jsonl` | The spend ledger. The budget cap is checked against it. | No: deleting it resets the budget. |
-| `art/` | **Paid for.** Portraits, shots and the cover, plus `art.json`, which records which prompt made each image. `batch-jobs.json` tracks batch jobs still in flight. | Only to redo all the art, at full cost. Approved images can't be reproduced. |
+| `art/` | **Paid for.** One folder per kind: `character/`, `location/`, `prop/`, `scene/01/…` (one per scene, a file per shot), `cover/` and `extra/`, plus `art.json`, which records which prompt made each image and where it is. `batch-jobs.json` tracks batch jobs still in flight. Runs made before the folders are moved into them the next time art runs. | Only to redo all the art, at full cost. Approved images can't be reproduced. |
 | `audiobook/casting.json` | The cast: who has which voice. Voices pinned in the story file (`audiobook.geminiVoices`) win over it. | No: deleting it recasts every voice that isn't pinned. |
 | `audiobook/` (the rest) | **Paid for.** Scene audio, timings, `samples/` (the casting reel's samples) and the batch cache. | Remade on the next run, at cost. |
 | `music/` | **Paid for.** The score's cues. | Remade on the next run, at cost. |

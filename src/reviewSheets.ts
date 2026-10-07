@@ -190,7 +190,7 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
   const artDir = join(runDir, "art");
   let manifest: ArtManifest;
   try { manifest = JSON.parse(await readFile(join(artDir, "art.json"), "utf8")); } catch { throw new Error(`no images in ${artDir} — run make --only ${kind === "refs" ? "refs" : kind === "extras" ? "extras" : "art"} first`); }
-  const present = new Set(await readdir(artDir));
+  const present = new Set(await readdir(artDir, { recursive: true }));
   for (const k of Object.keys(manifest)) if (!present.has(manifest[k].file)) delete manifest[k];
   const files: string[] = [];
   const stale = kind === "shots" ? new Set((await staleShots(await new EventLog(runDir).load(), runDir)).map((s) => s.key)) : new Set<string>();

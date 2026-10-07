@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { dirname, extname, join } from "node:path";
 import { postJson, requireKey } from "./providers.ts";
 import { parseJson } from "./roles.ts";
 import type { ArtistBackendSpec, ArtistConfig, CoverArtData, ExtrasArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
@@ -291,6 +291,44 @@ export function withCurrentStyle(jobs: ArtJob[], events: StoryEvent[]): ArtJob[]
   });
 }
 
+// Where a key's image lives under art/: one folder per kind — character/,
+// location/, prop/, scene/NN/, cover/, extra/ — not 150 files in one.
+export function artFile(key: string, ext: string): string {
+  const ref = key.match(/^(character|location|prop)-(.+)$/);
+  if (ref) return `${ref[1]}/${ref[2]}.${ext}`;
+  const shot = key.match(/^scene-(\d+)-(\d+)$/);
+  if (shot) return `scene/${shot[1]}/${shot[2]}.${ext}`;
+  const scene = key.match(/^scene-(\d+)$/);
+  if (scene) return `scene/${scene[1]}/scene.${ext}`;
+  if (key === "cover") return `cover/cover.${ext}`;
+  const extra = key.match(/^extra-(.+)$/);
+  if (extra) return `extra/${extra[1]}.${ext}`;
+  return `${key}.${ext}`;
+}
+
+// Moves a run's images made before the folders into them, files and art.json
+// together. Safe to run again: anything already in place is left alone.
+export async function organizeArt(artDir: string): Promise<number> {
+  const manifestPath = join(artDir, "art.json");
+  let manifest: ArtManifest;
+  try { manifest = JSON.parse(await readFile(manifestPath, "utf8")); } catch { return 0; }
+  let moved = 0;
+  for (const [key, entry] of Object.entries(manifest)) {
+    const want = artFile(key, extname(entry.file).slice(1));
+    if (entry.file === want) continue;
+    try {
+      await mkdir(dirname(join(artDir, want)), { recursive: true });
+      await rename(join(artDir, entry.file), join(artDir, want));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;  // a missing file is re-rendered under its new name
+    }
+    entry.file = want;
+    moved++;
+  }
+  if (moved) await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  return moved;
+}
+
 export function extensionFor(mimeType: string): string {
   switch (mimeType) {
     case "image/png": return "png";
@@ -408,12 +446,13 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const names = storyNames(events);
   const outDir = join(opts.runDir, "art");
   await mkdir(outDir, { recursive: true });
+  await organizeArt(outDir);
   const manifestPath = join(outDir, "art.json");
   let manifest: ArtManifest = {};
   try {
     manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   } catch { /* first render */ }
-  const existing = new Set(await readdir(outDir));
+  const existing = new Set(await readdir(outDir, { recursive: true }));
   const maxAttempts = opts.maxAttempts ?? 3;
   const maxReferences = opts.maxReferences ?? 3;
   const emit = opts.onProgress ?? (() => {});
@@ -512,7 +551,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       const forInspection = (img: Image) => shrink(img, inspectSize);
       const entry = await renderOne(job, references, opts.backend, opts.inspector, triage && !job.ref ? 1 : maxAttempts, emit, style, forInspection, direction, names);
       if (triage && !job.ref && entry.severity !== undefined) scored.set(job.key, { job, severity: entry.severity, ...(entry.retakePrompt ? { retakePrompt: entry.retakePrompt } : {}) });
-      const file = `${job.key}.${extensionFor(entry.image.mimeType)}`;
+      const file = artFile(job.key, extensionFor(entry.image.mimeType));
+      await mkdir(dirname(join(outDir, file)), { recursive: true });
       await writeFile(join(outDir, file), entry.image.data);
       manifest[job.key] = {
         file,
@@ -584,7 +624,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         const after = again.severity ?? severity;
         const kept = after < severity;
         if (kept) {
-          const file = `${job.key}.${extensionFor(again.image.mimeType)}`;
+          const file = artFile(job.key, extensionFor(again.image.mimeType));
+          await mkdir(dirname(join(outDir, file)), { recursive: true });
           await writeFile(join(outDir, file), again.image.data);
           const prior = manifest[job.key];
           manifest[job.key] = { ...prior, file, finalPrompt: again.finalPrompt, attempts: (prior?.attempts ?? 1) + 1, accepted: again.accepted, issues: again.issues, severity: after, retaken: true };

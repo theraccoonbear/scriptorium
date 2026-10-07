@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { encodeWav } from "./geminiBatch.ts";
 import { montageArgs } from "./reviewSheets.ts";
+import type { CheckReport } from "./speechCheck.ts";
 import type { ArtManifest } from "./artist.ts";
 
 // Review rounds: every look the author is asked to take that isn't the current
@@ -86,14 +88,28 @@ export async function imageRound(runDir: string, keys: string[], info: RoundInfo
   return round;
 }
 
-// Lines the speech check couldn't get right: what the script says, what was heard.
-export async function speechCheckRound(runDir: string, subject: string, lines: { script: string; heard: string; problems: string[] }[]): Promise<Round | undefined> {
-  if (lines.length === 0) return undefined;
-  const round = await newRound(runDir, { kind: "speech-check", subject, lines });
-  await writeFile(join(round.dir, "legend.txt"), [
-    `speech check: ${lines.length} line${lines.length === 1 ? "" : "s"} still said differently after 3 takes (kept the closest take). Listen to each; re-voice or accept.`,
-    "",
-    ...lines.flatMap((l, i) => [`${i + 1}. script: ${l.script}`, `   heard:  ${l.heard}`, `   ${l.problems.join("; ")}`, ""])
-  ].join("\n"));
+// Every line the speech check flagged, with each take as audio: what the
+// script says, what the check heard, and which take was kept — so the author
+// can hear whether the check was right.
+export async function speechCheckRound(runDir: string, subject: string, reports: CheckReport[]): Promise<Round | undefined> {
+  if (reports.length === 0) return undefined;
+  const round = await newRound(runDir, { kind: "speech-check", subject, lines: reports.map((r) => ({ script: r.script, ok: r.ok, kept: r.kept, takes: r.takes.map((t) => ({ heard: t.heard, problems: t.problems })) })) });
+  const legend: string[] = [
+    `speech check: ${reports.length} line${reports.length === 1 ? "" : "s"} flagged; ${reports.filter((r) => !r.ok).length} still flagged after every take (the closest was kept).`,
+    "Each take is here as NN-T.mp3 (line NN, take T). Listen to the flagged ones: if the check was wrong, say so.",
+    ""
+  ];
+  for (const [i, r] of reports.entries()) {
+    const n = String(i + 1).padStart(2, "0");
+    legend.push(`${n}. ${r.ok ? `fixed on take ${r.kept + 1}` : `STILL FLAGGED — kept take ${r.kept + 1}`}`, `    script: ${r.script.replace(/\s+/g, " ")}`);
+    for (const [t, take] of r.takes.entries()) {
+      const file = join(round.dir, `${n}-${t + 1}`);
+      await writeFile(`${file}.wav`, encodeWav(take.audio.samples, take.audio.sampleRate));
+      try { await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", `${file}.wav`, "-codec:a", "libmp3lame", "-q:a", "4", `${file}.mp3`]); await rm(`${file}.wav`, { force: true }); } catch { /* keep the wav */ }
+      legend.push(`    take ${t + 1}${t === r.kept ? " (kept)" : ""}: ${take.problems.length ? take.problems.join("; ") : "passed"}`, `      heard: ${take.heard.replace(/\s+/g, " ")}`);
+    }
+    legend.push("");
+  }
+  await writeFile(join(round.dir, "legend.txt"), legend.join("\n"));
   return round;
 }

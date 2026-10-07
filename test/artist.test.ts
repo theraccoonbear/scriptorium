@@ -68,7 +68,7 @@ test("renderArt writes one image per job plus a manifest, passing earlier render
   const backend = new MockImageBackend();
   const result = await renderArt(storyEvents(), { runDir, backend, maxReferences: 1 });
   assert.equal(result.rendered, 3);
-  assert.deepEqual((await readdir(join(runDir, "art"))).sort(), ["art.json", "cover.png", "scene-01.png", "scene-02.png"]);
+  assert.deepEqual((await readdir(join(runDir, "art"), { recursive: true })).sort(), ["art.json", "cover", "cover/cover.png", "scene", "scene/01", "scene/01/scene.png", "scene/02", "scene/02/scene.png"], "one folder per kind");
   assert.deepEqual(backend.calls.map((c) => c.references.length), [0, 1, 1]);
   const manifest: ArtManifest = JSON.parse(await readFile(join(runDir, "art", "art.json"), "utf8"));
   assert.equal(manifest["scene-02"].prompt, "a hedgehog in a burrow");
@@ -277,7 +277,7 @@ test("references and the inspected image are sent shrunk; files on disk stay ful
   await renderArt(events, { runDir, backend, inspector, shrink });
   assert.equal(String(backend.calls[1].references[0].data), "small-768", "the portrait reference was shrunk");
   assert.ok(inspector.calls.every((c) => String(c.image.data) === "small-1024"), "the candidate was shrunk for inspection");
-  const onDisk = await readFile(join(runDir, "art", "character-a.png"));
+  const onDisk = await readFile(join(runDir, "art", "character", "a.png"));
   assert.notEqual(String(onDisk), "small-768");
   assert.ok(onDisk.length > 0);
 });
@@ -501,4 +501,26 @@ test("renderArt can render just the named shots, with every reference loaded for
   await renderArt(events as never, { runDir, backend, keys: ["scene-01-02"] });
   assert.deepEqual(backend.calls.map((c) => c.prompt), ["portrait ada", "shot two"], "the reference it needs, then only the named shot; an unused reference isn't made");
   assert.ok(backend.calls[1].references.some((r) => r.label?.startsWith("Canonical look")), "the shot gets the character's portrait");
+});
+
+test("images live in one folder per kind; a run made before the folders is moved into them, art.json too", async () => {
+  const { artFile, organizeArt } = await import("../src/artist.ts");
+  assert.equal(artFile("character-lemuel", "jpg"), "character/lemuel.jpg");
+  assert.equal(artFile("location-ditch", "png"), "location/ditch.png");
+  assert.equal(artFile("prop-horn", "jpg"), "prop/horn.jpg");
+  assert.equal(artFile("scene-03-07", "jpg"), "scene/03/07.jpg");
+  assert.equal(artFile("cover", "jpg"), "cover/cover.jpg");
+  assert.equal(artFile("extra-keyart-2x3", "jpg"), "extra/keyart-2x3.jpg");
+  const runDir = await tmp();
+  const art = join(runDir, "art");
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  await mkdir(art, { recursive: true });
+  await writeFile(join(art, "character-a.png"), "a");
+  await writeFile(join(art, "scene-01-02.jpg"), "s");
+  await writeFile(join(art, "art.json"), JSON.stringify({ "character-a": { file: "character-a.png" }, "scene-01-02": { file: "scene-01-02.jpg" }, "cover": { file: "cover.png" } }));
+  assert.equal(await organizeArt(art), 3);
+  const m = JSON.parse(await readFile(join(art, "art.json"), "utf8"));
+  assert.deepEqual([m["character-a"].file, m["scene-01-02"].file, m.cover.file], ["character/a.png", "scene/01/02.jpg", "cover/cover.png"]);
+  assert.equal(String(await readFile(join(art, "scene", "01", "02.jpg"))), "s");
+  assert.equal(await organizeArt(art), 0, "a second run moves nothing");
 });

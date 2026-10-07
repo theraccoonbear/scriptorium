@@ -25,7 +25,7 @@ import { designRun, needsTagging, proseHash, sceneTags, tagRun } from "./tagging
 import { writeAuditions } from "./roles.ts";
 import { castVoiceRun, narratorReads } from "./casting.ts";
 import { speechCheckRound } from "./rounds.ts";
-import type { Unverified } from "./speechCheck.ts";
+import type { CheckReport } from "./speechCheck.ts";
 import { geminiBatchJobs } from "./batchJobs.ts";
 import type { GeminiSpec } from "./types.ts";
 import type { TonePaletteData } from "./tagging.ts";
@@ -439,10 +439,10 @@ export async function voicesStep(runDir: string, events: StoryEvent[], opts: Aud
       }
     }
     if (prepared.byNarrator.length) console.error(`[scriptorium] ${c.dim(`read by the narrator (too little to cast): ${prepared.byNarrator.join(", ")}`)}`);
-    const unverified: Unverified[] = [];
-    const samples = await renderVoiceSamples(prepared.events, { runDir, voices, auditions, narrated: prepared.byNarrator, speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}), onUnverified: (u) => unverified.push(u) }) });
-    const checked = await speechCheckRound(runDir, "voices", unverified);
-    if (checked) console.error(`[scriptorium] ${c.retry(`speech check: ${unverified.length} sample${unverified.length === 1 ? "" : "s"} still said differently after 3 takes — ${checked.dir}/legend.txt`)}`);
+    const flagged: CheckReport[] = [];
+    const samples = await renderVoiceSamples(prepared.events, { runDir, voices, auditions, narrated: prepared.byNarrator, speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}), onReport: (r) => flagged.push(r) }) });
+    const checked = await speechCheckRound(runDir, "voices", flagged);
+    if (checked) console.error(`[scriptorium] ${c.retry(`speech check flagged ${flagged.length} sample${flagged.length === 1 ? "" : "s"} (${flagged.filter((r) => !r.ok).length} still flagged) — every take to listen to: ${checked.dir}/legend.txt`)}`);
     for (const s of samples) console.error(`[scriptorium] ${s.made ? c.ok(`${s.name}: ${s.voice}${s.source === "audition" ? " (audition line)" : ""}`) : c.dim(`${s.name}: ${s.voice} (sample unchanged)`)}${approved.has(s.id) ? c.dim(" — approved") : ""} ${c.dim(s.file)}`);
     return samples;
   });
