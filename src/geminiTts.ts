@@ -36,7 +36,10 @@ export interface LineDirection {
 // Gemini 3.8 TTS reads its text verbatim — direction in the text gets read
 // aloud now and then (#114) — so the direction travels separately, as the
 // request's style annotation. The scene isn't sent: there's no field for it.
-export interface SpeechInput { text: string; style?: string }
+// parts: a passage in two voices, one request (a quote and its "he said",
+// #124) — each part with its speaker's voice and style; text is all of it.
+export interface SpeechPart { speaker: string; voice: string; text: string; style?: string }
+export interface SpeechInput { text: string; style?: string; parts?: SpeechPart[] }
 
 export function buildTtsPrompt(d: LineDirection): SpeechInput {
   const flat = (s: string) => s.replace(/\s+/g, " ").trim().replace(/[.;,\s]+$/, "");
@@ -155,6 +158,10 @@ const RATE_LIMIT_WAITS_MS = [15000, 20000, 30000, 30000, 30000];
 export type Pronunciations = Record<string, string | { say: string }>;
 
 export function withPronunciations(input: SpeechInput, guide: Pronunciations = {}): SpeechInput {
+  if (input.parts) {
+    const parts = input.parts.map((p) => ({ ...p, ...withPronunciations({ text: p.text, ...(p.style ? { style: p.style } : {}) }, guide) }));
+    return { ...input, parts, text: parts.map((p) => p.text).join(" ") };
+  }
   const pattern = (word: string) => new RegExp(`(^|[^\\p{L}])(${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})(?='s|’s|s?(?:$|[^\\p{L}]))`, "giu");
   let text = input.text;
   const hints: string[] = [];
@@ -201,6 +208,17 @@ function pacedSpeaker(spec: GeminiTtsSpec, sleep: (ms: number) => Promise<void>)
 // A live speech request (the Interactions API): the transcript as text, the
 // direction as its speech_metadata style.
 export function speechRequest(input: SpeechInput, voice: string, model: string): Record<string, unknown> {
+  if (input.parts?.length) {
+    // One label per voice (a walk-on read by the narrator shares the narrator's).
+    const labels = new Map<string, string>();
+    for (const p of input.parts) if (!labels.has(p.voice)) labels.set(p.voice, p.speaker);
+    return {
+      model,
+      input: [{ type: "user_input", content: input.parts.map((p) => ({ type: "text", text: p.text, annotations: [{ type: "speech_metadata", ...(labels.size > 1 ? { speaker: labels.get(p.voice) } : {}), ...(p.style ? { style: p.style } : {}) }] })) }],
+      response_format: { type: "audio" },
+      generation_config: { speech_config: labels.size > 1 ? { mode: "conversational", speakers: [...labels].map(([v, speaker]) => ({ speaker, voice: v })) } : [{ voice: input.parts[0].voice }] }
+    };
+  }
   return {
     model,
     input: [{ type: "user_input", content: [{ type: "text", text: input.text, ...(input.style ? { annotations: [{ type: "speech_metadata", style: input.style }] } : {}) }] }],

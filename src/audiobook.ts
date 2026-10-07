@@ -10,13 +10,13 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { replay } from "./bible.ts";
-import { fileBatchCache, planBatches, voiceBatch } from "./geminiBatch.ts";
+import { batchKey, fileBatchCache, planBatches, voiceBatch } from "./geminiBatch.ts";
 import type { Batch, BatchCache, BatchPiece, GeminiMode } from "./geminiBatch.ts";
 import { paletteToneFor } from "./tagging.ts";
 import type { TonePaletteData } from "./tagging.ts";
 import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
-import type { SpeechInput } from "./geminiTts.ts";
+import type { SpeechInput, SpeechPart } from "./geminiTts.ts";
 import type { CheckReport } from "./speechCheck.ts";
 import { speechCheckRound } from "./rounds.ts";
 import type { Speak } from "./geminiTts.ts";
@@ -449,6 +449,73 @@ export function scenePieces(scene: Scene): { segment: number; speaker: string; t
   });
 }
 
+// Paragraphs voiced as one two-voice request (#124): a character's quoted line
+// with the narrator's short pieces around it ("he said, an octave above his
+// own voice."). A dialogue tag voiced on its own, with its quote cut out, gets
+// the missing line invented ("How do you do? he said"); with the quote beside
+// it, it doesn't. Returns each group's piece numbers, in order.
+export const TAG_MAX_CHARS = 120;
+export function twoVoiceGroups(scene: Scene): number[][] {
+  const pieces = scenePieces(scene).map((x, piece) => ({ ...x, piece }));
+  const byParagraph = new Map<number, typeof pieces>();
+  for (const x of pieces) if (x.paragraph !== undefined) byParagraph.set(x.paragraph, [...(byParagraph.get(x.paragraph) ?? []), x]);
+  const groups: number[][] = [];
+  for (const ps of byParagraph.values()) {
+    const narration = ps.filter((x) => x.speaker === "narrator");
+    const speakers = new Set(ps.filter((x) => x.speaker !== "narrator").map((x) => x.speaker));
+    if (narration.length && speakers.size === 1 && narration.every((x) => x.text.trim().length <= TAG_MAX_CHARS)) groups.push(ps.map((x) => x.piece));
+  }
+  return groups;
+}
+
+// Voices each two-voice paragraph (twoVoiceGroups) as one request — the
+// quote in its speaker's voice, the narrator's pieces in the narrator's, each
+// with its own direction. The audio goes on the paragraph's first piece (the
+// rest get none). Cached like the batches; a group not wholly in Gemini voices
+// is left to the usual path.
+export async function voiceConversations(scene: Scene, p: {
+  bible: Bible;
+  voiceFor: (speaker: string) => string;
+  speak: Speak;
+  byNarrator?: ReadonlySet<string>;
+  toneOf?: (scene: number, paragraph: number, speaker: string) => string | undefined;
+  cache?: BatchCache;
+  model?: string;
+  concurrency?: number;
+}): Promise<Map<number, Float32Array>> {
+  const pieces = scenePieces(scene);
+  const out = new Map<number, Float32Array>();
+  const jobs = twoVoiceGroups(scene).flatMap((group) => {
+    if (!group.every((i) => p.voiceFor(pieces[i].speaker).startsWith("gemini:"))) return [];
+    const parts: SpeechPart[] = group.map((i) => {
+      const x = pieces[i];
+      const who = ttsSpeaker(p.bible, x.speaker, p.byNarrator);
+      const d = x.paragraph !== undefined ? scene.delivery?.[x.paragraph] : undefined;
+      const tone = x.paragraph !== undefined ? p.toneOf?.(scene.index, x.paragraph, x.speaker) : undefined;
+      const style = [d && d.speaker === x.speaker ? d.note : "", tone ?? "", who.profile].filter(Boolean).join(". ");
+      return { speaker: who.narrating ? "Narrator" : who.name, voice: p.voiceFor(x.speaker).slice("gemini:".length), text: x.text.trim(), ...(style ? { style } : {}) };
+    });
+    return [{ group, parts }];
+  });
+  let next = 0;
+  const work = async () => {
+    for (let j = next++; j < jobs.length; j = next++) {
+      const { group, parts } = jobs[j];
+      const key = batchKey(JSON.stringify(parts), "conversation", p.model ?? "");
+      let audio = p.cache ? await p.cache.get(key) : undefined;
+      if (!audio) {
+        const r = await p.speak({ text: parts.map((x) => x.text).join(" "), parts }, parts[0].voice);
+        audio = resample(r.samples, r.sampleRate, SAMPLE_RATE);
+        await p.cache?.put(key, audio);
+      }
+      out.set(group[0], audio);
+      for (const i of group.slice(1)) out.set(i, new Float32Array(0));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, p.concurrency ?? 2) }, work));
+  return out;
+}
+
 // Silence before a piece, by the kind of join: within a paragraph (a quote and
 // its "she said"), a new paragraph by the same speaker, or a change of speaker.
 // Batched Gemini pieces are trimmed tight, so without this a reply starts the
@@ -631,6 +698,7 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
   voiceFor: (speaker: string) => string;
   speak: Speak;
   byNarrator?: ReadonlySet<string>;  // walk-on parts the narrator reads
+  exclude?: ReadonlySet<number>;     // pieces voiced another way (two-voice paragraphs)
   toneOf?: (scene: number, paragraph: number, speaker: string) => string | undefined;
   cache?: BatchCache;   // takes already paid for (see geminiBatch.ts)
   model?: string;
@@ -638,7 +706,7 @@ export async function voiceSceneBatches(scene: Scene, mode: GeminiMode, p: {
   onProgress: (event: AudiobookProgress) => void;
 }): Promise<Map<number, Float32Array>> {
   const pieces: BatchPiece[] = scenePieces(scene).flatMap((x, order) => {
-    if (!p.voiceFor(x.speaker).startsWith("gemini:") || !speakable(x.text)) return [];
+    if (p.exclude?.has(order) || !p.voiceFor(x.speaker).startsWith("gemini:") || !speakable(x.text)) return [];
     const tone = mode === "palette" && x.paragraph !== undefined ? p.toneOf?.(scene.index, x.paragraph, x.speaker) : undefined;
     return [{ order, speaker: x.speaker, text: x.text, ...(tone ? { tone } : {}) }];
   });
@@ -711,7 +779,8 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   const settings = {
     narratorVoice: opts.narratorVoice ?? null, language: opts.language ?? "en", genders, modelId, dtype,
     // Only part of the key when set, so audiobooks made before these options stay current.
-    ...(usesGemini ? { narration, dialogue, geminiModel: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, geminiVoices: opts.geminiVoices ?? {} } : {}),
+    // twoVoice: quotes and their tags voiced together (#124); scenes made before are redone.
+    ...(usesGemini ? { narration, dialogue, geminiModel: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, geminiVoices: opts.geminiVoices ?? {}, twoVoice: 1 } : {}),
     ...(usesGemini && (opts.geminiMode ?? "line") !== "line" ? { geminiMode: opts.geminiMode, pauseScale: opts.pauseScale ?? 1, ...(opts.geminiMode === "palette" ? { palette: opts.palette?.source ?? null } : {}) } : {}),
     ...(opts.kokoroVoices ? { kokoroVoices: opts.kokoroVoices } : {}),
     ...(opts.characterVoices ? { characterVoices: opts.characterVoices } : {}),
@@ -836,6 +905,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   // Batched modes voice each scene's Gemini pieces up front; synth hands them out
   // by piece number, and anything a batch couldn't voice goes line by line.
   let batched = new Map<number, Float32Array>();
+  let grouped = new Set<number>();  // pieces voiced in a two-voice paragraph
   const synth: Synthesize = async function* (text, voice, ctx) {
     const audio = ctx?.piece !== undefined ? batched.get(ctx.piece) : undefined;
     if (audio) { yield { text, audio }; return; }
@@ -845,7 +915,11 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   for (const scene of todo) {
     const segments = scene.segments.length;
     onProgress({ type: "scene_start", index: scene.index, total: scenes.length, segments });
-    if (mode !== "line") batched = await voiceSceneBatches(scene, mode, { bible, voiceFor, speak: batchSpeak ?? speak, byNarrator, toneOf, onProgress, cache: fileBatchCache(`${outDir}/batches`, SAMPLE_RATE), model: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, concurrency: batchSpeak ? 10000 : opts.geminiConcurrency ?? 2 });
+    // Quotes with their tags, two voices at once (#124): voiced first, then left out of the batches.
+    const conversations = await voiceConversations(scene, { bible, voiceFor, speak, byNarrator, toneOf, cache: fileBatchCache(`${outDir}/batches`, SAMPLE_RATE), model: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, concurrency: opts.geminiConcurrency ?? 2 });
+    grouped = new Set(conversations.keys());
+    batched = new Map(conversations);
+    if (mode !== "line") for (const [k, v] of await voiceSceneBatches(scene, mode, { bible, voiceFor, speak: batchSpeak ?? speak, byNarrator, exclude: grouped, toneOf, onProgress, cache: fileBatchCache(`${outDir}/batches`, SAMPLE_RATE), model: opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL, concurrency: batchSpeak ? 10000 : opts.geminiConcurrency ?? 2 })) batched.set(k, v);
     const { audio, paragraphStarts } = await synthesizeScene(
       scene,
       voiceFor,
@@ -853,7 +927,8 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
       (segmentIndex, speaker, text) => onProgress({ type: "chunk_done", sceneIndex: scene.index, segmentIndex, segments, speaker, text }),
       (segmentIndex, speaker) => onProgress({ type: "segment_done", sceneIndex: scene.index, segmentIndex, segments, speaker }),
       // Batched pieces are trimmed tight; put natural pauses back between them.
-      mode !== "line" ? naturalGaps(opts.pauseScale ?? 1, (piece) => batched.has(piece)) : undefined
+      // No pause inside a two-voice paragraph: it's one take.
+      ((g) => (prev: Parameters<PieceGap>[0], next: Parameters<PieceGap>[1]) => (grouped.has(prev.piece) && grouped.has(next.piece) && prev.paragraph === next.paragraph ? 0 : g ? g(prev, next) : 0))(mode !== "line" ? naturalGaps(opts.pauseScale ?? 1, (piece) => batched.has(piece)) : undefined)
     );
     const file = sceneFile(scene.index);
     const path = `${outDir}/${file}`;
