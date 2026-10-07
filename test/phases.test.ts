@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { legacyPrompt } from "../src/geminiTts.ts";
+import type { SpeechInput } from "../src/geminiTts.ts";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -145,7 +147,7 @@ test("voice samples: a fair stretch of each speaker's own lines, or an audition 
   assert.equal(sampleText(log.events, "lemuel", 10), "Up, Everyone up.", "their own words only (not the narration between them), without the quotation marks");
   assert.deepEqual(needAuditions(log.events, ["narrator", "lemuel", "ivana"]), ["lemuel", "ivana"]);
   const spoken: string[] = [];
-  const speak = async (prompt: string, voice: string) => { spoken.push(`${voice}:${prompt.includes("Read the transcript only.") ? "slate" : "sample"}`); return { samples: new Float32Array(2400), sampleRate: 24000 }; };
+  const speak = async (input: SpeechInput, voice: string) => { const prompt = legacyPrompt(input); spoken.push(`${voice}:${prompt.includes("Read the transcript only.") ? "slate" : "sample"}`); return { samples: new Float32Array(2400), sampleRate: 24000 }; };
   const voices = { narrator: "en-us-storyteller-13", lemuel: "algenib", ivana: "kore" };
   const auditions = { lemuel: "Everyone up, I said. The road won't walk itself, and neither will you, so up.", ivana: "Quiet. Something is moving out there, and it is not a sheep." };
   const first = await renderVoiceSamples(log.events, { runDir, voices, speak, auditions });

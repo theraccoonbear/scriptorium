@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildTtsPrompt, decodeWav } from "./geminiTts.ts";
+import type { SpeechInput } from "./geminiTts.ts";
 import type { Speak } from "./geminiTts.ts";
 import { maxLineSeconds, resample } from "./audiobook.ts";
 
@@ -51,7 +52,7 @@ export function planBatches(pieces: BatchPiece[], maxChars = 1400, maxLines = 12
 
 export const BATCH_PAUSE_NOTE = "These are separate lines, not one speech. After each line, stop and stay completely silent for two full seconds before the next line.";
 
-export function batchPrompt(batch: Batch, who: { name: string; profile: string }): string {
+export function batchPrompt(batch: Batch, who: { name: string; profile: string }): SpeechInput {
   return buildTtsPrompt({
     name: who.name,
     profile: who.profile,
@@ -209,7 +210,7 @@ export async function voiceBatch(
 ): Promise<Float32Array[]> {
   const prompt = batchPrompt(batch, who);
   const texts = batch.pieces.map((p) => p.text);
-  const key = batchKey(prompt, voice, opts.model ?? "");
+  const key = batchKey(JSON.stringify(prompt), voice, opts.model ?? "");
   const cut = (samples: Float32Array): { pieces?: Float32Array[]; problem: string } => {
     const pieces = splitOnSilences(samples, rate, texts.length, texts);
     if (!pieces) return { problem: `found fewer than ${texts.length - 1} pauses between ${texts.length} lines` };
