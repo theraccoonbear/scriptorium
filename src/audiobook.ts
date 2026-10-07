@@ -17,7 +17,7 @@ import type { TonePaletteData } from "./tagging.ts";
 import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
 import type { SpeechInput } from "./geminiTts.ts";
-import type { Unverified } from "./speechCheck.ts";
+import type { CheckReport } from "./speechCheck.ts";
 import { speechCheckRound } from "./rounds.ts";
 import type { Speak } from "./geminiTts.ts";
 import { geminiBatchSpeaker, isTtsRateLimit, readsVerbatim } from "./geminiTts.ts";
@@ -812,10 +812,11 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     }
   };
   // Lines the speech check couldn't get right in three takes: kept, and listed in a review round.
-  const unverified: Unverified[] = [];
-  const speak = opts.speak ?? geminiSpeaker({ model: opts.geminiModel, minIntervalMs: Math.ceil(60000 / (opts.geminiRpm ?? 9)), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}), onUnverified: (u) => {
-    unverified.push(u);
-    console.error(`[scriptorium]   speech check: still wrong after 3 takes, kept the closest — "${u.script.slice(0, 80)}": ${u.problems.join("; ")}`);
+  // Lines the speech check flagged, every take kept for the author to hear.
+  const flagged: CheckReport[] = [];
+  const speak = opts.speak ?? geminiSpeaker({ model: opts.geminiModel, minIntervalMs: Math.ceil(60000 / (opts.geminiRpm ?? 9)), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}), onReport: (r) => {
+    flagged.push(r);
+    if (!r.ok) console.error(`[scriptorium]   speech check: still flagged after ${r.takes.length} takes, kept the closest — "${r.script.slice(0, 80)}": ${r.takes[r.kept].problems.join("; ")}`);
   } });
   const { voiceFor, synth: lineSynth } = hybridVoicing({
     bible, assignment, narration, dialogue, kokoroSynth, speak, byNarrator, fallback: opts.geminiFallback,
@@ -865,8 +866,8 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     onProgress({ type: "scene_done", index: scene.index, path });
   }
 
-  const checked = await speechCheckRound(opts.runDir, "audiobook", unverified);
-  if (checked) console.error(`[scriptorium] ${unverified.length} line${unverified.length === 1 ? "" : "s"} to listen to: ${checked.dir}/legend.txt`);
+  const checked = await speechCheckRound(opts.runDir, "audiobook", flagged);
+  if (checked) console.error(`[scriptorium] speech check flagged ${flagged.length} line${flagged.length === 1 ? "" : "s"} (${flagged.filter((r) => !r.ok).length} still flagged) — every take to listen to: ${checked.dir}/legend.txt`);
   return { outDir, scenes: scenes.length, rendered: todo.length, skipped: scenes.length - todo.length, voices: assignment };
 }
 
