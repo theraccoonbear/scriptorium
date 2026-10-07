@@ -497,11 +497,25 @@ export function buildSrt(timeline: Timeline, timings: Timings, paragraphsByScene
 
 // ---- rendering ----
 
-export type Runner = (args: string[], opts?: { quiet?: boolean }) => Promise<void>;
+// onProgress: seconds of output rendered so far (and ffmpeg's speed), from its
+// machine-readable -progress stream — works with several ffmpegs at once (#131).
+export type Runner = (args: string[], opts?: { quiet?: boolean; onProgress?: (doneSec: number, speed?: number) => void }) => Promise<void>;
 
-export const ffmpegRunner: Runner = (args, { quiet = false } = {}) => new Promise((resolve, reject) => {
-  // Live progress only when one ffmpeg runs at a time; parallel renders would interleave it.
-  const child = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", quiet ? "-nostats" : "-stats", "-y", ...args], { stdio: ["ignore", "inherit", quiet ? "ignore" : "inherit"] });
+export function parseProgress(chunk: string, report: (doneSec: number, speed?: number) => void): void {
+  let done: number | undefined;
+  let speed: number | undefined;
+  for (const line of chunk.split("\n")) {
+    const [k, v] = line.trim().split("=");
+    if (k === "out_time_us" && /^\d+$/.test(v ?? "")) done = Number(v) / 1e6;
+    else if (k === "speed" && v && v !== "N/A") speed = parseFloat(v);
+    else if (k === "progress" && done !== undefined) { report(done, speed); done = undefined; }
+  }
+}
+
+export const ffmpegRunner: Runner = (args, { quiet = false, onProgress } = {}) => new Promise((resolve, reject) => {
+  const progress = onProgress ? ["-progress", "pipe:1", "-nostats"] : [quiet ? "-nostats" : "-stats"];
+  const child = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", ...progress, "-y", ...args], { stdio: ["ignore", onProgress ? "pipe" : "inherit", quiet || onProgress ? "ignore" : "inherit"] });
+  if (onProgress) child.stdout?.on("data", (d: Buffer) => parseProgress(d.toString(), onProgress));
   child.on("error", (err) => reject(new Error(`could not run ffmpeg: ${err.message}`)));
   child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}`))));
 });
@@ -542,7 +556,9 @@ async function pool(tasks: Array<() => Promise<void>>, limit: number): Promise<v
 export type VideoProgress =
   | { type: "warning"; message: string }
   | { type: "encoder"; encoder: Encoder; parallel: number }
+  | { type: "plan"; parts: { label: string; seconds: number }[] }   // everything to render, up front
   | { type: "part_start"; label: string; seconds: number }
+  | { type: "part_progress"; label: string; done: number; seconds: number; speed?: number }
   | { type: "part_skipped"; label: string }
   | { type: "part_done"; label: string; elapsedMs: number }
   | { type: "muxing" };
@@ -636,6 +652,7 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
     }
     emit({ type: "part_start", label, seconds: sec(frames) });
     const t0 = Date.now();
+    const onProgress = (done: number, speed?: number) => emit({ type: "part_progress", label, done: Math.min(done, sec(frames)), seconds: sec(frames), ...(speed ? { speed } : {}) });
     await run([
       ...inputs.flatMap((f) => ["-i", join(runDir, f)]),
       "-filter_complex", filter,
@@ -644,7 +661,7 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
       ...ENCODE,
       "-an",
       join(partsDir, file)
-    ], { quiet });
+    ], { quiet, onProgress });
     cache[file] = key;
     await saveCache();
     emit({ type: "part_done", label, elapsedMs: Date.now() - t0 });
@@ -679,6 +696,12 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
   // Cards are quick: one at a time, in order. Scenes are independent: render
   // several at once. The zoom filter is single-threaded, so this is what puts
   // the other cores to work.
+  const cardLabel = (part: TimelinePart) => (part.kind === "credits" ? `credits ${part.page! + 1}` : part.kind === "card" ? `scene ${timeline.scenes[part.scene!].index + 1} card` : part.kind);
+  const sceneLabel = (part: TimelinePart) => { const sc = timeline.scenes[part.scene!]; return `scene ${sc.index + 1} (${sc.shots.length} shots)`; };
+  emit({ type: "plan", parts: [
+    ...[...graphs.keys()].map((p) => ({ label: cardLabel(p), seconds: sec(p.frames) })),
+    ...timeline.parts.filter((p) => p.kind === "scene").map((p) => ({ label: sceneLabel(p), seconds: sec(timeline.scenes[p.scene!].frames) }))
+  ] });
   for (const [part, g] of graphs) {
     await renderPart(part.kind === "credits" ? `credits ${part.page! + 1}` : part.kind === "card" ? `scene ${timeline.scenes[part.scene!].index + 1} card` : part.kind, part.file, g.inputs, g.filter, part.frames);
   }
