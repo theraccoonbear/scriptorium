@@ -23,6 +23,8 @@ import { storyArtStyle } from "./visualrefs.ts";
 import { designRun, needsTagging, proseHash, sceneTags, tagRun } from "./tagging.ts";
 import { writeAuditions } from "./roles.ts";
 import { castVoiceRun, narratorReads } from "./casting.ts";
+import { speechCheckRound } from "./rounds.ts";
+import type { Unverified } from "./speechCheck.ts";
 import { geminiBatchJobs } from "./batchJobs.ts";
 import type { GeminiSpec } from "./types.ts";
 import type { TonePaletteData } from "./tagging.ts";
@@ -294,6 +296,7 @@ export interface AudiobookStepOptions {
   casting?: boolean;          // cast Gemini voices from the library (default true when Gemini speaks)
   castingFile?: string;       // a cast list shared across chapters
   castMin?: number;           // characters spoken to earn a voice of their own; the rest are read by the narrator
+  pronunciations?: Record<string, string>;  // how to say the story's hard words, for every Gemini line
   designVoices?: string[];    // characters to give a designed voice
   force?: boolean;
   config?: StoryConfig;  // for spend accounting (pricing, budget)
@@ -416,7 +419,10 @@ export async function voicesStep(runDir: string, events: StoryEvent[], opts: Aud
       }
     }
     if (prepared.byNarrator.length) console.error(`[scriptorium] ${c.dim(`read by the narrator (too little to cast): ${prepared.byNarrator.join(", ")}`)}`);
-    const samples = await renderVoiceSamples(prepared.events, { runDir, voices, auditions, narrated: prepared.byNarrator, speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}) }) });
+    const unverified: Unverified[] = [];
+    const samples = await renderVoiceSamples(prepared.events, { runDir, voices, auditions, narrated: prepared.byNarrator, speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}), onUnverified: (u) => unverified.push(u) }) });
+    const checked = await speechCheckRound(runDir, "voices", unverified);
+    if (checked) console.error(`[scriptorium] ${c.retry(`speech check: ${unverified.length} sample${unverified.length === 1 ? "" : "s"} still said differently after 3 takes — ${checked.dir}/legend.txt`)}`);
     for (const s of samples) console.error(`[scriptorium] ${s.made ? c.ok(`${s.name}: ${s.voice}${s.source === "audition" ? " (audition line)" : ""}`) : c.dim(`${s.name}: ${s.voice} (sample unchanged)`)}${approved.has(s.id) ? c.dim(" — approved") : ""} ${c.dim(s.file)}`);
     return samples;
   });
@@ -436,6 +442,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
     geminiModel: opts.geminiModel,
     geminiVoices,
     ...(byNarrator.length ? { narratorReads: byNarrator } : {}),
+    ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}),
     kokoroVoices: opts.kokoroVoices,
     characterVoices: opts.characterVoices,
     geminiMode: opts.geminiMode,
@@ -494,6 +501,7 @@ export async function musicStep(runDir: string, config: StoryConfig, settings: M
 }
 
 export interface VideoStepOptions {
+  pronunciations?: Record<string, string>;  // for the narrated title
   encoder?: EncoderChoice;
   parallel?: number;
   titles?: TitleSettings | false;   // false: the plain cut, no cards
@@ -517,7 +525,7 @@ export async function videoStep(runDir: string, events: StoryEvent[], force: boo
     contextPaths: opts.contextPaths,
     gemini: opts.gemini,
     base: opts.base,
-    speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}) }),
+    speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}) }),
     onNote: (m) => console.error(`[scriptorium] ${c.dim(m)}`)
   });
   if (titles?.sceneCards) console.error(`[scriptorium] ${c.dim(`scene titles: ${Object.values(titles.sceneTitles).map((t) => t || "—").join(" · ")} (edit ${join(runDir, "video", "titles.json")})`)}`);

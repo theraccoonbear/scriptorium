@@ -316,7 +316,7 @@ async function main() {
     const voices = (values.voices ?? "").split(",").map((v) => v.trim()).filter(Boolean);
     const { round, info } = await accounted(story.runDir, story.config, "voices", () => runAudition({
       runDir: story.runDir, events, id,
-      speak: geminiSpeaker({ ...(story.audiobook.geminiModel ? { model: story.audiobook.geminiModel } : {}) }),
+      speak: geminiSpeaker({ ...(story.audiobook.geminiModel ? { model: story.audiobook.geminiModel } : {}), ...(story.audiobook.pronunciations ? { pronunciations: story.audiobook.pronunciations } : {}) }),
       ...(values.direction ? { direction: values.direction } : {}),
       ...(voices.length ? { voices } : {}),
       ...(values.count ? { count: Number(values.count) } : {}),

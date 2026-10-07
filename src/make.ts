@@ -63,6 +63,7 @@ export interface StoryFile {
     geminiBatch?: boolean;                       // batched modes through Gemini Batch Mode (half price, slower); not for 3.8+ TTS, which is voiced live (#114)
     castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
     castMin?: number;                            // characters spoken to earn a voice of their own (default 120); the rest are read by the narrator
+    pronunciations?: Record<string, string>;     // how to say the story's hard words: { "McPoyle": "mick-POYL, rhymes with boil" }
     designVoices?: string[];                     // character ids to give a designed voice
   };
   music?: MusicSettings | false;       // the score (off unless present): { style, duck, volume, model, maxTakes }
@@ -335,6 +336,7 @@ const defaultRunners: StepRunners = {
   },
   video: async (s, events) => {
     await videoStep(s.runDir, events, false, {
+      ...(s.audiobook.pronunciations ? { pronunciations: s.audiobook.pronunciations } : {}),
       ...s.video,
       title: s.title, subtitle: s.subtitle, series: s.series,
       contextPaths: s.contextPaths, base: dirname(resolve(s.file)),
@@ -352,7 +354,7 @@ function audiobookOptions(s: ResolvedStory): AudiobookStepOptions {
     narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
     kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
     geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
-    casting: a.casting, geminiConcurrency: a.geminiConcurrency, geminiBatch: a.geminiBatch, castingFile: a.castingFile, castMin: a.castMin, designVoices: a.designVoices,
+    casting: a.casting, geminiConcurrency: a.geminiConcurrency, geminiBatch: a.geminiBatch, castingFile: a.castingFile, castMin: a.castMin, pronunciations: a.pronunciations, designVoices: a.designVoices,
     config: s.config
   };
 }

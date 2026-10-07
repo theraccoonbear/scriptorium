@@ -16,6 +16,8 @@ import type { TonePaletteData } from "./tagging.ts";
 import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
 import type { SpeechInput } from "./geminiTts.ts";
+import type { Unverified } from "./speechCheck.ts";
+import { speechCheckRound } from "./rounds.ts";
 import type { Speak } from "./geminiTts.ts";
 import { geminiBatchSpeaker, isTtsRateLimit, readsVerbatim } from "./geminiTts.ts";
 import { geminiBatchJobs } from "./batchJobs.ts";
@@ -335,6 +337,7 @@ export interface AudiobookOptions {
   geminiModel?: string;
   geminiVoices?: Record<string, string>;  // character id (or "narrator") -> Gemini voice name
   narratorReads?: string[];  // walk-on parts read in the narrator's voice (see casting.ts narratorReads)
+  pronunciations?: Record<string, string>;  // how to say the story's hard words (see geminiTts.ts)
   // How Gemini lines are requested: "line" (one request each, own direction — the
   // default), "palette" (batched by speaker and palette tone), "speaker" (batched by
   // speaker, no direction). See geminiBatch.ts.
@@ -807,7 +810,12 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
       yield { text: said, audio: audio.audio };
     }
   };
-  const speak = opts.speak ?? geminiSpeaker({ model: opts.geminiModel, minIntervalMs: Math.ceil(60000 / (opts.geminiRpm ?? 9)) });
+  // Lines the speech check couldn't get right in three takes: kept, and listed in a review round.
+  const unverified: Unverified[] = [];
+  const speak = opts.speak ?? geminiSpeaker({ model: opts.geminiModel, minIntervalMs: Math.ceil(60000 / (opts.geminiRpm ?? 9)), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}), onUnverified: (u) => {
+    unverified.push(u);
+    console.error(`[scriptorium]   speech check: still wrong after 3 takes, kept the closest — "${u.script.slice(0, 80)}": ${u.problems.join("; ")}`);
+  } });
   const { voiceFor, synth: lineSynth } = hybridVoicing({
     bible, assignment, narration, dialogue, kokoroSynth, speak, byNarrator, fallback: opts.geminiFallback,
     onFallback: (speaker, error) => onProgress({ type: "line_fallback", speaker, error }),
@@ -856,6 +864,8 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
     onProgress({ type: "scene_done", index: scene.index, path });
   }
 
+  const checked = await speechCheckRound(opts.runDir, "audiobook", unverified);
+  if (checked) console.error(`[scriptorium] ${unverified.length} line${unverified.length === 1 ? "" : "s"} to listen to: ${checked.dir}/legend.txt`);
   return { outDir, scenes: scenes.length, rendered: todo.length, skipped: scenes.length - todo.length, voices: assignment };
 }
 
