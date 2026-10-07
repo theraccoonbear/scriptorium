@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { postJson, requireKey } from "./providers.ts";
 import { parseJson } from "./roles.ts";
-import type { ArtistBackendSpec, ArtistConfig, CoverArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
+import type { ArtistBackendSpec, ArtistConfig, CoverArtData, ExtrasArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
 import { readVisualRefs, refKey, storyArtStyle } from "./visualrefs.ts";
 import { replay } from "./bible.ts";
 import { isBudgetError } from "./usage.ts";
@@ -30,6 +30,7 @@ export interface ImageRequest {
   // Character portraits and earlier renders, passed as visual references for continuity.
   references: Image[];
   aspectRatio?: string;  // overrides the backend's default (portraits are 3:4)
+  imageSize?: string;    // "1K" (default), "2K" or "4K"
   style?: string;        // the story's art style, sent with every image
   direction?: string;    // the author's art direction for the image model, sent with every image
 }
@@ -106,7 +107,17 @@ export interface ArtJob {
   characters?: string[];
   location?: string;
   props?: string[];
+  aspectRatio?: string;   // extras: their own shapes (key art 2:3, 16:9, 1:1)
+  imageSize?: string;     // extras: "2K"
+  maxPortraits?: number;  // extras: the cast photo passes everyone in it
 }
+
+// The extras (#49): key art in the shapes streaming apps use, and a cast photo.
+// All textless (titles are set separately); 2K.
+export const KEY_ART: Record<string, string> = { "extra-keyart-2x3": "2:3", "extra-keyart-16x9": "16:9", "extra-keyart-1x1": "1:1" };
+export const CAST_PHOTO_KEY = "extra-cast";
+export const EXTRAS_SIZE = "2K";
+export const MAX_CAST_PHOTO = 8;  // characters in the cast photo (and portraits passed)
 
 // Canonical references first (characters, locations, props — every later
 // image may use them), then the latest scene_art per scene (in scene order,
@@ -114,12 +125,15 @@ export interface ArtJob {
 export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
   const scenes = new Map<number, SceneArtData>();
   let cover: CoverArtData | undefined;
+  let extras: ExtrasArtData | undefined;
   for (const e of events) {
     if (e.type === "scene_art") {
       const d = e.data as SceneArtData;
       scenes.set(d.sceneIndex, d);
     } else if (e.type === "cover_art") {
       cover = e.data as CoverArtData;
+    } else if (e.type === "extras_art") {
+      extras = e.data as ExtrasArtData;
     }
   }
   const order: Record<VisualRefKind, number> = { character: 0, location: 1, prop: 2 };
@@ -152,23 +166,28 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
         ...(shot.props ? { props: shot.props } : {})
       }));
     });
-  if (cover) {
-    // The cover features the story's most-shown characters, place and props.
-    const top = (ids: string[], have: Set<string>, n: number) => {
-      const counts = new Map<string, number>();
-      for (const id of ids) if (have.has(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
-      return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n).map(([id]) => id);
-    };
-    const characters = top(jobs.flatMap((j) => j.characters ?? []), refIds("character"), 4);
-    const location = top(jobs.flatMap((j) => (j.location ? [j.location] : [])), refIds("location"), 1)[0];
-    const props = top(jobs.flatMap((j) => j.props ?? []), refIds("prop"), 2);
-    jobs.push({
-      key: "cover",
-      prompt: cover.prompt,
-      ...(characters.length > 0 ? { characters } : {}),
-      ...(location ? { location } : {}),
-      ...(props.length > 0 ? { props } : {})
-    });
+  // The cover and key art feature the story's most-shown characters, place and props.
+  const top = (ids: string[], have: Set<string>, n: number) => {
+    const counts = new Map<string, number>();
+    for (const id of ids) if (have.has(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n).map(([id]) => id);
+  };
+  const shots = [...jobs];
+  const featured = {
+    characters: top(shots.flatMap((j) => j.characters ?? []), refIds("character"), 4),
+    location: top(shots.flatMap((j) => (j.location ? [j.location] : [])), refIds("location"), 1)[0],
+    props: top(shots.flatMap((j) => j.props ?? []), refIds("prop"), 2)
+  };
+  const feature = {
+    ...(featured.characters.length > 0 ? { characters: featured.characters } : {}),
+    ...(featured.location ? { location: featured.location } : {}),
+    ...(featured.props.length > 0 ? { props: featured.props } : {})
+  };
+  if (cover) jobs.push({ key: "cover", prompt: cover.prompt, ...feature });
+  if (extras) {
+    for (const [key, aspectRatio] of Object.entries(KEY_ART)) jobs.push({ key, prompt: extras.keyArt, ...feature, aspectRatio, imageSize: EXTRAS_SIZE });
+    const castIds = extras.castCharacters.filter((id) => refIds("character").has(id)).slice(0, MAX_CAST_PHOTO);
+    jobs.push({ key: CAST_PHOTO_KEY, prompt: extras.castPhoto, ...(castIds.length ? { characters: castIds } : {}), aspectRatio: "3:2", imageSize: EXTRAS_SIZE, maxPortraits: MAX_CAST_PHOTO });
   }
   return withShotNotes(withCurrentStyle([...refJobs, ...jobs], events), events);
 }
@@ -181,7 +200,7 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
 export async function shotInputs(job: ArtJob, manifest: ArtManifest, artDir: string, maxPortraits = 3): Promise<Record<string, string>> {
   const have = (key: string) => Boolean(manifest[key]);
   const keys = [
-    ...(job.characters ?? []).map((id) => refKey("character", id)).filter(have).slice(0, maxPortraits),
+    ...(job.characters ?? []).map((id) => refKey("character", id)).filter(have).slice(0, job.maxPortraits ?? maxPortraits),
     ...(job.location ? [refKey("location", job.location)] : []).filter(have),
     ...(job.props ?? []).map((id) => refKey("prop", id)).filter(have).slice(0, 2)
   ];
@@ -426,7 +445,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       return [...photos, ...(anchor ? [{ ...anchor, label: STYLE_LABEL }] : [])];
     }
     const canon = [
-      ...refImages("character", job.characters ?? [], maxPortraits),
+      ...refImages("character", job.characters ?? [], job.maxPortraits ?? maxPortraits),
       ...refImages("location", job.location ? [job.location] : [], 1),
       ...refImages("prop", job.props ?? [], 2)
     ];
@@ -599,7 +618,7 @@ export async function renderOne(
       // The last gate before the image model: no names, ever (see stripNames).
       const gated = stripNames(prompt, names);
       if (gated.removed.length) emit({ type: "names_removed", key: job.key, names: gated.removed });
-      image = await backend.generate({ prompt: gated.text, references, ...(style ? { style } : {}), ...(direction ? { direction } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : {}) });
+      image = await backend.generate({ prompt: gated.text, references, ...(style ? { style } : {}), ...(direction ? { direction } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : job.aspectRatio ? { aspectRatio: job.aspectRatio } : {}), ...(job.imageSize ? { imageSize: job.imageSize } : {}) });
     } catch (err) {
       if (isBudgetError(err)) throw err;
       issues = [`generation failed: ${err instanceof Error ? err.message : String(err)}`];
@@ -708,7 +727,7 @@ async function geminiGenerate(spec: GeminiSpec, role: string, body: unknown, sle
 }
 
 // One image request body, and the image out of its response (live or batch).
-export function imageRequest(spec: GeminiSpec, { prompt, references, aspectRatio, style, direction }: ImageRequest): Record<string, unknown> {
+export function imageRequest(spec: GeminiSpec, { prompt, references, aspectRatio, imageSize, style, direction }: ImageRequest): Record<string, unknown> {
   const parts: GeminiPart[] = [];
   if (style) parts.push({ text: `ART STYLE — every image of this story uses exactly this style; render in it regardless of the references' subjects: ${style}` });
   if (direction) parts.push({ text: `AUTHOR ART DIRECTION — applies to every image; follow it exactly: ${direction}` });
@@ -721,7 +740,7 @@ export function imageRequest(spec: GeminiSpec, { prompt, references, aspectRatio
     contents: [{ role: "user", parts }],
     generationConfig: {
       responseModalities: ["IMAGE"],
-      imageConfig: { aspectRatio: aspectRatio ?? spec.aspectRatio ?? "16:9" }
+      imageConfig: { aspectRatio: aspectRatio ?? spec.aspectRatio ?? "16:9", ...(imageSize ? { imageSize } : {}) }
     }
   };
 }

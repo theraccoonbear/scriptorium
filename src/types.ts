@@ -209,6 +209,15 @@ export interface SceneArtData {
   shots?: ArtShotData[];
 }
 
+// extras_art event: the art director's extras for the story — key art (one
+// textless poster composition, rendered at each aspect ratio) and a cast photo
+// (the principal characters posing together out of character, as a film cast).
+export interface ExtrasArtData {
+  keyArt: string;
+  castPhoto: string;
+  castCharacters: string[];  // who's in the cast photo (character ids)
+}
+
 export interface CoverArtData {
   // Number of committed scenes the cover summarizes; a run extended past this gets a fresh cover.
   sceneCount: number;

@@ -123,6 +123,9 @@ export class MockProvider {
             ]
           });
         }
+        if (ctx.mode === "extras") {
+          return JSON.stringify({ keyArt: "Mock key art: the hero on a ridge at dusk.", castPhoto: "Mock cast photo: the cast posing on set.", castCharacters: (ctx.knownIds ?? []).slice(0, 3) });
+        }
         if (ctx.mode === "cover") {
           return JSON.stringify({ prompt: `Mock cover montage of ${ctx.beats?.length ?? 0} scenes.` });
         }

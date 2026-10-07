@@ -12,7 +12,7 @@ import { checkDirection } from "./providers.ts";
 import { formatSummary, readLedger, summarize, usd } from "./usage.ts";
 import { pitch } from "./pitch.ts";
 import type { Pitch } from "./pitch.ts";
-import { artStep, audiobookStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
+import { artStep, audiobookStep, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
 import type { AudiobookStepOptions } from "./steps.ts";
 import { portraitIds, recordedSheet, syncCharacterSheet } from "./characterSheet.ts";
 import { staleCharacterRefs } from "./engine.ts";
@@ -115,8 +115,9 @@ export interface ResolvedStory {
 export const STEPS = ["story", "art", "audiobook", "music", "video"] as const;
 // Review phases, run on their own with --only before the steps they feed:
 // the character sheet, reference portraits, and cast voices with samples.
-export const PHASES = ["characters", "refs", "voices"] as const;
-const ALL_STEPS = ["story", "characters", "refs", "voices", "art", "audiobook", "music", "video"] as const;
+// extras: bonus artwork (key art, a cast photo), only when named.
+export const PHASES = ["characters", "refs", "voices", "extras"] as const;
+const ALL_STEPS = ["story", "characters", "refs", "voices", "art", "extras", "audiobook", "music", "video"] as const;
 export const STEP_ORDERS = ["audio-first", "art-first", "parallel"] as const;
 export type StepOrder = (typeof STEP_ORDERS)[number];
 export type Step = (typeof ALL_STEPS)[number];
@@ -305,6 +306,7 @@ export interface StepRunners {
   refs: (story: ResolvedStory, events: StoryEvent[], redo: string[], notes?: string) => Promise<void>;
   voices: (story: ResolvedStory, events: StoryEvent[], redo: string[]) => Promise<void>;
   art: (story: ResolvedStory, events: StoryEvent[], shots?: ShotRedo) => Promise<void>;
+  extras: (story: ResolvedStory, events: StoryEvent[], redo: string[], notes?: string) => Promise<void>;
   audiobook: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   music: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   video: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
@@ -329,6 +331,8 @@ const defaultRunners: StepRunners = {
   voices: async (s, events, redo) => { await voicesStep(s.runDir, events, { ...audiobookOptions(s), redo }); },
   // make never re-renders finished work; the individual commands take --force for that.
   art: async (s, events, shots) => { await artStep(s.runDir, s.config, events, false, shots ? { shotRedo: shots.redo, replan: shots.replan, ...(shots.note ? { notes: shots.note } : {}) } : {}); },
+  // --redo extras directs the key art and cast photo again; --redo extra-cast just retakes one.
+  extras: async (s, events, redo, notes) => { await extrasStep(s.runDir, s.config, events, false, { redo: redo.filter((r) => r !== "extras"), redirect: redo.includes("extras"), ...(notes ? { notes } : {}) }); },
   audiobook: async (s, events) => { await audiobookStep(s.runDir, events, audiobookOptions(s)); },
   // Off unless the story file has a "music" block.
   music: async (s) => {
@@ -372,8 +376,9 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     wordsPerShot: story.config.artWordsPerShot,
     art: {
       maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, batch: artist.batch,
-      skip: !(steps.includes("art") || steps.includes("refs")) || !story.config.roles.artdirector,
-      ...(steps.includes("refs") && !steps.includes("art") ? { refsOnly: true, refTargets: refTargets(events) } : {})
+      skip: !(steps.includes("art") || steps.includes("refs") || steps.includes("extras")) || !story.config.roles.artdirector,
+      ...(steps.includes("refs") && !steps.includes("art") ? { refsOnly: true, refTargets: refTargets(events) } : {}),
+      ...(steps.includes("extras") && !steps.includes("art") && !steps.includes("refs") ? { extrasOnly: true } : {})
     },
     audio: {
       narration: story.audiobook.narration, dialogue: story.audiobook.dialogue, geminiMode: story.audiobook.geminiMode, ...(story.audiobook.geminiModel ? { geminiModel: story.audiobook.geminiModel } : {}), geminiConcurrency: story.audiobook.geminiConcurrency, geminiBatch: story.audiobook.geminiBatch,
@@ -413,6 +418,7 @@ function rank(step: Step, order: StepOrder): number {
   if (step === "characters") return 0.1;
   if (step === "refs") return 0.2;
   if (step === "voices") return 0.3;
+  if (step === "extras") return 2.2;  // after the art it draws on
   // The cue sheet reads each scene's length from the audiobook's timings.
   if (step === "music") return 2.5;
   return step === "story" ? 0 : 3;
@@ -443,11 +449,13 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   // Shots: scene-04-07 (one shot), scene:4 (re-plan a scene's shots).
   const redoShots = redo.filter((r) => /^scene-\d+-\d+$/.test(r) || r === "cover");
   const replanScenes = redo.filter((r) => /^scene:\d+$/.test(r)).map((r) => Number(r.slice("scene:".length)) - 1);
-  const redoRefs = redo.filter((r) => !r.startsWith("voice:") && !redoShots.includes(r) && !/^scene:\d+$/.test(r));
+  const redoExtras = redo.filter((r) => r === "extras" || r.startsWith("extra-"));
+  if (redoExtras.length && !steps.includes("extras")) throw new Error(`--redo ${redoExtras.join(",")}: extras are redone in the extras phase (--only extras)`);
+  const redoRefs = redo.filter((r) => !r.startsWith("voice:") && !redoShots.includes(r) && !redoExtras.includes(r) && !/^scene:\d+$/.test(r));
   if (redoRefs.length && !steps.includes("refs")) throw new Error(`--redo ${redoRefs.join(",")}: references are remade in the refs phase (--only refs)`);
   if (redoVoices.length && !steps.includes("voices")) throw new Error(`--redo voice:…: voices are recast in the voices phase (--only voices)`);
   if ((redoShots.length || replanScenes.length) && !steps.includes("art")) throw new Error(`--redo scene-…: shots are redone in the art step (--only art)`);
-  if (opts.notes && redoRefs.length === 0 && redoShots.length === 0) throw new Error("--note goes with --redo <kind>:<id> or --redo scene-NN-MM");
+  if (opts.notes && redoRefs.length === 0 && redoShots.length === 0 && redoExtras.filter((r) => r !== "extras").length === 0) throw new Error("--note goes with --redo <kind>:<id>, --redo scene-NN-MM or --redo extra-…");
   await mkdir(story.runDir, { recursive: true });
 
   // Guard the story in progress against changed settings.
@@ -486,6 +494,12 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
     console.error(`[scriptorium] ${c.blue(c.bold(`== ${stage.join(" + ")} ==`))}`);
     if (stage[0] === "story") {
       await run.story(story);
+      continue;
+    }
+    if (stage[0] === "extras") {
+      const events = await new EventLog(story.runDir).load();
+      if (!events.some((e) => e.type === "scene_committed")) throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
+      await withImageRound(story.runDir, await snapshotArt(story.runDir), () => run.extras(story, events, redoExtras, opts.notes), redoExtras.length ? { kind: "redo", subject: redoExtras.join(" "), ...(opts.notes ? { note: opts.notes } : {}) } : { kind: "extras", subject: "key art and cast photo" });
       continue;
     }
     if (stage[0] === "characters" || stage[0] === "refs" || stage[0] === "voices") {

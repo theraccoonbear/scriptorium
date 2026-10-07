@@ -17,14 +17,14 @@ import { EventLog } from "./eventlog.ts";
 // a legend of who speaks when. Approved work is marked ✓.
 
 const run = promisify(execFile);
-export type ReviewKind = "refs" | "shots" | "voices" | "music";
-export const REVIEW_KINDS: readonly ReviewKind[] = ["refs", "shots", "voices", "music"];
+export type ReviewKind = "refs" | "shots" | "extras" | "voices" | "music";
+export const REVIEW_KINDS: readonly ReviewKind[] = ["refs", "shots", "extras", "voices", "music"];
 
 export interface SheetTile { label: string; file: string }
 
 // The tiles of each contact sheet: one each for the character, location and
 // prop references, one per scene of shots (the cover on its own), in art.json order.
-export function contactSheets(manifest: ArtManifest, kind: "refs" | "shots", approved: ReadonlySet<string>, artDir: string, stale: ReadonlySet<string> = new Set()): Map<string, SheetTile[]> {
+export function contactSheets(manifest: ArtManifest, kind: "refs" | "shots" | "extras", approved: ReadonlySet<string>, artDir: string, stale: ReadonlySet<string> = new Set()): Map<string, SheetTile[]> {
   const sheets = new Map<string, SheetTile[]>();
   // ✓ approved; ⟳ drawn from a reference that has changed since (a reshoot).
   const tile = (key: string): SheetTile => ({ label: `${approved.has(key) ? "✓ " : ""}${stale.has(key) ? "⟳ " : ""}${key}`, file: join(artDir, manifest[key].file) });
@@ -34,6 +34,12 @@ export function contactSheets(manifest: ArtManifest, kind: "refs" | "shots", app
       const refs = keys.filter((k) => manifest[k].refKind === kind).sort();
       if (refs.length) sheets.set(`refs-${kind === "character" ? "characters" : kind === "location" ? "locations" : "props"}`, refs.map(tile));
     }
+    return sheets;
+  }
+  if (kind === "extras") {
+    // Key art (each shape) and the cast photo, on one sheet.
+    const extras = keys.filter((k) => k.startsWith("extra-")).sort();
+    if (extras.length) sheets.set("extras", extras.map(tile));
     return sheets;
   }
   const shots = keys.filter((k) => /^scene-\d+/.test(k)).sort();
@@ -183,7 +189,7 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
   }
   const artDir = join(runDir, "art");
   let manifest: ArtManifest;
-  try { manifest = JSON.parse(await readFile(join(artDir, "art.json"), "utf8")); } catch { throw new Error(`no images in ${artDir} — run make --only ${kind === "refs" ? "refs" : "art"} first`); }
+  try { manifest = JSON.parse(await readFile(join(artDir, "art.json"), "utf8")); } catch { throw new Error(`no images in ${artDir} — run make --only ${kind === "refs" ? "refs" : kind === "extras" ? "extras" : "art"} first`); }
   const present = new Set(await readdir(artDir));
   for (const k of Object.keys(manifest)) if (!present.has(manifest[k].file)) delete manifest[k];
   const files: string[] = [];

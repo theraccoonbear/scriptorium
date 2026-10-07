@@ -1,0 +1,77 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildArtJobs, CAST_PHOTO_KEY, imageRequest, KEY_ART, MockImageBackend, renderArt } from "../src/artist.ts";
+import { artDirect } from "../src/roles.ts";
+import { contactSheets } from "../src/reviewSheets.ts";
+import { pitch } from "../src/pitch.ts";
+import { replay } from "../src/bible.ts";
+import type { ArtManifest } from "../src/artist.ts";
+import type { Bible, Role, StoryEvent } from "../src/types.ts";
+
+// Issue #49: the extras — key art in three shapes and a cast photo, in the
+// story's art style, at 2K, directed once and rendered like the cover.
+
+const ev = (seq: number, type: string, data: unknown): StoryEvent => ({ seq, type, ts: `t${seq}`, data });
+const ref = (seq: number, kind: string, id: string) => ev(seq, "visual_ref", { kind, id, appearance: id, prompt: `portrait ${id}` });
+const events: StoryEvent[] = [
+  ref(0, "character", "ada"), ref(1, "character", "bo"), ref(2, "character", "cy"), ref(3, "character", "dee"), ref(4, "location", "keep"),
+  ev(5, "scene_art", { sceneIndex: 0, prompt: "s1", shots: [{ startParagraph: 0, prompt: "ada in the keep", characters: ["ada"], location: "keep" }, { startParagraph: 3, prompt: "bo", characters: ["bo"] }] }),
+  ev(6, "cover_art", { sceneCount: 1, prompt: "cover" }),
+  ev(7, "extras_art", { keyArt: "a lone figure on the ramparts", castPhoto: "the cast posing on set", castCharacters: ["ada", "bo", "cy", "dee", "ghost"] })
+];
+
+test("the extras are key art in three shapes and a cast photo of everyone in it, all at 2K", () => {
+  const jobs = buildArtJobs(events).filter((j) => j.key.startsWith("extra-"));
+  assert.deepEqual(jobs.map((j) => [j.key, j.aspectRatio, j.imageSize, j.prompt]), [
+    ["extra-keyart-2x3", "2:3", "2K", "a lone figure on the ramparts"],
+    ["extra-keyart-16x9", "16:9", "2K", "a lone figure on the ramparts"],
+    ["extra-keyart-1x1", "1:1", "2K", "a lone figure on the ramparts"],
+    ["extra-cast", "3:2", "2K", "the cast posing on set"]
+  ]);
+  assert.deepEqual(jobs[0].characters, ["ada", "bo"], "key art features the most-shown characters, like the cover");
+  assert.equal(jobs[0].location, "keep");
+  const cast = jobs.find((j) => j.key === CAST_PHOTO_KEY)!;
+  assert.deepEqual(cast.characters, ["ada", "bo", "cy", "dee"], "everyone with a portrait; an unknown id dropped");
+  assert.ok((cast.maxPortraits ?? 0) >= 4, "and all their portraits are passed, not just three");
+});
+
+test("the image request carries each extra's shape and size", () => {
+  const body = imageRequest({ type: "gemini", model: "m" }, { prompt: "p", references: [], aspectRatio: "2:3", imageSize: "2K" }) as any;
+  assert.deepEqual(body.generationConfig.imageConfig, { aspectRatio: "2:3", imageSize: "2K" });
+  assert.deepEqual((imageRequest({ type: "gemini", model: "m" }, { prompt: "p", references: [] }) as any).generationConfig.imageConfig, { aspectRatio: "16:9" }, "others unchanged");
+});
+
+test("rendering just the extras: each in its shape, the cast photo with every cast portrait", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-extras-"));
+  const backend = new MockImageBackend();
+  await renderArt(events, { runDir, backend, keys: [...Object.keys(KEY_ART), CAST_PHOTO_KEY] });
+  const extras = backend.calls.filter((c) => c.imageSize === "2K");
+  assert.deepEqual(extras.map((c) => c.aspectRatio).sort(), ["16:9", "1:1", "2:3", "3:2"]);
+  const cast = extras.find((c) => c.prompt.includes("the cast posing"))!;
+  assert.equal(cast.references.filter((r) => /Canonical look of a character/.test(r.label ?? "")).length, 4);
+  assert.ok(!backend.calls.some((c) => c.prompt === "bo"), "shots not asked for aren't rendered");
+});
+
+test("the art director's extras mode: both prompts, and only known characters in the cast", async () => {
+  const bible: Bible = replay([]);
+  bible.characters.ada = { id: "ada", name: "Ada", traits: "", goal: "", voice: "", status: "active" };
+  let asked = "";
+  const role: Role = { provider: { complete: async (req) => { asked = req.prompt; return JSON.stringify({ keyArt: " k ", castPhoto: "c", castCharacters: ["ada", "zed", "ada"] }); } } };
+  const out = await artDirect(role, { bible, mode: "extras", beats: [{ location: "keep", goal: "hold", conflict: "siege" } as never], previousPrompts: [] });
+  assert.deepEqual(out.result.extras, { keyArt: "k", castPhoto: "c", castCharacters: ["ada"] });
+  assert.match(asked, /MODE: EXTRAS/);
+  const bad: Role = { provider: { complete: async () => JSON.stringify({ keyArt: "k" }) } };
+  await assert.rejects(artDirect(bad, { bible, mode: "extras", beats: [], previousPrompts: [] }), /no key art or cast photo/);
+});
+
+test("the extras get their own contact sheet, and the pitch counts four images until they're made", () => {
+  const manifest = { "extra-keyart-2x3": { file: "a.png" }, "extra-cast": { file: "b.png" }, "scene-01-01": { file: "c.png" } } as unknown as ArtManifest;
+  assert.deepEqual([...contactSheets(manifest, "extras", new Set(["extra-cast"]), "/art").entries()].map(([n, t]) => [n, t.map((x) => x.label)]), [["extras", ["✓ extra-cast", "extra-keyart-2x3"]]]);
+  assert.ok(![...contactSheets(manifest, "shots", new Set(), "/art").keys()].includes("extras"), "not on the shots sheets");
+  const before = pitch({ events: events.slice(0, 7), scenes: 1, art: { extrasOnly: true } });
+  assert.equal(before.images.shots, 4);
+  assert.equal(before.images.references, 0);
+});
