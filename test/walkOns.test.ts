@@ -66,10 +66,11 @@ test("the narrator voices a walk-on part in their own voice, lightly in characte
   const bible = { title: "", premise: "", tone: "wry fantasy", setting: "", characters: CHARS, locations: {}, threads: [], facts: [] } as never;
   const plain = ttsSpeaker(bible, "guard");
   assert.equal(plain.name, "Gate Guard");
+  assert.equal(plain.profile, "bored Voice: flat Sounds: forties, flat", "how they sound (the sheet's vocal line) as well as how they talk");
   const walkOn = ttsSpeaker(bible, "guard", new Set(["guard"]));
   assert.equal(walkOn.name, "Narrator");
   assert.equal(walkOn.narrating, false, "a character's line, with its own delivery notes");
-  assert.match(walkOn.profile, /^The narrator of a story\. Tone: wry fantasy\. Here the narrator voices a minor character, Gate Guard \(bored Voice: flat\): suggest them with a light shift in delivery, in the narrator's own voice\.$/);
+  assert.match(walkOn.profile, /^The narrator of a story\. Tone: wry fantasy\. Here the narrator voices a minor character, Gate Guard \(bored Voice: flat Sounds: forties, flat\): suggest them with a light shift in delivery, in the narrator's own voice\.$/);
 });
 
 test("the casting reel drops a speaker who's no longer cast and lists who the narrator reads", async () => {

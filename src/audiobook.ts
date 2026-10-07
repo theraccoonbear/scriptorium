@@ -535,7 +535,8 @@ export function ttsSpeaker(bible: Bible, speaker: string, byNarrator?: ReadonlyS
   const ch = bible.characters[speaker];
   const narrator = `The narrator of a story. Tone: ${bible.tone || "measured, warm storytelling"}.`;
   if (speaker === "narrator" || !ch) return { name: "Narrator", profile: narrator, narrating: true };
-  const desc = [ch.traits, ch.voice && `Voice: ${ch.voice}`].filter(Boolean).join(" ");
+  // How they sound (the author's sheet, else the writer's line) as well as how they talk.
+  const desc = [ch.traits, ch.voice && `Voice: ${ch.voice}`, ch.vocal && `Sounds: ${ch.vocal}`].filter(Boolean).join(" ");
   if (byNarrator?.has(speaker)) return { name: "Narrator", profile: `${narrator} Here the narrator voices a minor character, ${ch.name}${desc ? ` (${desc})` : ""}: suggest them with a light shift in delivery, in the narrator's own voice.`, narrating: false };
   return { name: ch.name, profile: desc, narrating: false };
 }
