@@ -28,9 +28,13 @@ You are the interface to Scriptorium's pipeline. The author reviews and signs of
 - `refs-characters.jpg`, `refs-locations.jpg`, `refs-props.jpg`: every reference, labeled with its key (`✓` = approved)
 - `shots-scene-NN.jpg` (one per scene) and `cover.jpg`
 - `music.mp3`: every music cue, theme first, with its legend (`music.txt`)
-- `voices.mp3`: every voice sample, a second apart, narrator first. The legend (`voices.txt`, also printed) says who speaks at what time, with which voice.
+- `voices.mp3`: every voice sample, each announced by the narrator, narrator first. The legend (`voices.txt`, also printed) says who speaks at what time, with which voice. `voices-share.txt` is the same list with names and times only, for the author to pass on. `voices/` has one MP3 per voice.
 
-Send these files to the author. They're often on their phone, so don't just paste paths. Include the legend with the reel.
+**Review rounds.** Everything else the author is asked to look at goes in `<run>/review/rounds/NN-<kind>-<subject>/`, made by the pipeline:
+- **Image redos, retakes and reshoots:** a `--redo` or any art run that changes up to 40 images writes `changed.jpg` (just those images) and a `legend.txt`.
+- **Voice auditions:** `npm run audition` writes `all.mp3` (every candidate, 2 s apart) and a `legend.txt` (see Phase 3).
+
+Send the author only files from `review/` or the newest round, always with the legend. They're often on their phone, so don't just paste paths. **Never improvise review files**: no hand-made montages, preview folders, scratch scripts or share lists. If something the author needs to see isn't covered, say so and propose adding it to the pipeline.
 
 ## Before every paid phase: the pitch
 
@@ -54,19 +58,20 @@ After `--only refs`, build the contact sheet (`npm run review -- <story.json> re
 - **Approve:** `npm run approve -- <story.json> character-lemuel location-ditch ...`
 - **Redo with notes:** `npm run make -- <story.json> --only refs --redo character:hellga --note "older, a burn scar on the left cheek"`
 - **Fix the source:** if the look is wrong because the description is, edit `characters.json` instead — a changed sheet entry remakes that portrait on the next `--only refs`.
-Send the new contact sheet after every round. Move on when the author has approved the portraits they care about.
+After a redo, send the round's `changed.jpg` (the path is printed). Move on when the author has approved the portraits they care about.
 
 ## Phase 3: voices
 
 After `--only voices`, build the reel (`npm run review -- <story.json> voices`) and send it with its legend (who speaks when, with which voice; walk-on parts the narrator reads are listed at the end). Then:
 - **Approve:** `npm run approve -- <story.json> voice:narrator voice:lemuel ...`
-- **Recast:** edit the character's `vocal` on the sheet if the description is the problem, then `npm run make -- <story.json> --only voices --redo voice:lemuel`.
+- **Audition new voices:** when the author wants a voice changed ("deeper", "stockier"), run `npm run audition -- <story.json> lemuel --direction "<how they should sound now>"` (cents). It reads their reel line in their current voice and five library voices the voice director picks for that direction; `--voices a,b,c` auditions specific voices instead. Send the round's `all.mp3` and `legend.txt`. When they choose, `npm run audition -- <story.json> lemuel --pick N` pins the voice in the story file, makes the direction their vocal line on the sheet, and remakes their sample and the reel. Send the new reel.
+- **Recast from scratch:** edit the character's `vocal` on the sheet, then `npm run make -- <story.json> --only voices --redo voice:lemuel`.
 - A voice can also be pinned by hand in the story file: `audiobook.geminiVoices: { "lemuel": "<voice id>" }`.
 - **Narrator or own voice:** `"voiced": true|false` on the sheet moves a speaker between the cast and the narrator (then re-run `--only voices`).
 
 ## Phase 4: shots
 
-`--only art` plans shots for every scene that has none, then renders them. Send the shots contact sheet (`npm run review -- <story.json> shots`), scene by scene. Approve good shots by key (`scene-03-07`); approved images are never redone.
+`--only art` plans shots for every scene that has none, then renders them. Send the shots contact sheet (`npm run review -- <story.json> shots`), scene by scene. Approve good shots by key (`scene-03-07`); approved images are never redone. After redos, retakes or reshoots, send the round's `changed.jpg` rather than whole scenes.
 - **Redo a shot:** `npm run make -- <story.json> --only art --redo scene-03-07 --note "what's wrong"` (the note stays with that shot). `--redo scene:3` re-plans scene 3's shots.
 - **Reshoots:** after any reference changes, `npm run reshoot -- <story.json>` lists the shots drawn from the old version (⟳ on the contact sheet) with the cost. `--only art` reshoots the unapproved ones. Pitch it like any paid phase.
 

@@ -1,4 +1,6 @@
 import { narratorReads } from "./casting.ts";
+import { changedKeys, imageRound, snapshotArt } from "./rounds.ts";
+import type { ArtSnapshot } from "./rounds.ts";
 import { lineCounts } from "./voiceSamples.ts";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -413,6 +415,22 @@ function rank(step: Step, order: StepOrder): number {
   return step === "story" ? 0 : 3;
 }
 
+// A review round of the images a refs or art run made or remade (redos,
+// retakes, reshoots), so the author sees just those. A first render of
+// everything is left to the review contact sheets.
+const ROUND_MAX = 40;
+async function withImageRound(runDir: string, before: ArtSnapshot, fn: () => Promise<unknown>, info: { kind: string; subject: string; note?: string }): Promise<void> {
+  await fn();
+  const keys = changedKeys(before, await snapshotArt(runDir));
+  if (keys.length === 0) return;
+  if (before.size === 0 || keys.length > ROUND_MAX) {
+    console.error(`[scriptorium] ${c.dim(`${keys.length} images made — see npm run review`)}`);
+    return;
+  }
+  const round = await imageRound(runDir, keys, info);
+  if (round) console.error(`[scriptorium] ${c.ok(`review round: ${join(round.dir, "changed.jpg")}`)} ${c.dim(`(${keys.length} image${keys.length === 1 ? "" : "s"})`)}`);
+}
+
 export async function make(storyPath: string, opts: MakeOptions = {}): Promise<Step[]> {
   const story = await loadStoryFile(storyPath);
   const steps = planSteps(opts.only, opts.from);
@@ -471,7 +489,7 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
       const events = await new EventLog(story.runDir).load();
       if (!events.some((e) => e.type === "scene_committed")) throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
       if (stage[0] === "characters") await run.characters(story, events);
-      else if (stage[0] === "refs") await run.refs(story, events, redoRefs, opts.notes);
+      else if (stage[0] === "refs") await withImageRound(story.runDir, await snapshotArt(story.runDir), () => run.refs(story, events, redoRefs, opts.notes), redoRefs.length ? { kind: "redo", subject: redoRefs.join(" "), ...(opts.notes ? { note: opts.notes } : {}) } : { kind: "portraits", subject: "new" });
       else await run.voices(story, events, redoVoices);
       continue;
     }
@@ -482,7 +500,11 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
     }
     // Both finish (or fail) before the first failure is reported.
     const shots: ShotRedo = { redo: redoShots, replan: replanScenes, ...(opts.notes && redoShots.length ? { note: opts.notes } : {}) };
-    const results = await Promise.allSettled(stage.map((step) => (step === "art" ? run.art(story, events, shots) : run[step as "audiobook" | "music" | "video"](story, events))));
+    const artRound = redoShots.length || replanScenes.length
+      ? { kind: "redo", subject: [...redoShots, ...replanScenes.map((i) => `scene ${i + 1}`)].join(" "), ...(shots.note ? { note: shots.note } : {}) }
+      : { kind: "shots", subject: "new" };
+    const before = stage.includes("art") ? await snapshotArt(story.runDir) : new Map();
+    const results = await Promise.allSettled(stage.map((step) => (step === "art" ? withImageRound(story.runDir, before, () => run.art(story, events, shots), artRound) : run[step as "audiobook" | "music" | "video"](story, events))));
     const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
     if (failed) throw failed.reason;
   }

@@ -79,6 +79,10 @@ export class MockProvider {
           const ids: string[] = ctx.characterIds ?? [];
           return JSON.stringify({ narrator: ctx.narrator ? lib[0] : null, characters: Object.fromEntries(ids.map((id, i) => [id, lib[i + 1]])), reasons: {} });
         }
+        if (ctx.task === "suggest") {
+          const lib: string[] = ctx.libraryIds ?? [];
+          return JSON.stringify({ voices: lib.slice(0, ctx.count ?? 3).map((id) => ({ id, reason: "mock pick" })) });
+        }
         if (ctx.task === "audition") {
           const ids: string[] = ctx.ids ?? [];
           return JSON.stringify({ lines: Object.fromEntries(ids.map((id) => [id, `I am ${id}, and I have rather a lot to say about the road ahead. Do you want to hear it? I thought not.`])) });
