@@ -8,6 +8,7 @@ import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders, postJson, requireKey } from "./providers.ts";
 import { planExtras, planReferences, planShots, runStory } from "./engine.ts";
+import { RenderStatus } from "./renderStatus.ts";
 import { readApprovals } from "./approvals.ts";
 import { syncCharacterSheet } from "./characterSheet.ts";
 import { geminiSpeaker } from "./geminiTts.ts";
@@ -655,6 +656,8 @@ export async function videoStep(runDir: string, events: StoryEvent[], force: boo
     if (music) console.error(`[scriptorium] ${c.dim(`music: ${music.theme ? "theme + " : ""}${Object.keys(music.beds).length} scene bed${Object.keys(music.beds).length === 1 ? "" : "s"}, ${opts.music.duck ?? MUSIC_DEFAULTS.duck} dB under the narrator`)}`);
     else console.error(`[scriptorium] ${c.retry("music is on, but there are no cues yet — run the music step first")}`);
   }
+  const tty = process.stderr.isTTY === true;
+  const status = new RenderStatus({ tty, write: (line) => process.stderr.write(line.startsWith("\r") ? `\r\x1b[2K[scriptorium] ${line.replace(/^\r\x1b\[2K/, "")}` : `[scriptorium] ${line}`) });
   const result = await renderVideo(events, {
     runDir,
     force,
@@ -663,12 +666,16 @@ export async function videoStep(runDir: string, events: StoryEvent[], force: boo
     titles,
     music,
     onProgress: (event) => {
-      if (event.type === "encoder") console.error(`[scriptorium] ${c.dim(`encoding with ${event.encoder === "nvenc" ? "NVENC (GPU)" : "x264 (CPU)"}, ${event.parallel} scene${event.parallel === 1 ? "" : "s"} at a time`)}`);
-      else if (event.type === "warning") console.error(`[scriptorium] ${c.retry(event.message)}`);
-      else if (event.type === "part_start") console.error(`[scriptorium] ${c.blue(c.bold(event.label))} ${c.dim(`(${Math.round(event.seconds)}s of video)`)}`);
-      else if (event.type === "part_skipped") console.error(`[scriptorium] ${c.dim(`${event.label} unchanged — skipping`)}`);
-      else if (event.type === "part_done") console.error(`[scriptorium] ${c.ok(`${event.label} rendered in ${Math.round(event.elapsedMs / 1000)}s`)}`);
-      else if (event.type === "muxing") console.error(`[scriptorium] ${c.dim("joining parts and adding narration...")}`);
+      // In a terminal, one live line (redrawn in place) carries the render's progress (#131).
+      const say = (line: string) => { if (tty) process.stderr.write("\r\x1b[2K"); console.error(line); };
+      if (event.type === "encoder") say(`[scriptorium] ${c.dim(`encoding with ${event.encoder === "nvenc" ? "NVENC (GPU)" : "x264 (CPU)"}, ${event.parallel} scene${event.parallel === 1 ? "" : "s"} at a time`)}`);
+      else if (event.type === "warning") say(`[scriptorium] ${c.retry(event.message)}`);
+      else if (event.type === "plan") status.plan(event.parts);
+      else if (event.type === "part_start") { if (!tty) say(`[scriptorium] ${c.blue(c.bold(event.label))} ${c.dim(`(${Math.round(event.seconds)}s of video)`)}`); status.start(event.label, event.seconds); }
+      else if (event.type === "part_progress") status.progress(event.label, event.done);
+      else if (event.type === "part_skipped") { status.skip(event.label); say(`[scriptorium] ${c.dim(`${event.label} unchanged — skipping`)}`); }
+      else if (event.type === "part_done") { say(`[scriptorium] ${c.ok(`${event.label} rendered in ${Math.round(event.elapsedMs / 1000)}s`)}`); status.finish(event.label); }
+      else if (event.type === "muxing") { status.end(); console.error(`[scriptorium] ${c.dim("joining parts and adding narration...")}`); }
     }
   });
   const m = Math.floor(result.durationSec / 60);
