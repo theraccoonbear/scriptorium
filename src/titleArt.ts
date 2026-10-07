@@ -234,3 +234,24 @@ export async function drawLogo(o: { title: string; brief: string; draw: DrawLogo
   await magick([made.logo, "-alpha", "extract", "-background", "white", "-alpha", "shape", mono]);
   return { logo: made.logo, stacked: made["logo-stacked"], mono };
 }
+
+// The author's own logo (a PNG with real transparency): used as it is, with a
+// white version made from its alpha for spines and small sizes. A file with no
+// alpha is refused — pasted on as a box, it would look worse than no logo.
+export async function suppliedLogo(o: { file: string; stackedFile?: string; outDir: string }): Promise<{ logo: string; stacked: string; mono: string }> {
+  const check = async (f: string) => {
+    const { stdout } = await magick(["identify", "-format", "%A|%[opaque]", f]);
+    const [alpha, opaque] = stdout.trim().split("|");
+    if (!/^(true|blend)$/i.test(alpha ?? "") || /^true$/i.test(opaque ?? "")) throw new Error(`logo ${f}: no transparency — give a PNG with an alpha channel (transparent around the lettering)`);
+  };
+  await check(o.file);
+  if (o.stackedFile) await check(o.stackedFile);
+  await mkdir(o.outDir, { recursive: true });
+  const logo = join(o.outDir, "logo.png");
+  const stacked = join(o.outDir, "logo-stacked.png");
+  const mono = join(o.outDir, "logo-mono.png");
+  await magick([o.file, "-trim", "+repage", logo]);
+  await magick([o.stackedFile ?? o.file, "-trim", "+repage", stacked]);
+  await magick([logo, "-alpha", "extract", "-background", "white", "-alpha", "shape", mono]);
+  return { logo, stacked, mono };
+}

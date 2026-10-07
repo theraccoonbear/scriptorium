@@ -323,12 +323,10 @@ The most specific setting wins. Changing one re-makes only the extras it applies
 
 With a `title` in the story file, the extras phase also builds, in code and for free:
 
-- **A title logo:** the art director briefs it and the image model letters it, as one line (`logo.png`) and stacked (`logo-stacked.png`).
-  - The image model draws it on flat green, which is keyed out to a transparent PNG.
-  - A reader checks every letter of the title. A take with a wrong letter, or a background that didn't key out cleanly (edges not clear, green left behind), is redrawn.
-  - After three failed tries it falls back to a typeset logo, for which the art director picks one of the bundled fantasy display fonts and a finish (gilded, bronze, silver, iron, parchment, plain), with an optional arch.
-  - `logo-mono.png` is a white version for spines and small sizes.
-  - `--redo extra-logo` draws it again.
+- **A title logo,** typeset so it has true transparency and exact spelling. The art director designs it: one of the bundled fantasy display fonts, a finish (bevelled gilded, bronze, silver or iron; parchment; plain) and an optional arch. It's written as one line (`logo.png`), stacked (`logo-stacked.png`) and in white for spines and small sizes (`logo-mono.png`).
+  - `"mode": "drawn"` has the image model letter it instead, from the art director's brief. It's drawn on green that's keyed out, checked letter by letter, and falls back to typeset after three tries. With no real alpha, it doesn't blend as well.
+  - `--redo extra-logo` redraws a drawn logo.
+  - **Your own logo:** `"logo": { "file": "logo.png", "stackedFile": "logo-two-lines.png" }`. Give a PNG with real transparency around the lettering; paths are relative to the story file, and `stackedFile` is optional. It's used as-is, its white version comes from its alpha, and a file with no transparency is refused.
 - **Shelf covers:** the key art with the logo over it, at the sizes streaming apps use: `cover-2x3.jpg` (2000×3000), `cover-16x9.jpg` (3840×2160) and `cover-1x1.jpg` (2000×2000).
 - **Box art:** a VHS/DVD case laid out flat, back, spine and front, in `box/box.jpg`. The back has a tagline, four approved stills, a synopsis, a billing block and a rating box. The art director writes the copy once (it's rewritten only when the title or story changes).
 

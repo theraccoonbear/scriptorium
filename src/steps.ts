@@ -1,9 +1,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { boxArt, drawLogo, exists, renderLogo, SHELF, shelfCover, TREATMENTS } from "./titleArt.ts";
+import { boxArt, drawLogo, exists, renderLogo, SHELF, shelfCover, suppliedLogo, TREATMENTS } from "./titleArt.ts";
 import type { BoxCopy, LogoSettings } from "./titleArt.ts";
 import { LOGO_FONTS } from "./titles.ts";
 import type { Pronunciations } from "./geminiTts.ts";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders, postJson, requireKey } from "./providers.ts";
@@ -266,17 +266,25 @@ async function composeExtras(runDir: string, config: StoryConfig, log: EventLog,
   const bible = replay(log.events);
   const logoSource = proseHash(JSON.stringify({ title: o.title, tone: bible.tone, style: storyArtStyle(log.events) }));
   let design = log.events.filter((e) => e.type === "logo_design").map((e) => e.data as { source: string } & LogoSettings).reverse().find((d) => d.source === logoSource);
-  if (!design && roles.artdirector) {
+  if (!design && roles.artdirector && !config.extras?.logo?.file) {
     const out = await designLogo(roles.artdirector, { title: o.title, tone: bible.tone, ...(storyArtStyle(log.events) ? { artStyle: storyArtStyle(log.events) } : {}), fonts: LOGO_FONTS, treatments: TREATMENTS });
     design = { source: logoSource, font: out.result.font, treatment: out.result.treatment as LogoSettings["treatment"], arc: out.result.arc, caps: out.result.caps };
     await log.append("logo_design", { ...design, reason: out.result.reason });
     console.error(`[scriptorium] ${c.ok(`logo designed: ${out.result.font}, ${out.result.treatment}${out.result.arc ? `, arched ${out.result.arc}°` : ""}`)} ${c.dim(out.result.reason)}`);
   }
   const settings: LogoSettings = { ...(design ? { font: design.font, treatment: design.treatment, arc: design.arc, caps: design.caps } : {}), ...config.extras?.logo };
-  // Drawn (the default with a real image model): the art director briefs, the image model letters it.
+  // Drawn (opt-in, "mode": "drawn"): the art director briefs, the image model letters it on green
+  // that's keyed out. No real alpha, so it can't blend like typeset lettering; typeset is the default.
   const artist = resolveArtistConfig(config.artist);
   let letters: { logo: string; stacked: string; mono: string } | undefined;
-  if ((config.extras?.logo?.mode ?? "drawn") === "drawn" && artist.image.type === "gemini" && roles.artdirector) {
+  // The author's own logo wins.
+  const own = config.extras?.logo;
+  if (own?.file) {
+    const at = (f: string) => (isAbsolute(f) ? f : resolve(o.base ?? process.cwd(), f));
+    letters = await suppliedLogo({ file: at(own.file), ...(own.stackedFile ? { stackedFile: at(own.stackedFile) } : {}), outDir: extraDir });
+    console.error(`[scriptorium] ${c.ok(`logo: ${own.file}`)}`);
+  }
+  if (!letters && config.extras?.logo?.mode === "drawn" && artist.image.type === "gemini" && roles.artdirector) {
     const record = join(extraDir, "logo.json");
     let prev: { source?: string } = {};
     try { prev = JSON.parse(await readFile(record, "utf8")); } catch { /* first logo */ }

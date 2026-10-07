@@ -41,3 +41,14 @@ test("a drawn logo's key is checked: a flat green keys clean; a gradient backgro
   assert.ok(sameLetters("Rantoul’s Mushrooms\n", "RANTOUL'S MUSHROOMS"), "curly apostrophes, case and spacing don't matter");
   assert.ok(!sameLetters("RANTOUL'S MUSHROOOMS", "Rantoul's Mushrooms"), "letters do");
 });
+
+test("the author's own logo: used as it is, a white version from its alpha; one with no transparency is refused", { skip: !hasMagick && "ImageMagick 7 (magick) not installed" }, async () => {
+  const { suppliedLogo } = await import("../src/titleArt.ts");
+  const dir = await mkdtemp(join(tmpdir(), "scriptorium-own-"));
+  execFileSync("magick", ["-size", "800x300", "xc:none", "-fill", "#c8952f", "-pointsize", "120", "-annotate", "+60+200", "MINE", join(dir, "mine.png")]);
+  const out = await suppliedLogo({ file: join(dir, "mine.png"), outDir: join(dir, "out") });
+  assert.ok(Number(size(out.logo).split("x")[0]) < 800, "trimmed to the lettering");
+  assert.equal(execFileSync("magick", ["identify", "-format", "%[channels]", out.mono]).toString().includes("a"), true);
+  execFileSync("magick", ["-size", "800x300", "xc:white", "-fill", "black", "-pointsize", "120", "-annotate", "+60+200", "FLAT", join(dir, "flat.png")]);
+  await assert.rejects(suppliedLogo({ file: join(dir, "flat.png"), outDir: join(dir, "out2") }), /no transparency/);
+});
