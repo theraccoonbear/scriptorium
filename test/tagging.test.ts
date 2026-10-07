@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { legacyPrompt } from "../src/geminiTts.ts";
+import type { SpeechInput } from "../src/geminiTts.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,10 +110,10 @@ test("a line's delivery reaches its speaker's Gemini direction, and only its spe
   const bible = voicedBible(log.events);
   const assignment = { narrator: "af_heart", characters: { corin: "am_michael", nell: "af_bella", old_one: "bm_george" }, genders: {}, gemini: { narrator: "Charon", characters: { corin: "Puck", nell: "Kore", old_one: "Fenrir" } } };
   const kokoroSynth: Synthesize = async function* (text) { yield { text, audio: new Float32Array(10) }; };
-  const { voiceFor, synth: hybrid } = hybridVoicing({ bible, assignment, narration: "kokoro", dialogue: "gemini", kokoroSynth, speak: async (prompt) => { prompts.push(prompt); return { samples: new Float32Array(100), sampleRate: 24000 }; } });
+  const { voiceFor, synth: hybrid } = hybridVoicing({ bible, assignment, narration: "kokoro", dialogue: "gemini", kokoroSynth, speak: async (prompt) => { prompts.push(legacyPrompt(prompt)); return { samples: new Float32Array(100), sampleRate: 24000 }; } });
   await synthesizeScene(scene, voiceFor, hybrid);
-  assert.ok(prompts.some((p) => p.includes("# AUDIO PROFILE: Nell Ashby") && p.includes("low and furious")));
-  assert.ok(prompts.some((p) => p.includes("# AUDIO PROFILE: The Old One") && p.includes("slow, vast, amused")));
+  assert.ok(prompts.some((p) => p.includes("low and furious") && !p.includes("slow, vast, amused")));
+  assert.ok(prompts.some((p) => p.includes("slow, vast, amused") && !p.includes("low and furious")));
 });
 
 test("quote checks: no quotes means narrator; everything else is a doubt for the model, never an override", async () => {

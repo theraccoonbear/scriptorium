@@ -30,21 +30,22 @@ export interface LineDirection {
   line: string;      // exactly what to speak
 }
 
-// One-line sections keep the preamble compact; the transcript is the only
-// part the model speaks.
-export function buildTtsPrompt(d: LineDirection): string {
-  const flat = (s: string) => s.replace(/\s+/g, " ").trim();
-  return [
-    `# AUDIO PROFILE: ${flat(d.name)}`,
-    flat(d.profile),
-    ...(d.scene?.trim() ? ["", "## THE SCENE", flat(d.scene)] : []),
-    "",
-    "### DIRECTOR'S NOTES",
-    flat(d.notes?.trim() || "Perform the line in character, with the emotion the scene calls for. Natural pace."),
-    "",
-    "#### TRANSCRIPT",
-    d.line.trim()
-  ].join("\n");
+// What a speech request carries: the words to speak, and how to speak them.
+// Gemini 3.8 TTS reads its text verbatim — direction in the text gets read
+// aloud now and then (#114) — so the direction travels separately, as the
+// request's style annotation. The scene isn't sent: there's no field for it.
+export interface SpeechInput { text: string; style?: string }
+
+export function buildTtsPrompt(d: LineDirection): SpeechInput {
+  const flat = (s: string) => s.replace(/\s+/g, " ").trim().replace(/[.;,\s]+$/, "");
+  const style = [d.notes, d.profile].map((x) => (x ? flat(x) : "")).filter(Boolean).join(". ");
+  return { text: d.line.trim(), ...(style ? { style } : {}) };
+}
+
+// The old single-text form (direction above a transcript), for Batch Mode,
+// which only takes generateContent requests.
+export function legacyPrompt(input: SpeechInput): string {
+  return input.style ? `### DIRECTOR'S NOTES\n${input.style}\n\n#### TRANSCRIPT\n${input.text}` : input.text;
 }
 
 // Gemini returns 16-bit PCM WAV; the audiobook works in Float32 samples.
@@ -88,7 +89,7 @@ export interface GeminiTtsSpec {
   minIntervalMs?: number;  // least time between requests (pacing for a requests-per-minute cap)
 }
 
-export type Speak = (prompt: string, voice: string) => Promise<{ samples: Float32Array; sampleRate: number }>;
+export type Speak = (input: SpeechInput, voice: string) => Promise<{ samples: Float32Array; sampleRate: number }>;
 
 // The speechConfig for a voice. Prebuilt and library voices are named in
 // prebuiltVoiceConfig; a designed or cloned voice (voice_...) only works as
@@ -133,11 +134,11 @@ export function geminiSpeaker(spec: GeminiTtsSpec = {}, sleep: (ms: number) => P
   const model = spec.model ?? DEFAULT_GEMINI_TTS_MODEL;
   const call = geminiCall(spec, model);
   const reserve = slotLimiter(spec.minIntervalMs ?? 0, sleep);
-  return async (prompt, voice) => {
+  return async (input, voice) => {
     for (let wait = 0; ; wait++) {
       await reserve();
       try {
-        return await call(prompt, voice);
+        return await call(input, voice);
       } catch (err) {
         const limited = /\b429\b|RESOURCE_EXHAUSTED/.test(err instanceof Error ? err.message : String(err));
         if (!limited) throw err;
@@ -149,7 +150,25 @@ export function geminiSpeaker(spec: GeminiTtsSpec = {}, sleep: (ms: number) => P
   };
 }
 
-// One TTS request body, and the audio out of its response (live or batch).
+// A live speech request (the Interactions API): the transcript as text, the
+// direction as its speech_metadata style.
+export function speechRequest(input: SpeechInput, voice: string, model: string): Record<string, unknown> {
+  return {
+    model,
+    input: [{ type: "user_input", content: [{ type: "text", text: input.text, ...(input.style ? { annotations: [{ type: "speech_metadata", style: input.style }] } : {}) }] }],
+    response_format: { type: "audio" },
+    generation_config: { speech_config: [{ voice }] }
+  };
+}
+
+export function speechAudio(data: any): { samples: Float32Array; sampleRate: number } {
+  const audio = (data?.steps ?? []).filter((s: { type?: string }) => s.type === "model_output")
+    .flatMap((s: { content?: { type?: string; data?: string }[] }) => s.content ?? []).filter((c: { type?: string }) => c.type === "audio").at(-1);
+  if (!audio?.data) throw new Error(`Gemini TTS returned no audio (${data?.status ?? "no output"})`);
+  return decodeWav(Buffer.from(audio.data, "base64"));
+}
+
+// A Batch Mode request body (generateContent), and the audio out of its response.
 export function ttsRequest(prompt: string, voice: string): Record<string, unknown> {
   return { contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseModalities: ["AUDIO"], speechConfig: speechConfigFor(voice) } };
 }
@@ -161,14 +180,14 @@ export function audioFrom(data: any): { samples: Float32Array; sampleRate: numbe
 }
 
 function geminiCall(spec: GeminiTtsSpec, model: string): Speak {
-  return async (prompt, voice) => {
+  return async (input, voice) => {
     const data = await postJson(
-      `${GEMINI_BASE}/models/${model}:generateContent`,
+      `${GEMINI_BASE}/interactions`,
       { "x-goog-api-key": requireKey(spec.apiKeyEnv ?? "GEMINI_API_KEY") },
-      ttsRequest(prompt, voice),
+      speechRequest(input, voice, model),
       { type: "gemini", model, role: "tts", timeoutMs: spec.timeoutMs ?? 60000, retries: spec.retries ?? 1 }
     );
-    return audioFrom(data);
+    return speechAudio(data);
   };
 }
 
@@ -176,11 +195,11 @@ function geminiCall(spec: GeminiTtsSpec, model: string): Speak {
 // go out as one batch job at half price.
 export function geminiBatchSpeaker(jobs: BatchJobs, spec: GeminiTtsSpec = {}): Speak {
   const model = spec.model ?? DEFAULT_GEMINI_TTS_MODEL;
-  const send = microBatcher<{ prompt: string; voice: string }, { samples: Float32Array; sampleRate: number }>(async (reqs) => {
-    const items = await jobs.run(model, "tts", reqs.map((r) => ttsRequest(r.prompt, r.voice)));
+  const send = microBatcher<{ input: SpeechInput; voice: string }, { samples: Float32Array; sampleRate: number }>(async (reqs) => {
+    const items = await jobs.run(model, "tts", reqs.map((r) => ttsRequest(legacyPrompt(r.input), r.voice)));
     return items.map((item) => {
       try { return item.response ? audioFrom(item.response) : new Error(`batch: ${item.error}`); } catch (err) { return err as Error; }
     });
   });
-  return (prompt, voice) => send({ prompt, voice });
+  return (input, voice) => send({ input, voice });
 }

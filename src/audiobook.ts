@@ -15,6 +15,7 @@ import { paletteToneFor } from "./tagging.ts";
 import type { TonePaletteData } from "./tagging.ts";
 import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, voicingProblems } from "./tagging.ts";
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
+import type { SpeechInput } from "./geminiTts.ts";
 import type { Speak } from "./geminiTts.ts";
 import { geminiBatchSpeaker, isTtsRateLimit } from "./geminiTts.ts";
 import { geminiBatchJobs } from "./batchJobs.ts";
@@ -582,7 +583,7 @@ export function hybridVoicing(p: {
     // something else too (direction, context): retry, then fall back.
     const geminiVoice = voice.slice("gemini:".length);
     let best: Float32Array | undefined;
-    const take = async (pr: string): Promise<Float32Array | undefined> => {
+    const take = async (pr: SpeechInput): Promise<Float32Array | undefined> => {
       const { samples, sampleRate } = await speak(pr, geminiVoice);
       const audio = resample(samples, sampleRate, SAMPLE_RATE);
       if (!best || audio.length < best.length) best = audio;
@@ -591,8 +592,8 @@ export function hybridVoicing(p: {
     try {
       let audio: Float32Array | undefined;
       for (let attempt = 0; attempt < 2 && !audio; attempt++) audio = await take(prompt);
-      // Staying in Gemini: a bare prompt (just the line) rarely reads anything else aloud.
-      if (!audio && fallback === "gemini") for (let attempt = 0; attempt < 2 && !audio; attempt++) audio = await take(text);
+      // Staying in Gemini: the line with no direction at all.
+      if (!audio && fallback === "gemini") for (let attempt = 0; attempt < 2 && !audio; attempt++) audio = await take({ text });
       if (!audio && fallback === "gemini" && best) {
         p.onKeptLong?.(speaker, best.length / SAMPLE_RATE);
         audio = best;

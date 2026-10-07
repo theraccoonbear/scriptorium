@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { legacyPrompt } from "../src/geminiTts.ts";
+import type { SpeechInput } from "../src/geminiTts.ts";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,7 +77,7 @@ test("the narrated title: silence trimmed, cached by words and voice", async () 
   const rate = 24000;
   const tone = new Float32Array(rate).map((_, i) => (i > rate / 4 && i < rate / 2 ? 0.5 : 0)); // 0.25s of sound in 1s
   const said: string[] = [];
-  const speak = async (prompt: string, voice: string) => { said.push(`${voice}:${prompt}`); return { samples: tone, sampleRate: rate }; };
+  const speak = async (input: SpeechInput, voice: string) => { const prompt = legacyPrompt(input); said.push(`${voice}:${prompt}`); return { samples: tone, sampleRate: rate }; };
   const first = await narrateTitle(runDir, "Rantoul's Mushrooms. Part 1.", "algenib", speak);
   assert.equal(first.made, true);
   const wav = decodeWav(await readFile(join(runDir, first.file)));

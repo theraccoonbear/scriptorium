@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildTtsPrompt, decodeWav, GEMINI_VOICES } from "../src/geminiTts.ts";
+import { legacyPrompt } from "../src/geminiTts.ts";
+import type { SpeechInput } from "../src/geminiTts.ts";
+import { buildTtsPrompt, decodeWav, GEMINI_VOICES, speechAudio, speechRequest } from "../src/geminiTts.ts";
+import { extractUsage } from "../src/usage.ts";
 import { curateVoices, hybridVoicing, parseScene, resample, synthesizeScene } from "../src/audiobook.ts";
 import type { Synthesize } from "../src/audiobook.ts";
 import { emptyBible } from "../src/bible.ts";
@@ -16,13 +19,18 @@ function wav(samples: number[], rate = 24000, channels = 1): Buffer {
   return Buffer.concat([h, data]);
 }
 
-test("TTS prompts fence direction off from the transcript (or Gemini reads it aloud)", () => {
-  const p = buildTtsPrompt({ name: "Osmagus", profile: "Proud,\n honest.", scene: "A tavern.", line: '"I came to work."' });
-  assert.ok(p.startsWith("# AUDIO PROFILE: Osmagus\nProud, honest."));
-  assert.ok(p.includes("## THE SCENE\nA tavern."));
-  assert.ok(p.includes("### DIRECTOR'S NOTES"));
-  assert.ok(p.endsWith('#### TRANSCRIPT\n"I came to work."'), "the line is the last and only spoken section");
-  assert.ok(!buildTtsPrompt({ name: "N", profile: "x", line: "y" }).includes("THE SCENE"));
+test("speech carries only the words as text; the direction rides separately as the style (#114)", () => {
+  const p = buildTtsPrompt({ name: "Osmagus", profile: "Proud,\n honest.", scene: "A tavern.", notes: "wheezing", line: '"I came to work."' });
+  assert.deepEqual(p, { text: '"I came to work."', style: "wheezing. Proud, honest" }, "no name, no scene, nothing to read aloud");
+  assert.deepEqual(buildTtsPrompt({ name: "N", profile: "", line: " y " }), { text: "y" });
+  const req = speechRequest(p, "en-us-neno", "gemini-3.8-flash-tts") as any;
+  assert.deepEqual(req.input[0].content[0], { type: "text", text: '"I came to work."', annotations: [{ type: "speech_metadata", style: "wheezing. Proud, honest" }] });
+  assert.deepEqual(req.generation_config, { speech_config: [{ voice: "en-us-neno" }] });
+  assert.equal(legacyPrompt(p), `### DIRECTOR'S NOTES\nwheezing. Proud, honest\n\n#### TRANSCRIPT\n"I came to work."`, "Batch Mode's old single-text form");
+  const audio = speechAudio({ status: "completed", steps: [{ type: "model_output", content: [{ type: "audio", mime_type: "audio/wav", data: wav([0, 0.5]).toString("base64") }] }] });
+  assert.equal(audio.samples.length, 2);
+  assert.throws(() => speechAudio({ status: "failed", steps: [] }), /no audio \(failed\)/);
+  assert.deepEqual(extractUsage({ usage: { total_input_tokens: 987, total_cached_tokens: 0, total_output_tokens: 39, total_thought_tokens: 0 } }), { input: 987, output: 39, cacheRead: 0, cacheWrite: 0 }, "the ledger reads Interactions usage");
 });
 
 test("WAV decoding: 16-bit PCM to float samples, stereo averaged, junk rejected", () => {
@@ -44,7 +52,7 @@ test("Kokoro voice curation and resampling", () => {
   assert.ok(Object.values(GEMINI_VOICES).filter((g) => g === "Female").length >= 10);
 });
 
-test("hybrid voicing: Kokoro narrates, Gemini acts characters with bible profile and scene context, Kokoro on failure", async () => {
+test("hybrid voicing: Kokoro narrates, Gemini acts characters with their bible profile, Kokoro on failure", async () => {
   const bible = emptyBible();
   bible.characters.osmagus = { id: "osmagus", name: "Osmagus", traits: "Proud mountain craftsman.", goal: "", voice: "Slow, plain-spoken.", status: "active", gender: "male" };
   const assignment = { narrator: "af_heart", characters: { osmagus: "am_adam" }, genders: {}, gemini: { narrator: "Charon", characters: { osmagus: "Fenrir" } } };
@@ -55,7 +63,7 @@ test("hybrid voicing: Kokoro narrates, Gemini acts characters with bible profile
   const fallbacks: string[] = [];
   const { voiceFor, synth } = hybridVoicing({
     bible, assignment, narration: "kokoro", dialogue: "gemini", kokoroSynth,
-    speak: async (prompt, voice) => { if (fail) throw new Error("quota"); geminiCalls.push([prompt, voice]); return { samples: new Float32Array(160), sampleRate: 16000 }; },
+    speak: async (prompt, voice) => { if (fail) throw new Error("quota"); geminiCalls.push([legacyPrompt(prompt), voice]); return { samples: new Float32Array(160), sampleRate: 16000 }; },
     onFallback: (speaker) => fallbacks.push(speaker)
   });
   assert.equal(voiceFor("narrator"), "af_heart");
@@ -66,8 +74,8 @@ test("hybrid voicing: Kokoro narrates, Gemini acts characters with bible profile
   assert.equal(geminiCalls.length, 1);
   const [prompt, voice] = geminiCalls[0];
   assert.equal(voice, "Fenrir");
-  assert.ok(prompt.includes("# AUDIO PROFILE: Osmagus\nProud mountain craftsman. Voice: Slow, plain-spoken."));
-  assert.ok(prompt.includes("## THE SCENE\nThe guild men stared."), "the preceding narration is the scene");
+  assert.ok(prompt.includes("Proud mountain craftsman. Voice: Slow, plain-spoken"), "their profile is the style");
+  assert.ok(!prompt.includes("The guild men stared"), "the scene isn't sent (no field for it; it would be read aloud)");
   assert.ok(prompt.endsWith('#### TRANSCRIPT\n"I came to work,"'));
   // Narration went to Kokoro; Gemini's 16 kHz line was resampled to 24 kHz (160 -> 240 samples).
   assert.deepEqual(kokoroCalls.map(([, v]) => v), ["af_heart", "af_heart"]);

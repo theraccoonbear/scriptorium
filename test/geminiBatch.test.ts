@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { legacyPrompt } from "../src/geminiTts.ts";
+import type { SpeechInput } from "../src/geminiTts.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,8 +43,8 @@ test("batches group a speaker's lines (and tone) in story order, capped in size"
   ]);
   assert.equal(planBatches(pieces, 1400, 1).length, 6, "a line cap splits batches");
   const prompt = batchPrompt(batches[1], { name: "Nell Ashby", profile: "A midwife." });
-  assert.ok(prompt.includes("Perform every line curt.") && prompt.includes(BATCH_PAUSE_NOTE));
-  assert.ok(prompt.endsWith('#### TRANSCRIPT\n"You\'re him."\n\n"Nell Ashby."'));
+  assert.ok(prompt.style?.includes("Perform every line curt") && prompt.style.includes(BATCH_PAUSE_NOTE.replace(/\.$/, "")), "direction rides as the style, not in the text");
+  assert.equal(prompt.text, '"You\'re him."\n\n"Nell Ashby."');
 });
 
 test("audio is cut at the longest silences; a dramatic pause inside a line is not a cut", () => {
@@ -81,7 +83,7 @@ test("a whole scene is voiced in batches: one request per speaker (and tone), ev
   bible.characters.edrick = { id: "edrick", name: "Edrick Vell", traits: "", goal: "", voice: "sparse", status: "active" };
   const prompts: string[] = [];
   // Answers with one burst per transcript line, two-second gaps between.
-  const speak = async (prompt: string) => {
+  const speak = async (input: SpeechInput) => { const prompt = legacyPrompt(input);
     prompts.push(prompt);
     const lines = prompt.split("#### TRANSCRIPT\n")[1].split("\n\n");
     return { samples: audio(lines.flatMap((_, i) => (i ? [{ silence: 2 }, { sound: 1 }] : [{ sound: 1 }]))), sampleRate: RATE };
@@ -93,8 +95,8 @@ test("a whole scene is voiced in batches: one request per speaker (and tone), ev
   assert.equal(out.size, all.length, "every piece has audio");
   // narrator (4 pieces), nell untoned (1), nell curt (2), edrick (1) = 4 requests for 8 pieces
   assert.equal(prompts.length, 4);
-  assert.ok(prompts.some((p) => p.startsWith("# AUDIO PROFILE: Nell Ashby") && p.includes("Perform every line curt.")));
-  assert.ok(prompts.every((p) => p.includes(BATCH_PAUSE_NOTE)));
+  assert.ok(prompts.some((p) => p.includes("Perform every line curt")));
+  assert.ok(prompts.every((p) => p.includes(BATCH_PAUSE_NOTE.slice(0, -1))));
 });
 
 test("palettes are designed from the whole script; tagging picks each line's tone from them", async () => {
@@ -160,7 +162,7 @@ test("a batch that won't cut is halved (two requests), not voiced line by line",
   const bible = emptyBible();
   const sizes: number[] = [];
   // Gemini runs batches of more than two lines together (no pauses); two or fewer come out clean.
-  const speak = async (prompt: string) => {
+  const speak = async (input: SpeechInput) => { const prompt = legacyPrompt(input);
     const lines = prompt.split("#### TRANSCRIPT\n")[1].split("\n\n");
     sizes.push(lines.length);
     const parts = lines.length > 2 ? [{ sound: lines.length }] : lines.flatMap((_, i) => (i ? [{ silence: 2 }, { sound: 1 }] : [{ sound: 1 }]));
@@ -182,7 +184,7 @@ test("narrator batches are smaller than character batches", () => {
 test("an all-Gemini story never falls back to Kokoro: a bare retry, then the shortest take", async () => {
   const { hybridVoicing, synthesizeScene } = await import("../src/audiobook.ts");
   const bible = emptyBible();
-  bible.characters.nell = { id: "nell", name: "Nell", traits: "", goal: "", voice: "", status: "active" };
+  bible.characters.nell = { id: "nell", name: "Nell", traits: "a midwife", goal: "", voice: "", status: "active" };
   const assignment = { narrator: "af_heart", characters: { nell: "af_bella" }, genders: {}, gemini: { narrator: "Charon", characters: { nell: "Kore" } } };
   const kokoro: string[] = [];
   const kokoroSynth = async function* (text: string, voice: string) { kokoro.push(voice); yield { text, audio: new Float32Array(10) }; };
@@ -191,7 +193,7 @@ test("an all-Gemini story never falls back to Kokoro: a bare retry, then the sho
     const prompts: string[] = [];
     const kept: number[] = [];
     // The full prompt is always read aloud (too long); the bare line works only if bareWorks.
-    const speak = async (prompt: string) => { prompts.push(prompt); const long = prompt.includes("#") || !bareWorks; return { samples: audio([{ sound: long ? 20 : 1 }]), sampleRate: RATE }; };
+    const speak = async (input: SpeechInput) => { const prompt = legacyPrompt(input); prompts.push(prompt); const long = prompt.includes("#") || !bareWorks; return { samples: audio([{ sound: long ? 20 : 1 }]), sampleRate: RATE }; };
     const { voiceFor, synth } = hybridVoicing({ bible, assignment, narration: "gemini", dialogue: "gemini", kokoroSynth, speak, ...(fallback ? { fallback } : {}), onKeptLong: (_s, sec) => kept.push(sec) });
     await synthesizeScene(scene, voiceFor, synth);
     return { prompts, kept };
@@ -233,12 +235,12 @@ test("batch cache: a take is paid for once — a re-run after a quota stop only 
   const scene = parseScene(0, prose, new Set(["nell", "edrick"]));
   const bible = emptyBible();
   const voiceFor = (s: string) => `gemini:${s}`;
-  const transcriptOf = (prompt: string) => prompt.split("#### TRANSCRIPT\n")[1].split("\n\n");
-  const answer = (prompt: string) => ({ samples: audio(transcriptOf(prompt).flatMap((_, i) => (i ? [{ silence: 2 }, { sound: 1 }] : [{ sound: 1 }]))), sampleRate: RATE });
+  const transcriptOf = (prompt: string | SpeechInput) => (typeof prompt === "string" ? prompt.split("#### TRANSCRIPT\n")[1] : prompt.text).split("\n\n");
+  const answer = (prompt: string | SpeechInput) => ({ samples: audio(transcriptOf(prompt).flatMap((_, i) => (i ? [{ silence: 2 }, { sound: 1 }] : [{ sound: 1 }]))), sampleRate: RATE });
 
   // Run 1: the third request hits the daily cap.
   const asked1: string[] = [];
-  const speak1 = async (prompt: string) => { asked1.push(transcriptOf(prompt)[0]); if (asked1.length === 3) throw new TtsRateLimitError("HTTP 429"); return answer(prompt); };
+  const speak1 = async (input: SpeechInput) => { const prompt = legacyPrompt(input); asked1.push(transcriptOf(prompt)[0]); if (asked1.length === 3) throw new TtsRateLimitError("HTTP 429"); return answer(prompt); };
   await assert.rejects(voiceSceneBatches(scene, "speaker", { bible, voiceFor, speak: speak1, cache, model: "m", onProgress: () => {} }), /rate limit/);
   assert.equal(asked1.length, 3);
 
@@ -269,7 +271,7 @@ test("a take that didn't cut cleanly is never kept", async () => {
   const batch = { speaker: "nell", pieces: [{ order: 0, speaker: "nell", text: '"A."' }, { order: 1, speaker: "nell", text: '"B."' }] };
   const who = { name: "Nell", profile: "" };
   await assert.rejects(voiceBatch(async () => ({ samples: audio([{ sound: 30 }]), sampleRate: RATE }), batch, "Kore", who, RATE, 3, { cache, model: "m" }));
-  assert.equal(await cache.get(batchKey(batchPrompt(batch, who), "Kore", "m")), undefined);
+  assert.equal(await cache.get(batchKey(JSON.stringify(batchPrompt(batch, who)), "Kore", "m")), undefined);
 });
 
 test("batched pieces get natural pauses back: a beat between turns, less within a paragraph", async () => {
@@ -293,7 +295,7 @@ test("voice batches run in parallel up to the limit, halving included; the limit
   let inFlight = 0;
   let peak = 0;
   let firstNarrator = true;
-  const speak = async (prompt: string) => {
+  const speak = async (input: SpeechInput) => { const prompt = legacyPrompt(input);
     inFlight++; peak = Math.max(peak, inFlight);
     await new Promise((r) => setTimeout(r, 10));
     inFlight--;

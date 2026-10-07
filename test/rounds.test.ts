@@ -8,6 +8,8 @@ import { formatAudition, pickAudition, runAudition } from "../src/auditions.ts";
 import { formatShareList } from "../src/reviewSheets.ts";
 import { EventLog } from "../src/eventlog.ts";
 import type { Role } from "../src/types.ts";
+import type { SpeechInput } from "../src/geminiTts.ts";
+import { legacyPrompt } from "../src/geminiTts.ts";
 
 // Review rounds: every audition, redo and retake lands in its own numbered
 // folder under review/rounds/, so review/ itself holds only the current state.
@@ -58,13 +60,13 @@ async function cast() {
   return { runDir, storyFile, events: log.events };
 }
 
-const speak = async (_prompt: string, voice: string) => ({ samples: new Float32Array(24000 * (voice === "sulafat" ? 3 : 4)), sampleRate: 24000 });
+const speak = async (_input: SpeechInput, voice: string) => ({ samples: new Float32Array(24000 * (voice === "sulafat" ? 3 : 4)), sampleRate: 24000 });
 const encodeMp3 = async (_wav: string, mp3: string) => { await writeFile(mp3, "mp3"); };
 
 test("an audition: the current voice first, then the candidates, each reading the reel line under the new direction", async () => {
   const { runDir, events } = await cast();
   const prompts: string[] = [];
-  const { round, info } = await runAudition({ runDir, events, id: "hellga", direction: "a deep, low contralto", voices: ["en-us-csagent-5", "sulafat", "en-us-tova"], encodeMp3, speak: async (p, v) => { prompts.push(`${v}: ${p}`); return speak(p, v); } });
+  const { round, info } = await runAudition({ runDir, events, id: "hellga", direction: "a deep, low contralto", voices: ["en-us-csagent-5", "sulafat", "en-us-tova"], encodeMp3, speak: async (p, v) => { prompts.push(`${v}: ${legacyPrompt(p)}`); return speak(p, v); } });
   assert.equal(round.name, "01-auditions-hellga");
   assert.deepEqual(info.candidates.map((c) => [c.n, c.voice, c.start]), [[1, "sulafat", 0], [2, "en-us-csagent-5", 5], [3, "en-us-tova", 11]], "current first, not twice; 2 s between");
   assert.ok(prompts.every((p) => p.includes("a deep, low contralto") && p.includes("I counted eight")));

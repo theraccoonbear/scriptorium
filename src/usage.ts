@@ -59,6 +59,11 @@ export function extractUsage(data: unknown): Usage | undefined {
   }
   const u = d.usage;
   if (!u) return undefined;
+  if (u.total_input_tokens !== undefined || u.total_output_tokens !== undefined) {
+    // Gemini Interactions: totals across the interaction; thinking is billed as output.
+    const cached = n(u.total_cached_tokens);
+    return { input: n(u.total_input_tokens) - cached, output: n(u.total_output_tokens) + n(u.total_thought_tokens), cacheRead: cached, cacheWrite: 0 };
+  }
   if (u.prompt_tokens !== undefined || u.completion_tokens !== undefined) {
     // OpenAI-compatible chat: prompt includes cached tokens.
     const cached = n(u.prompt_tokens_details?.cached_tokens);
