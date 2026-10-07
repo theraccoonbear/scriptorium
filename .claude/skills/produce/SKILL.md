@@ -67,6 +67,7 @@ After `--only voices`, build the reel (`npm run review -- <story.json> voices`) 
 - **Audition new voices:** when the author wants a voice changed ("deeper", "stockier"), run `npm run audition -- <story.json> lemuel --direction "<how they should sound now>"` (cents). It reads their reel line in their current voice and five library voices the voice director picks for that direction; `--voices a,b,c` auditions specific voices instead. Send the round's `all.mp3` and `legend.txt`. When they choose, `npm run audition -- <story.json> lemuel --pick N` pins the voice in the story file, makes the direction their vocal line on the sheet, and remakes their sample and the reel. Send the new reel.
 - **Recast from scratch:** edit the character's `vocal` on the sheet, then `npm run make -- <story.json> --only voices --redo voice:lemuel`.
 - A voice can also be pinned by hand in the story file: `audiobook.geminiVoices: { "lemuel": "<voice id>" }`.
+- **Speech check:** every Gemini take is checked against its script and redone when a word comes out wrong. Lines still wrong after 3 takes go in a `speech-check` review round: send its `legend.txt` and tell the author. When a name keeps failing, propose a pronunciation (`audiobook.pronunciations`) and confirm it with the author.
 - **Narrator or own voice:** `"voiced": true|false` on the sheet moves a speaker between the cast and the narrator (then re-run `--only voices`).
 
 ## Phase 4: shots

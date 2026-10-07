@@ -1,12 +1,14 @@
 import { postJson, requireKey } from "./providers.ts";
+import { c } from "./colors.ts";
+import { checkedSpeaker, geminiHeardCheck } from "./speechCheck.ts";
+import type { HeardCheck, Unverified } from "./speechCheck.ts";
 import { microBatcher } from "./batchJobs.ts";
 import type { BatchJobs } from "./batchJobs.ts";
 
-// Gemini TTS for acted lines. Gemini TTS is an LLM that reads its whole prompt
-// as context, so direction must be fenced off: an AUDIO PROFILE / THE SCENE /
-// DIRECTOR'S NOTES preamble and a "#### TRANSCRIPT" delimiter. Without that
-// structure it reads the direction aloud (verified: "Say …:" prefixes and
-// [bracketed] notes were both spoken).
+// Gemini TTS for acted lines. Gemini 3.8 TTS reads its text verbatim, so a
+// request carries only the words as text and the direction as a style
+// annotation (#114); and since it can still say a different word than it was
+// given, every take is checked against its script (speechCheck.ts).
 
 export const DEFAULT_GEMINI_TTS_MODEL = "gemini-3.8-flash-tts";
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
@@ -90,6 +92,13 @@ export function decodeWav(buf: Buffer): { samples: Float32Array; sampleRate: num
 }
 
 export interface GeminiTtsSpec {
+  // Each take is listened to against its script and redone when a word comes
+  // out wrong (speechCheck.ts); false turns that off.
+  check?: HeardCheck | false;
+  onUnverified?: (u: Unverified) => void;  // a line still wrong after its tries (default: a warning)
+  // How to say the story's hard words ("McPoyle": "mick-POYL, rhymes with boil"):
+  // a line with one gets "Pronounce McPoyle as …" added to its direction.
+  pronunciations?: Pronunciations;
   model?: string;
   apiKeyEnv?: string;
   timeoutMs?: number;
@@ -138,7 +147,38 @@ export function isTtsRateLimit(err: unknown): boolean {
 // tries again (up to about two minutes) instead of falling back to Kokoro.
 const RATE_LIMIT_WAITS_MS = [15000, 20000, 30000, 30000, 30000];
 
+// How to say the story's hard words. A string is a hint added to the line's
+// direction ("mick-POYL (rhymes with boil)"): the words stay as written. When
+// the model still reads the spelling, { say: "Ryan" } replaces the word in what
+// is spoken (only there: the story and subtitles keep it), and the speech
+// check compares against what was said.
+export type Pronunciations = Record<string, string | { say: string }>;
+
+export function withPronunciations(input: SpeechInput, guide: Pronunciations = {}): SpeechInput {
+  const pattern = (word: string) => new RegExp(`(^|[^\\p{L}])(${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})(?='s|’s|s?(?:$|[^\\p{L}]))`, "giu");
+  let text = input.text;
+  const hints: string[] = [];
+  for (const [word, how] of Object.entries(guide)) {
+    if (!pattern(word).test(text)) continue;
+    if (typeof how === "string") { if (how.trim()) hints.push(`Pronounce ${word} as ${how.trim()}`); }
+    else if (how?.say?.trim()) text = text.replace(pattern(word), (_m, pre: string) => `${pre}${how.say.trim()}`);
+  }
+  if (text === input.text && hints.length === 0) return input;
+  return { ...input, text, ...(hints.length || input.style ? { style: [input.style, ...hints].filter(Boolean).join(". ") } : {}) };
+}
+
 export function geminiSpeaker(spec: GeminiTtsSpec = {}, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Speak {
+  const paced = pacedSpeaker(spec, sleep);
+  // Pronunciations first, so the check hears against what was asked for.
+  const guided = (speak: Speak): Speak => (spec.pronunciations ? (input, voice) => speak(withPronunciations(input, spec.pronunciations), voice) : speak);
+  if (spec.check === false) return guided(paced);
+  return guided(checkedSpeaker(paced, spec.check ?? geminiHeardCheck({ ...(spec.apiKeyEnv ? { apiKeyEnv: spec.apiKeyEnv } : {}) }), {
+    onRetake: (problems) => console.error(`[scriptorium]   ${c.retry(`speech check: ${problems.join("; ")} — retaking`)}`),
+    onUnverified: spec.onUnverified ?? ((u) => console.error(`[scriptorium]   ${c.retry(`speech check: still wrong after 3 takes, kept the closest — "${u.script.slice(0, 80)}": ${u.problems.join("; ")}`)}`))
+  }));
+}
+
+function pacedSpeaker(spec: GeminiTtsSpec, sleep: (ms: number) => Promise<void>): Speak {
   const model = spec.model ?? DEFAULT_GEMINI_TTS_MODEL;
   const call = geminiCall(spec, model);
   const reserve = slotLimiter(spec.minIntervalMs ?? 0, sleep);

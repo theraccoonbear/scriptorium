@@ -85,3 +85,15 @@ export async function imageRound(runDir: string, keys: string[], info: RoundInfo
   }
   return round;
 }
+
+// Lines the speech check couldn't get right: what the script says, what was heard.
+export async function speechCheckRound(runDir: string, subject: string, lines: { script: string; heard: string; problems: string[] }[]): Promise<Round | undefined> {
+  if (lines.length === 0) return undefined;
+  const round = await newRound(runDir, { kind: "speech-check", subject, lines });
+  await writeFile(join(round.dir, "legend.txt"), [
+    `speech check: ${lines.length} line${lines.length === 1 ? "" : "s"} still said differently after 3 takes (kept the closest take). Listen to each; re-voice or accept.`,
+    "",
+    ...lines.flatMap((l, i) => [`${i + 1}. script: ${l.script}`, `   heard:  ${l.heard}`, `   ${l.problems.join("; ")}`, ""])
+  ].join("\n"));
+  return round;
+}
