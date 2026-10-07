@@ -326,7 +326,12 @@ export interface StoryConfig {
   // A prescriptive art style that overrides the Creator's choice.
   // The author's overrides of the story's art style and art direction for the
   // extras (#49): for all of them, or just the key art or the cast photo.
-  extras?: ExtrasLook & { keyArt?: ExtrasLook; castPhoto?: ExtrasLook };
+  extras?: ExtrasLook & {
+    keyArt?: ExtrasLook;
+    castPhoto?: ExtrasLook;
+    logo?: { font?: string; treatment?: "gilded" | "silver" | "plain" };  // the title logo (#128)
+    box?: boolean;  // the box art (default true)
+  };
   artStyle?: string;
   // How much say the critic has over a scene (see CRITIC_MODES). Default "blocking".
   critic?: CriticMode;

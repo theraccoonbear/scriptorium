@@ -1,4 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { boxArt, renderLogo, SHELF, shelfCover } from "./titleArt.ts";
+import type { BoxCopy } from "./titleArt.ts";
 import type { Pronunciations } from "./geminiTts.ts";
 import { basename, join } from "node:path";
 import { combineContexts, contextFile } from "./context.ts";
@@ -17,12 +19,12 @@ import type { Compose, MusicSettings, VoiceCheck } from "./music.ts";
 import type { TitleSettings } from "./titles.ts";
 import type { EncoderChoice } from "./video.ts";
 import { BatchImageBackend, CAST_PHOTO_KEY, CAST_PHOTO_LABEL, KEY_ART, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig } from "./artist.ts";
-import type { ImageBackend, Inspector, Shrink } from "./artist.ts";
+import type { ArtManifest, ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
 import { designRun, needsTagging, proseHash, sceneTags, tagRun } from "./tagging.ts";
-import { writeAuditions } from "./roles.ts";
+import { writeAuditions, writeBoxCopy } from "./roles.ts";
 import { castVoiceRun, narratorReads } from "./casting.ts";
 import { speechCheckRound } from "./rounds.ts";
 import type { CheckReport } from "./speechCheck.ts";
@@ -221,7 +223,7 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
 // The extras phase (#49): key art (2:3, 16:9, 1:1) and a cast photo, in the
 // story's art style, at 2K; directed once, then rendered like the cover.
 // redo: these extras keys again (a new prompt with redirect, or just new takes).
-export async function extrasStep(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, opts: { redo?: string[]; redirect?: boolean; notes?: string } = {}) {
+export async function extrasStep(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, opts: { redo?: string[]; redirect?: boolean; notes?: string; title?: string; subtitle?: string; base?: string } = {}) {
   return accounted(runDir, config, "extras", async () => {
     const approved = new Set((await readApprovals(runDir)).art);
     const roles = buildRoleProviders(config);
@@ -237,8 +239,45 @@ export async function extrasStep(runDir: string, config: StoryConfig, events: St
     const x = config.extras ?? {};
     const look = (own?: { style?: string; direction?: string }) => ({ ...(own?.style ?? x.style ? { style: own?.style ?? x.style } : {}), ...(own?.direction ?? x.direction ? { direction: own?.direction ?? x.direction } : {}) });
     const overrides = Object.fromEntries([...Object.keys(KEY_ART).map((k) => [k, look(x.keyArt)]), [CAST_PHOTO_KEY, look(x.castPhoto)]].filter(([, o]) => Object.keys(o as object).length));
-    return artStepInner(runDir, config, log.events, force, { approved, keys, ...(Object.keys(overrides).length ? { overrides } : {}), ...(opts.redo?.length ? { redoKeys: opts.redo } : {}) });
+    const result = await artStepInner(runDir, config, log.events, force, { approved, keys, ...(Object.keys(overrides).length ? { overrides } : {}), ...(opts.redo?.length ? { redoKeys: opts.redo } : {}) });
+    await composeExtras(runDir, config, log, roles, { ...(opts.title ? { title: opts.title } : {}), ...(opts.subtitle ? { subtitle: opts.subtitle } : {}), ...(opts.base ? { base: opts.base } : {}) });
+    return result;
   });
+}
+
+// The title logo, shelf covers and box art (#128), composited in code from
+// the approved art: free, and rebuilt every time the extras run.
+async function composeExtras(runDir: string, config: StoryConfig, log: EventLog, roles: ReturnType<typeof buildRoleProviders>, o: { title?: string; subtitle?: string; base?: string }) {
+  if (!o.title?.trim()) { console.error(`[scriptorium] ${c.dim("no title in the story file — no logo, covers or box")}`); return; }
+  const artDir = join(runDir, "art");
+  const extraDir = join(artDir, "extra");
+  const manifest: ArtManifest = JSON.parse(await readFile(join(artDir, "art.json"), "utf8"));
+  const { logo, stacked, mono } = await renderLogo({ title: o.title, ...(o.subtitle ? { subtitle: o.subtitle } : {}), outDir: extraDir, ...(config.extras?.logo ? { settings: config.extras.logo } : {}), ...(o.base ? { base: o.base } : {}) });
+  for (const [name, c2] of Object.entries(SHELF)) {
+    const key = manifest[`extra-${c2.from}`];
+    if (key) await shelfCover(join(artDir, key.file), c2.stacked ? stacked : logo, join(extraDir, `${name}.jpg`), c2.size, c2.logoWidth);
+  }
+  console.error(`[scriptorium] ${c.ok(`logo and shelf covers → ${extraDir}/`)}`);
+  if (config.extras?.box === false || !manifest["extra-keyart-2x3"]) return;
+  // The box copy, written once (again when the title or story changes).
+  const committed = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);
+  const source = proseHash(JSON.stringify({ title: o.title, beats: committed.map((d) => d.beat) }));
+  let copy = (log.events.filter((e) => e.type === "box_copy").map((e) => e.data as { source: string } & BoxCopy).reverse().find((d) => d.source === source));
+  if (!copy && roles.artdirector) {
+    const out = await writeBoxCopy(roles.artdirector, { bible: replay(log.events), title: o.title, beats: committed.map((d) => d.beat) });
+    copy = { source, ...out.result };
+    await log.append("box_copy", copy);
+  }
+  if (!copy) return;
+  // Four stills from across the story: the approved scene shots, spread out.
+  const approved = new Set((await readApprovals(runDir)).art);
+  const shots = Object.keys(manifest).filter((k) => /^scene-\d+-\d+$/.test(k)).sort();
+  const pool = shots.filter((k) => approved.has(k)).length >= 4 ? shots.filter((k) => approved.has(k)) : shots;
+  const stills = pool.length ? [0, 1, 2, 3].map((i) => join(artDir, manifest[pool[Math.min(pool.length - 1, Math.floor((i + 0.5) * pool.length / 4))]].file)) : [];
+  if (stills.length < 4) return;
+  await mkdir(join(extraDir, "box"), { recursive: true });
+  await boxArt({ front: join(extraDir, "cover-2x3.jpg"), mono, stills, copy, out: join(extraDir, "box", "box.jpg"), ...(o.base ? { base: o.base } : {}) });
+  console.error(`[scriptorium] ${c.ok(`box art → ${join(extraDir, "box", "box.jpg")}`)}`);
 }
 
 // With a budget, triage retakes are capped at what's left — worked out when

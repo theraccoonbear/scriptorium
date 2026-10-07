@@ -334,7 +334,7 @@ const defaultRunners: StepRunners = {
   // make never re-renders finished work; the individual commands take --force for that.
   art: async (s, events, shots) => { await artStep(s.runDir, s.config, events, false, shots ? { shotRedo: shots.redo, replan: shots.replan, ...(shots.note ? { notes: shots.note } : {}) } : {}); },
   // --redo extras directs the key art and cast photo again; --redo extra-cast just retakes one.
-  extras: async (s, events, redo, notes) => { await extrasStep(s.runDir, s.config, events, false, { redo: redo.filter((r) => r !== "extras"), redirect: redo.includes("extras"), ...(notes ? { notes } : {}) }); },
+  extras: async (s, events, redo, notes) => { await extrasStep(s.runDir, s.config, events, false, { redo: redo.filter((r) => r !== "extras"), redirect: redo.includes("extras"), ...(notes ? { notes } : {}), ...(s.title ? { title: s.title } : {}), ...(s.subtitle ? { subtitle: s.subtitle } : {}), base: dirname(resolve(s.file)) }); },
   audiobook: async (s, events) => { await audiobookStep(s.runDir, events, audiobookOptions(s)); },
   // Off unless the story file has a "music" block.
   music: async (s) => {

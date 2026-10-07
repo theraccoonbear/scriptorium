@@ -123,6 +123,9 @@ export class MockProvider {
             ]
           });
         }
+        if (ctx.task === "boxcopy") {
+          return JSON.stringify({ tagline: "Mock tagline.", synopsis: "Mock synopsis of the story.", credits: "A Mock Production · starring Everyone" });
+        }
         if (ctx.mode === "extras") {
           return JSON.stringify({ keyArt: "Mock key art: the hero on a ridge at dusk.", castPhoto: "Mock cast photo: the cast posing on set.", castCharacters: (ctx.knownIds ?? []).slice(0, 3) });
         }

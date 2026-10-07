@@ -321,6 +321,14 @@ Output goes to `<run>/art/`: `character-<id>`, `location-<id>`, `prop-<id>`, `sc
 
 The most specific setting wins. Changing one re-makes only the extras it applies to.
 
+With a `title` in the story file, the extras phase also builds, in code and for free:
+
+- **A title logo:** the title and subtitle typeset in a gold-gilded treatment, so the spelling is always exact. It's written in three versions: `logo.png`, a two-line `logo-stacked.png`, and a white `logo-mono.png`.
+- **Shelf covers:** the key art with the logo over it, at the sizes streaming apps use: `cover-2x3.jpg` (2000×3000), `cover-16x9.jpg` (3840×2160) and `cover-1x1.jpg` (2000×2000).
+- **Box art:** a VHS/DVD case laid out flat, back, spine and front, in `box/box.jpg`. The back has a tagline, four approved stills, a synopsis, a billing block and a rating box. The art director writes the copy once (it's rewritten only when the title or story changes).
+
+All of these go in `art/extra/`, and `npm run review -- <story.json> extras` adds `review/extras-covers.jpg`. To change the logo, set `"extras": { "logo": { "font": "EB Garamond", "treatment": "silver" } }`. The font can be a bundled one or a system font, and the treatment `gilded`, `silver` or `plain`. `"box": false` skips the box.
+
 ## Video
 
 `video` turns a run's art and audiobook into:

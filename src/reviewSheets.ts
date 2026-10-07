@@ -199,6 +199,15 @@ export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ f
     await run("magick", montageArgs(tiles, out));
     files.push(out);
   }
+  if (kind === "extras") {
+    // The logo, shelf covers and box, made in code from the extras (#128).
+    const made = ["logo.png", "cover-2x3.jpg", "cover-16x9.jpg", "cover-1x1.jpg", "box/box.jpg"].filter((f) => present.has(join("extra", f)));
+    if (made.length) {
+      const out = join(outDir, "extras-covers.jpg");
+      await run("magick", montageArgs(made.map((f) => ({ label: f.replace(/\.(png|jpg)$/, ""), file: join(artDir, "extra", f) })), out));
+      files.push(out);
+    }
+  }
   if (files.length === 0) throw new Error(`no ${kind} images yet in ${artDir}`);
   return { files };
 }
