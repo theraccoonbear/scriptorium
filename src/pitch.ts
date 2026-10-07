@@ -1,5 +1,6 @@
 import { buildScenes } from "./audiobook.ts";
 import { planBatches } from "./geminiBatch.ts";
+import { readsVerbatim } from "./geminiTts.ts";
 import { buildArtJobs } from "./artist.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 import { readLedger, usd } from "./usage.ts";
@@ -37,7 +38,7 @@ export interface PitchInput {
   // refsOnly: the refs phase — just references, `refTargets` of them (exact when known).
   art?: { maxAttempts?: number; retakes?: number; concurrency?: number; skip?: boolean; batch?: boolean; refsOnly?: boolean; refTargets?: number };
   // samplesOnly: the voices phase — one short sample per speaker (`speakers` of them).
-  audio?: { narration?: "kokoro" | "gemini"; dialogue?: "kokoro" | "gemini"; geminiMode?: GeminiMode; geminiConcurrency?: number; skip?: boolean; geminiBatch?: boolean; samplesOnly?: boolean; speakers?: number };
+  audio?: { narration?: "kokoro" | "gemini"; dialogue?: "kokoro" | "gemini"; geminiMode?: GeminiMode; geminiConcurrency?: number; skip?: boolean; geminiModel?: string; geminiBatch?: boolean; samplesOnly?: boolean; speakers?: number };
   budgetUsd?: number;
   artManifest?: Record<string, { prompt: string }>;  // art/art.json: images already rendered
   scenesVoiced?: number;                             // scenes whose audio is already rendered
@@ -126,7 +127,8 @@ export function pitch(input: PitchInput): Pitch {
     }
     geminiRequests = Math.round(geminiRequests * 1.2); // retakes of reads that ran long
   }
-  const batchVoice = audio.geminiBatch === true && (audio.geminiMode ?? "line") !== "line" && !audio.samplesOnly;
+  // Batch Mode can't carry direction to models that read their text verbatim: those are voiced live.
+  const batchVoice = audio.geminiBatch === true && (audio.geminiMode ?? "line") !== "line" && !audio.samplesOnly && !readsVerbatim(audio.geminiModel);
   let audioUsd = seconds * geminiShare * 1.2 * TYPICAL.ttsUsdPerSecond * (batchVoice ? 0.5 : 1);
   if (audio.samplesOnly) {
     // A sample of each speaker: about a dozen seconds each, live.

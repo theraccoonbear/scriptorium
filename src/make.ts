@@ -60,7 +60,7 @@ export interface StoryFile {
     pauseScale?: number;                         // batched modes: scales the pauses between pieces (default 1)
     casting?: boolean;                           // cast Gemini voices from the library (default true)
     geminiConcurrency?: number;                  // batched modes: voice batches at once (default 2; 1 = one at a time)
-    geminiBatch?: boolean;                       // batched modes through Gemini Batch Mode (half price, slower)
+    geminiBatch?: boolean;                       // batched modes through Gemini Batch Mode (half price, slower); not for 3.8+ TTS, which is voiced live (#114)
     castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
     castMin?: number;                            // characters spoken to earn a voice of their own (default 120); the rest are read by the narrator
     designVoices?: string[];                     // character ids to give a designed voice
@@ -373,7 +373,7 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
       ...(steps.includes("refs") && !steps.includes("art") ? { refsOnly: true, refTargets: refTargets(events) } : {})
     },
     audio: {
-      narration: story.audiobook.narration, dialogue: story.audiobook.dialogue, geminiMode: story.audiobook.geminiMode, geminiConcurrency: story.audiobook.geminiConcurrency, geminiBatch: story.audiobook.geminiBatch,
+      narration: story.audiobook.narration, dialogue: story.audiobook.dialogue, geminiMode: story.audiobook.geminiMode, ...(story.audiobook.geminiModel ? { geminiModel: story.audiobook.geminiModel } : {}), geminiConcurrency: story.audiobook.geminiConcurrency, geminiBatch: story.audiobook.geminiBatch,
       skip: !(steps.includes("audiobook") || steps.includes("voices")),
       ...(steps.includes("voices") && !steps.includes("audiobook") ? { samplesOnly: true, speakers: lineCounts(events).size - narratorReads(events, { min: story.audiobook.castMin, pinned: story.audiobook.geminiVoices }).length } : {})
     },
