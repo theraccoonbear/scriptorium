@@ -17,7 +17,7 @@ import { applyTags, renderScript, sceneTags, speakerAliases, taggedCharacters, v
 import { buildTtsPrompt, DEFAULT_GEMINI_TTS_MODEL, GEMINI_VOICES, geminiSpeaker } from "./geminiTts.ts";
 import type { SpeechInput } from "./geminiTts.ts";
 import type { Speak } from "./geminiTts.ts";
-import { geminiBatchSpeaker, isTtsRateLimit } from "./geminiTts.ts";
+import { geminiBatchSpeaker, isTtsRateLimit, readsVerbatim } from "./geminiTts.ts";
 import { geminiBatchJobs } from "./batchJobs.ts";
 import { isBudgetError } from "./usage.ts";
 import type { Bible, SceneCommittedData, StoryEvent } from "./types.ts";
@@ -818,7 +818,9 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   // Batch Mode only for the batched modes: line mode voices one line at a time,
   // so each line would wait minutes for a job of one. Single-line fallbacks stay live.
   if (opts.geminiBatch && mode === "line") console.error("[scriptorium] geminiBatch applies to geminiMode \"palette\" or \"speaker\" — voicing live");
-  const batchSpeak = opts.geminiBatch && mode !== "line" && !opts.speak
+  const verbatim = readsVerbatim(opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL);
+  if (opts.geminiBatch && mode !== "line" && verbatim) console.error(`[scriptorium] geminiBatch: ${opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL} takes direction only in a live request — voicing live (full price)`);
+  const batchSpeak = opts.geminiBatch && mode !== "line" && !verbatim && !opts.speak
     ? geminiBatchSpeaker(geminiBatchJobs({ stateFile: `${outDir}/batch-jobs.json`, log: (m) => console.error(`[scriptorium] ${m}`) }), { model: opts.geminiModel })
     : undefined;
   // Batched modes voice each scene's Gemini pieces up front; synth hands them out

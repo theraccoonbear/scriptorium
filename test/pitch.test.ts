@@ -50,3 +50,13 @@ test("the pitch warns about multi-day voicing and blown budgets, and uses the ru
   const none = pitch({ events: [], scenes: 1, art: { skip: true }, audio: { skip: true } });
   assert.match(formatPitch(none), /images: nothing to render\nvoice: nothing to voice/);
 });
+
+test("Batch Mode halves the voicing only for models that take direction in the text; 3.8 TTS is voiced live (#114)", async () => {
+  const { readsVerbatim } = await import("../src/geminiTts.ts");
+  assert.equal(readsVerbatim("gemini-3.8-flash-tts"), true);
+  assert.equal(readsVerbatim(), true, "the default model");
+  assert.equal(readsVerbatim("gemini-2.5-flash-preview-tts"), false);
+  const at = (geminiModel?: string, geminiBatch = true) => pitch({ events: [], scenes: 3, audio: { narration: "gemini", dialogue: "gemini", geminiMode: "palette", geminiBatch, ...(geminiModel ? { geminiModel } : {}) } }).audio.usd;
+  assert.equal(at(undefined), at(undefined, false), "3.8: full price, batch or not");
+  assert.ok(Math.abs(at("gemini-2.5-flash-preview-tts") - at("gemini-2.5-flash-preview-tts", false) / 2) < 1e-9, "an older model in Batch Mode: half");
+});
