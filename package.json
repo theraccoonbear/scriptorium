@@ -22,7 +22,8 @@
     "review": "node src/cli.ts review",
     "reshoot": "node --env-file-if-exists=.env src/cli.ts reshoot",
     "doctor": "node src/cli.ts doctor",
-    "audition": "node src/cli.ts audition"
+    "audition": "node src/cli.ts audition",
+    "canon": "node src/cli.ts canon"
   },
   "engines": {
     "node": ">=24"
