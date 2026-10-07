@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { checkedSpeaker, parseHeard } from "../src/speechCheck.ts";
-import type { Heard, Unverified } from "../src/speechCheck.ts";
+import type { CheckReport, Heard } from "../src/speechCheck.ts";
 
 // The speech check: a take that says a different word than its script
 // ("Liam McPoyle" → "Liam McCord") is redone; one still wrong is kept, reported.
@@ -15,37 +15,51 @@ test("the check's reply: problems listed, or a pass; an unreadable reply never p
   assert.equal(parseHeard('{"heard":"x"}').ok, false);
 });
 
-test("a wrong take is redone until one comes out right", async () => {
+test("a flagged take is redone; the line is reported with every take, the clean one kept", async () => {
   const verdicts: Heard[] = [
     { ok: false, heard: "Liam McCord.", problems: ['"McPoyle" → "McCord"'] },
     { ok: true, heard: "Liam McPoyle.", problems: [] }
   ];
   let takes = 0;
   const retakes: string[][] = [];
-  const unverified: Unverified[] = [];
-  const speak = checkedSpeaker(async () => take(++takes), async (_a, script) => { assert.equal(script, "Liam McPoyle."); return verdicts.shift()!; }, { onRetake: (p) => retakes.push(p), onUnverified: (u) => unverified.push(u) });
+  const reports: CheckReport[] = [];
+  const speak = checkedSpeaker(async () => take(++takes), async (_a, script) => { assert.equal(script, "Liam McPoyle."); return verdicts.shift()!; }, { onRetake: (p) => retakes.push(p), onReport: (r) => reports.push(r) });
   const audio = await speak({ text: "Liam McPoyle." }, "algenib");
   assert.equal(audio.samples.length, 2, "the second, clean take");
   assert.deepEqual(retakes, [['"McPoyle" → "McCord"']]);
-  assert.deepEqual(unverified, []);
+  assert.equal(reports.length, 1);
+  assert.deepEqual({ ok: reports[0].ok, kept: reports[0].kept, heard: reports[0].takes.map((t) => t.heard), sizes: reports[0].takes.map((t) => t.audio.samples.length) }, { ok: true, kept: 1, heard: ["Liam McCord.", "Liam McPoyle."], sizes: [1, 2] }, "the rejected take is kept for the author to hear");
 });
 
-test("still wrong after three takes: the closest is kept, and reported", async () => {
+test("a clean first take reports nothing", async () => {
+  const reports: CheckReport[] = [];
+  await checkedSpeaker(async () => take(1), async () => ({ ok: true, heard: "Up.", problems: [] }), { onReport: (r) => reports.push(r) })({ text: "Up." }, "v");
+  assert.deepEqual(reports, []);
+});
+
+test("still flagged after three takes: the closest is kept, all three reported", async () => {
   const problems = [["a", "b"], ["a"], ["a", "b", "c"]];
   let takes = 0;
-  const unverified: Unverified[] = [];
-  const speak = checkedSpeaker(async () => take(++takes), async () => { const p = problems.shift()!; return { ok: false, heard: `heard ${p.length}`, problems: p }; }, { onUnverified: (u) => unverified.push(u) });
+  const reports: CheckReport[] = [];
+  const speak = checkedSpeaker(async () => take(++takes), async () => { const p = problems.shift()!; return { ok: false, heard: `heard ${p.length}`, problems: p }; }, { onReport: (r) => reports.push(r) });
   const audio = await speak({ text: "Report, Habenero." }, "v");
   assert.equal(takes, 3);
   assert.equal(audio.samples.length, 2, "the take with the fewest problems");
-  assert.deepEqual(unverified, [{ script: "Report, Habenero.", heard: "heard 1", problems: ["a"] }]);
+  assert.deepEqual({ ok: reports[0].ok, kept: reports[0].kept, n: reports[0].takes.length }, { ok: false, kept: 1, n: 3 });
 });
 
 test("a check that fails to run counts as a failed check, not a pass", async () => {
-  const unverified: Unverified[] = [];
-  const speak = checkedSpeaker(async () => take(1), async () => { throw new Error("HTTP 500"); }, { tries: 2, onUnverified: (u) => unverified.push(u) });
+  const reports: CheckReport[] = [];
+  const speak = checkedSpeaker(async () => take(1), async () => { throw new Error("HTTP 500"); }, { tries: 2, onReport: (r) => reports.push(r) });
   await speak({ text: "Up." }, "v");
-  assert.match(unverified[0].problems[0], /check failed: HTTP 500/);
+  assert.match(reports[0].takes[0].problems[0], /check failed: HTTP 500/);
+});
+
+test("the check is told to flag only real mistakes", async () => {
+  const { CHECK_SYSTEM } = await import("../src/speechCheck.ts");
+  assert.match(CHECK_SYSTEM, /A name said as a different name/);
+  assert.match(CHECK_SYSTEM, /NOT mistakes, never report them: a small word swapped/);
+  assert.match(CHECK_SYSTEM, /When unsure, it's not a mistake/);
 });
 
 test("a line with a hard word gets its pronunciation in the direction; the words stay as written", async () => {

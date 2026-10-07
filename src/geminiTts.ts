@@ -1,7 +1,7 @@
 import { postJson, requireKey } from "./providers.ts";
 import { c } from "./colors.ts";
 import { checkedSpeaker, geminiHeardCheck } from "./speechCheck.ts";
-import type { HeardCheck, Unverified } from "./speechCheck.ts";
+import type { CheckReport, HeardCheck } from "./speechCheck.ts";
 import { microBatcher } from "./batchJobs.ts";
 import type { BatchJobs } from "./batchJobs.ts";
 
@@ -95,7 +95,7 @@ export interface GeminiTtsSpec {
   // Each take is listened to against its script and redone when a word comes
   // out wrong (speechCheck.ts); false turns that off.
   check?: HeardCheck | false;
-  onUnverified?: (u: Unverified) => void;  // a line still wrong after its tries (default: a warning)
+  onReport?: (r: CheckReport) => void;  // a line with a failed take, every take included (default: a warning when none passed)
   // How to say the story's hard words ("McPoyle": "mick-POYL, rhymes with boil"):
   // a line with one gets "Pronounce McPoyle as …" added to its direction.
   pronunciations?: Pronunciations;
@@ -174,7 +174,7 @@ export function geminiSpeaker(spec: GeminiTtsSpec = {}, sleep: (ms: number) => P
   if (spec.check === false) return guided(paced);
   return guided(checkedSpeaker(paced, spec.check ?? geminiHeardCheck({ ...(spec.apiKeyEnv ? { apiKeyEnv: spec.apiKeyEnv } : {}) }), {
     onRetake: (problems) => console.error(`[scriptorium]   ${c.retry(`speech check: ${problems.join("; ")} — retaking`)}`),
-    onUnverified: spec.onUnverified ?? ((u) => console.error(`[scriptorium]   ${c.retry(`speech check: still wrong after 3 takes, kept the closest — "${u.script.slice(0, 80)}": ${u.problems.join("; ")}`)}`))
+    onReport: spec.onReport ?? ((r) => { if (!r.ok) console.error(`[scriptorium]   ${c.retry(`speech check: still flagged after ${r.takes.length} takes, kept the closest — "${r.script.slice(0, 80)}": ${r.takes[r.kept].problems.join("; ")}`)}`); })
   }));
 }
 

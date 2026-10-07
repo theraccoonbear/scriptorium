@@ -5,22 +5,24 @@ import { postJson, requireKey } from "./providers.ts";
 // it's kept. The speech model sometimes says a different word than it was given
 // — a rare name swapped for a common one ("Liam McPoyle" → "Liam McCord"), a
 // word added or dropped — and nothing about the request prevents it. So a take
-// with a wrong word is redone; one still wrong after its tries is kept but
-// reported, for the author to hear.
+// with a wrong word is redone; every rejected take is kept in a review round,
+// so the author can hear whether the check was right.
 
 export interface Heard { ok: boolean; heard: string; problems: string[] }
 export type HeardCheck = (audio: { samples: Float32Array; sampleRate: number }, script: string) => Promise<Heard>;
 
-export const CHECK_SYSTEM = `You check an audiobook recording against its script. Listen to the audio and compare it with the SCRIPT, word by word.
+export const CHECK_SYSTEM = `You check an audiobook recording against its script, listening for real mistakes only. Listen to the audio and compare it with the SCRIPT.
 
 Output ONLY JSON:
 {"heard":string,"problems":[{"script":string,"heard":string}]}
 
 - heard: what was actually said, verbatim.
-- problems: every place the speech differs from the script: a word or name replaced by a different one ("McCoy" for "McPoyle"), a word added, a word left out, or anything spoken that isn't in the script.
-- A name or unusual word is fine when it's said any reasonable way for its spelling; report it only when it's said as a different name or word.
-- Ignore punctuation, pauses, emphasis, accent, tone and speed. Ignore sounds that aren't words (breaths, laughs, sighs), and contractions of the same words ("the day's" for "the day is").
-- No problems: "problems":[].`;
+- problems: ONLY these mistakes:
+  1. A name said as a different name ("McCoy" or "McCord" for "McPoyle"; "Tancred" for "Tankard").
+  2. Words spoken that aren't in the script at all: an invented sentence or phrase, someone's line made up around a dialogue tag.
+  3. Part of the script left out: a phrase of several words or more, or a name.
+- NOT mistakes, never report them: a small word swapped, added or dropped (him/them, it, the, and, a); contractions ("the day's" for "the day is"); fillers and sounds (huh, ah, hm, breaths, laughs); a name said any reasonable way for its spelling; punctuation, pauses, emphasis, accent, tone, speed.
+- When unsure, it's not a mistake. No mistakes: "problems":[].`;
 
 const CHECK_MODEL = "gemini-3.8-flash";
 
@@ -49,29 +51,38 @@ export function parseHeard(text: string | undefined): Heard {
   return { ok: problems.length === 0, heard: String(r.heard ?? ""), problems };
 }
 
-export interface Unverified { script: string; heard: string; problems: string[] }
-
 type Audio = { samples: Float32Array; sampleRate: number };
 
+// A line where a take failed the check: every take, what was heard in each, and
+// whether a later one passed (then the last take is the one kept); if none did,
+// the closest (fewest problems) was kept.
+export interface CheckReport { script: string; ok: boolean; kept: number; takes: { audio: Audio; heard: string; problems: string[] }[] }
+
 // A speaker whose takes are checked: up to `tries` takes, the first clean one
-// kept; with none clean, the one with the fewest problems, reported.
+// kept; with none clean, the one with the fewest problems. Any line with a
+// failed take is reported, rejected takes included, so the author can hear
+// whether the check was right.
 export function checkedSpeaker<I extends { text: string }>(
   speak: (input: I, voice: string) => Promise<Audio>,
   check: HeardCheck,
-  opts: { tries?: number; onUnverified?: (u: Unverified) => void; onRetake?: (problems: string[]) => void } = {}
+  opts: { tries?: number; onReport?: (r: CheckReport) => void; onRetake?: (problems: string[]) => void } = {}
 ): (input: I, voice: string) => Promise<Audio> {
   const tries = opts.tries ?? 3;
   return async (input, voice) => {
-    let best: { audio: Audio; heard: Heard } | undefined;
+    const takes: CheckReport["takes"] = [];
     for (let i = 0; i < tries; i++) {
       const audio = await speak(input, voice);
       let heard: Heard;
       try { heard = await check(audio, input.text); } catch (err) { heard = { ok: false, heard: "", problems: [`check failed: ${(err as Error).message.slice(0, 120)}`] }; }
-      if (heard.ok) return audio;
-      if (!best || heard.problems.length < best.heard.problems.length) best = { audio, heard };
+      takes.push({ audio, heard: heard.heard, problems: heard.problems });
+      if (heard.ok) {
+        if (takes.length > 1) opts.onReport?.({ script: input.text, ok: true, kept: i, takes });
+        return audio;
+      }
       if (i < tries - 1) opts.onRetake?.(heard.problems);
     }
-    opts.onUnverified?.({ script: input.text, heard: best!.heard.heard, problems: best!.heard.problems });
-    return best!.audio;
+    const kept = takes.reduce((best, t, i) => (t.problems.length < takes[best].problems.length ? i : best), 0);
+    opts.onReport?.({ script: input.text, ok: false, kept, takes });
+    return takes[kept].audio;
   };
 }
