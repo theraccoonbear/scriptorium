@@ -22,9 +22,10 @@ RUN cd / && npm ci --omit=dev && npm cache clean --force \
  && find linux -mindepth 1 -maxdepth 1 ! -name "$arch" -exec rm -rf {} + \
  && rm -f linux/*/libonnxruntime_providers_cuda.so linux/*/libonnxruntime_providers_tensorrt.so
 
-# Model and voice-library caches, kept in a volume between runs.
+# Model and voice-library caches, kept in a volume between runs. Compose runs
+# as the host's UID, whatever it is, so the cache is open to any user.
 ENV XDG_CACHE_HOME=/cache
-RUN mkdir -p /cache /app && chown node:node /cache /app
+RUN mkdir -p /cache /app && chmod 1777 /cache && chown node:node /app
 USER node
 WORKDIR /app
 ENTRYPOINT ["node", "src/cli.ts"]

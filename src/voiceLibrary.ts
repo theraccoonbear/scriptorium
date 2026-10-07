@@ -33,7 +33,7 @@ export const LIBRARY_LANGUAGES: Record<string, string[]> = {
 type Fetch = (url: string, init?: { headers?: Record<string, string> }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
 export async function fetchLibrary(language: string, opts: { apiKey?: string; cacheDir?: string; maxAgeMs?: number; fetch?: Fetch; now?: number } = {}): Promise<LibraryVoice[]> {
-  const cacheDir = opts.cacheDir ?? join(homedir(), ".cache", "scriptorium");
+  const cacheDir = opts.cacheDir ?? join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "scriptorium");
   const cacheFile = join(cacheDir, `gemini-voices-${language}.json`);
   const now = opts.now ?? Date.now();
   try {

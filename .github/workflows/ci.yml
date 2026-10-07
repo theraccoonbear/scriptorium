@@ -10,8 +10,8 @@ jobs:
       matrix:
         node: [24, 26]   # engines.node is >=24
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -24,7 +24,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: run as the runner's user
         run: echo "SCRIPTORIUM_UID=$(id -u)" >> "$GITHUB_ENV" && echo "SCRIPTORIUM_GID=$(id -g)" >> "$GITHUB_ENV"
       - run: docker compose build
