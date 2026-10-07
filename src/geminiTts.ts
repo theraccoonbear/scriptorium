@@ -42,8 +42,16 @@ export function buildTtsPrompt(d: LineDirection): SpeechInput {
   return { text: d.line.trim(), ...(style ? { style } : {}) };
 }
 
-// The old single-text form (direction above a transcript), for Batch Mode,
-// which only takes generateContent requests.
+// Gemini 3.8 TTS (and later) reads its text verbatim: direction can only ride
+// as a live request's style annotation. Batch Mode only takes generateContent,
+// where it would have to sit in the text, so these models are voiced live.
+// The preview models before them took direction in the text.
+export function readsVerbatim(model: string = DEFAULT_GEMINI_TTS_MODEL): boolean {
+  return !/gemini-2\.5-.*tts|gemini-3\.1-flash-tts-preview/.test(model);
+}
+
+// The old single-text form (direction above a transcript), for the preview
+// models and Batch Mode, which only take generateContent requests.
 export function legacyPrompt(input: SpeechInput): string {
   return input.style ? `### DIRECTOR'S NOTES\n${input.style}\n\n#### TRANSCRIPT\n${input.text}` : input.text;
 }
@@ -181,6 +189,11 @@ export function audioFrom(data: any): { samples: Float32Array; sampleRate: numbe
 
 function geminiCall(spec: GeminiTtsSpec, model: string): Speak {
   return async (input, voice) => {
+    if (!readsVerbatim(model)) {
+      const data = await postJson(`${GEMINI_BASE}/models/${model}:generateContent`, { "x-goog-api-key": requireKey(spec.apiKeyEnv ?? "GEMINI_API_KEY") }, ttsRequest(legacyPrompt(input), voice),
+        { type: "gemini", model, role: "tts", timeoutMs: spec.timeoutMs ?? 60000, retries: spec.retries ?? 1 });
+      return audioFrom(data);
+    }
     const data = await postJson(
       `${GEMINI_BASE}/interactions`,
       { "x-goog-api-key": requireKey(spec.apiKeyEnv ?? "GEMINI_API_KEY") },

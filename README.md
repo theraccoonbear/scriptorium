@@ -89,7 +89,7 @@ It's exact where the run already knows (written, tagged and directed scenes; ima
 
 **Batch Mode: half price, slower.** Gemini's Batch Mode runs many requests as one job at **50% of the price**, with its own rate limits. Results usually take a few minutes and at most 24 hours.
 - `"artist": { "batch": true }` sends each stage's images as one job: the first reference, the other references, each scene's first shot, the other shots, then the cover. Retakes form the next job. Inspections stay live.
-- `"audiobook": { "geminiBatch": true }` sends a scene's voice batches as one job in palette or speaker mode. Line mode stays live.
+- `"audiobook": { "geminiBatch": true }` sends a scene's voice batches as one job in palette or speaker mode. Line mode stays live. **Not for Gemini 3.8 TTS (the default):** it reads its text verbatim and takes direction only as a live request's style, which Batch Mode can't carry, so it's voiced live at full price. The setting only applies to the older preview TTS models.
 - A job is recorded as soon as it's submitted, so a stopped run **resumes polling the same job** rather than paying again.
 - Batch calls are logged at half price, and the pitch shows the batch price.
 
