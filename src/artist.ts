@@ -41,6 +41,7 @@ export const PROP_LABEL = "A key object that appears in this image — match its
 export const CAST_PHOTO_LABEL = "Real photo of the person or animal this character IS — the portrait must be unmistakably them (same face and features, build, skin, hair; for an animal, breed, coat and markings), redrawn in the story's art style and dressed as the description says, not as in the photo:";
 export const CAST_PORTRAIT_LABEL = "Canonical look of a character who appears in this image — a real cast member, so this likeness is intended: match their face, build, hair, colors and clothing exactly, but NOT the reference's pose, expression or framing: pose and move them exactly as this image's description says:";
 export const AUTHOR_DESIGN_LABEL = "The author's own drawing of this character — their design: follow its face, hair and facial hair, colouring, build, clothing and gear exactly, but redraw it in the story's art style (not the drawing's medium or line), posed as the description says. A drawing, not a real person:";
+export const REFRAME_LABEL = "THE image to reproduce — this exact picture: the same people, poses, place, light, colour grade and photographic look. Reframe it to this new shape: extend the scene naturally at the edges (or crop) so it fills the frame, keeping the main figures whole and central, with open sky at the top. Don't redraw, restyle, add or remove anything:";
 export const SCENE_LABEL = "Earlier image from the same story — match its art style, not its composition or poses:";
 export const STYLE_LABEL = "Reference image of something ELSE from the same story — match only its art style, not its subject:";
 
@@ -110,6 +111,7 @@ export interface ArtJob {
   aspectRatio?: string;   // extras: their own shapes (key art 2:3, 16:9, 1:1)
   imageSize?: string;     // extras: "2K"
   maxPortraits?: number;  // extras: the cast photo passes everyone in it
+  from?: string;          // key art: the key of the image it reframes (the cover)
 }
 
 // The extras (#49): key art in the shapes streaming apps use, and a cast photo.
@@ -118,6 +120,7 @@ export const KEY_ART: Record<string, string> = { "extra-keyart-2x3": "2:3", "ext
 export const CAST_PHOTO_KEY = "extra-cast";
 export const EXTRAS_SIZE = "2K";
 export const MAX_CAST_PHOTO = 8;  // characters in the cast photo (and portraits passed)
+const STYLE_SCENES_FOR_EXTRAS = 3;  // finished scenes shown to an extra for its look
 
 // Canonical references first (characters, locations, props — every later
 // image may use them), then the latest scene_art per scene (in scene order,
@@ -185,9 +188,20 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
   };
   if (cover) jobs.push({ key: "cover", prompt: cover.prompt, ...feature });
   if (extras) {
-    for (const [key, aspectRatio] of Object.entries(KEY_ART)) jobs.push({ key, prompt: extras.keyArt, ...feature, aspectRatio, imageSize: EXTRAS_SIZE });
+    // Every story prompt ends with the art style, verbatim; an extra without it
+    // drifts to the image model's own look, so it's added when missing.
+    const style = events.filter((e) => e.type === "art_style").map((e) => (e.data as { style?: string }).style?.trim()).filter(Boolean).at(-1);
+    const styled = (p: string) => (style && !p.includes(style) ? `${p.trim()} ${style}` : p);
+    // Key art is the cover, reframed to each shape: the cover is already in the
+    // story's look and true to the story, which a fresh poster prompt wasn't
+    // (it drifted to a glossy game-render look and invented a battle).
+    for (const [key, aspectRatio] of Object.entries(KEY_ART)) {
+      jobs.push(cover
+        ? { key, prompt: styled(cover.prompt), from: "cover", aspectRatio, imageSize: EXTRAS_SIZE }
+        : { key, prompt: styled(extras.keyArt), ...feature, aspectRatio, imageSize: EXTRAS_SIZE });
+    }
     const castIds = extras.castCharacters.filter((id) => refIds("character").has(id)).slice(0, MAX_CAST_PHOTO);
-    jobs.push({ key: CAST_PHOTO_KEY, prompt: extras.castPhoto, ...(castIds.length ? { characters: castIds } : {}), aspectRatio: "3:2", imageSize: EXTRAS_SIZE, maxPortraits: MAX_CAST_PHOTO });
+    jobs.push({ key: CAST_PHOTO_KEY, prompt: styled(extras.castPhoto), ...(castIds.length ? { characters: castIds } : {}), aspectRatio: "3:2", imageSize: EXTRAS_SIZE, maxPortraits: MAX_CAST_PHOTO });
   }
   return withShotNotes(withCurrentStyle([...refJobs, ...jobs], events), events);
 }
@@ -202,7 +216,8 @@ export async function shotInputs(job: ArtJob, manifest: ArtManifest, artDir: str
   const keys = [
     ...(job.characters ?? []).map((id) => refKey("character", id)).filter(have).slice(0, job.maxPortraits ?? maxPortraits),
     ...(job.location ? [refKey("location", job.location)] : []).filter(have),
-    ...(job.props ?? []).map((id) => refKey("prop", id)).filter(have).slice(0, 2)
+    ...(job.props ?? []).map((id) => refKey("prop", id)).filter(have).slice(0, 2),
+    ...(job.from ? [job.from] : []).filter(have)  // a reframed image is redone when its source changes
   ];
   return refHashes(keys, manifest, artDir);
 }
@@ -437,6 +452,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   // lose track past a handful of references, hence the caps. A reference job
   // gets two earlier references, for style only.
   const referencesFor = async (job: ArtJob): Promise<Image[]> => {
+    // Key art reframes the cover: that image is the whole reference.
+    if (job.from && manifest[job.from]) return [{ ...(await shrink(await loadImage(join(outDir, manifest[job.from].file)), 2048)), label: REFRAME_LABEL }];
     if (job.ref) {
       // A cast member's portrait is drawn from their photos; a designed character's from the author's drawing.
       const photos = await Promise.all((job.photos ?? []).slice(0, 3).map(async (p) => ({ ...(await shrink(await loadImage(join(opts.runDir, p)), referenceSize)), label: job.design ? AUTHOR_DESIGN_LABEL : CAST_PHOTO_LABEL })));
@@ -455,7 +472,9 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const byScene = [...anchors.entries()].sort((a, b) => a[0] - b[0]);
     const scene = (imgs: Image[]) => imgs.map((img) => ({ ...img, label: SCENE_LABEL }));
     let style: Image[];
-    if (job.sceneIndex === undefined) style = scene(byScene.slice(canon.length > 0 ? -1 : -maxReferences).map(([, img]) => img));
+    // Extras look most like the story when shown several of its scenes, not just the last.
+    if (job.key.startsWith("extra-")) style = scene(byScene.slice(-STYLE_SCENES_FOR_EXTRAS).map(([, img]) => img));
+    else if (job.sceneIndex === undefined) style = scene(byScene.slice(canon.length > 0 ? -1 : -maxReferences).map(([, img]) => img));
     else if (!isAnchor(job)) style = scene(anchors.has(job.sceneIndex) ? [anchors.get(job.sceneIndex)!] : []);
     else if (canon.length > 0) style = [];
     else if (refs.size > 0) style = [...refs.values()].slice(0, maxReferences).map((img) => ({ ...img, label: STYLE_LABEL }));

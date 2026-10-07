@@ -20,19 +20,21 @@ const events: StoryEvent[] = [
   ref(0, "character", "ada"), ref(1, "character", "bo"), ref(2, "character", "cy"), ref(3, "character", "dee"), ref(4, "location", "keep"),
   ev(5, "scene_art", { sceneIndex: 0, prompt: "s1", shots: [{ startParagraph: 0, prompt: "ada in the keep", characters: ["ada"], location: "keep" }, { startParagraph: 3, prompt: "bo", characters: ["bo"] }] }),
   ev(6, "cover_art", { sceneCount: 1, prompt: "cover" }),
+  ev(6.5, "art_style", { style: "Gritty live-action film still.", source: "author" }),
   ev(7, "extras_art", { keyArt: "a lone figure on the ramparts", castPhoto: "the cast posing on set", castCharacters: ["ada", "bo", "cy", "dee", "ghost"] })
 ];
 
 test("the extras are key art in three shapes and a cast photo of everyone in it, all at 2K", () => {
   const jobs = buildArtJobs(events).filter((j) => j.key.startsWith("extra-"));
   assert.deepEqual(jobs.map((j) => [j.key, j.aspectRatio, j.imageSize, j.prompt]), [
-    ["extra-keyart-2x3", "2:3", "2K", "a lone figure on the ramparts"],
-    ["extra-keyart-16x9", "16:9", "2K", "a lone figure on the ramparts"],
-    ["extra-keyart-1x1", "1:1", "2K", "a lone figure on the ramparts"],
-    ["extra-cast", "3:2", "2K", "the cast posing on set"]
+    ["extra-keyart-2x3", "2:3", "2K", "cover Gritty live-action film still."],
+    ["extra-keyart-16x9", "16:9", "2K", "cover Gritty live-action film still."],
+    ["extra-keyart-1x1", "1:1", "2K", "cover Gritty live-action film still."],
+    ["extra-cast", "3:2", "2K", "the cast posing on set Gritty live-action film still."]
   ]);
-  assert.deepEqual(jobs[0].characters, ["ada", "bo"], "key art features the most-shown characters, like the cover");
-  assert.equal(jobs[0].location, "keep");
+  assert.equal(jobs[0].from, "cover", "key art is the cover, reframed to each shape");
+  const noCover = buildArtJobs(events.filter((e) => e.type !== "cover_art")).find((j) => j.key === "extra-keyart-2x3")!;
+  assert.deepEqual([noCover.from, noCover.characters, noCover.location], [undefined, ["ada", "bo"], "keep"], "with no cover, the art director's own key art, featuring the most-shown characters");
   const cast = jobs.find((j) => j.key === CAST_PHOTO_KEY)!;
   assert.deepEqual(cast.characters, ["ada", "bo", "cy", "dee"], "everyone with a portrait; an unknown id dropped");
   assert.ok((cast.maxPortraits ?? 0) >= 4, "and all their portraits are passed, not just three");
@@ -55,6 +57,15 @@ test("rendering just the extras: each in its shape, the cast photo with every ca
   assert.ok(!backend.calls.some((c) => c.prompt === "bo"), "shots not asked for aren't rendered");
 });
 
+test("key art is drawn from the rendered cover: that image is its one reference", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-extras-"));
+  await renderArt(events, { runDir, backend: new MockImageBackend(), keys: ["cover"] });
+  const backend = new MockImageBackend();
+  await renderArt(events, { runDir, backend, keys: Object.keys(KEY_ART) });
+  assert.equal(backend.calls.length, 3);
+  assert.ok(backend.calls.every((c) => c.references.length === 1 && /^THE image to reproduce/.test(c.references[0].label ?? "")));
+});
+
 test("the art director's extras mode: both prompts, and only known characters in the cast", async () => {
   const bible: Bible = replay([]);
   bible.characters.ada = { id: "ada", name: "Ada", traits: "", goal: "", voice: "", status: "active" };
@@ -71,7 +82,7 @@ test("the extras get their own contact sheet, and the pitch counts four images u
   const manifest = { "extra-keyart-2x3": { file: "a.png" }, "extra-cast": { file: "b.png" }, "scene-01-01": { file: "c.png" } } as unknown as ArtManifest;
   assert.deepEqual([...contactSheets(manifest, "extras", new Set(["extra-cast"]), "/art").entries()].map(([n, t]) => [n, t.map((x) => x.label)]), [["extras", ["✓ extra-cast", "extra-keyart-2x3"]]]);
   assert.ok(![...contactSheets(manifest, "shots", new Set(), "/art").keys()].includes("extras"), "not on the shots sheets");
-  const before = pitch({ events: events.slice(0, 7), scenes: 1, art: { extrasOnly: true } });
+  const before = pitch({ events: events.filter((e) => e.type !== "extras_art"), scenes: 1, art: { extrasOnly: true } });
   assert.equal(before.images.shots, 4);
   assert.equal(before.images.references, 0);
 });
