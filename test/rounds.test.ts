@@ -41,7 +41,7 @@ test("an image round holds just the images an art run changed, with a legend", a
   assert.deepEqual(keys, ["scene-01-02"]);
   const round = await imageRound(runDir, keys, { kind: "redo", subject: "scene-01-02", note: "lying flat" });
   assert.equal(round?.name, "01-redo-scene-01-02");
-  assert.equal(await readFile(join(round!.dir, "legend.txt"), "utf8"), "redo: scene-01-02 — 1 image (changed.jpg)\nnote: lying flat\n\nscene-01-02  (kept after its retries ran out)\n");
+  assert.equal(await readFile(join(round!.dir, "legend.txt"), "utf8"), "redo: scene-01-02 — 1 image (changed.jpg)\nnote: lying flat\n\nscene-01-02  (kept after its retries ran out)\n\nThe images these replaced are kept in art/previous/<key>/.\n");
 });
 
 async function cast() {

@@ -77,7 +77,9 @@ export async function imageRound(runDir: string, keys: string[], info: RoundInfo
     `${info.kind}: ${info.subject} — ${keys.length} image${keys.length === 1 ? "" : "s"} (changed.jpg)`,
     ...(info.note ? [`note: ${info.note}`] : []),
     "",
-    ...keys.map((k) => `${k}${manifest[k] && !manifest[k].accepted ? "  (kept after its retries ran out)" : ""}`)
+    ...keys.map((k) => `${k}${manifest[k] && !manifest[k].accepted ? "  (kept after its retries ran out)" : ""}`),
+    "",
+    "The images these replaced are kept in art/previous/<key>/."
   ].join("\n") + "\n");
   const tiles = keys.filter((k) => manifest[k]).map((k) => ({ label: k, file: join(runDir, "art", manifest[k].file) }));
   try {
