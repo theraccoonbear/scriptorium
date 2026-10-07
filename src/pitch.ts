@@ -36,7 +36,8 @@ export interface PitchInput {
   scenes: number;                       // planned scenes
   wordsPerShot?: number;                // artWordsPerShot (default 110)
   // refsOnly: the refs phase — just references, `refTargets` of them (exact when known).
-  art?: { maxAttempts?: number; retakes?: number; concurrency?: number; skip?: boolean; batch?: boolean; refsOnly?: boolean; refTargets?: number };
+  // extrasOnly: the extras phase — key art in three shapes and a cast photo.
+  art?: { maxAttempts?: number; retakes?: number; concurrency?: number; skip?: boolean; batch?: boolean; refsOnly?: boolean; refTargets?: number; extrasOnly?: boolean };
   // samplesOnly: the voices phase — one short sample per speaker (`speakers` of them).
   audio?: { narration?: "kokoro" | "gemini"; dialogue?: "kokoro" | "gemini"; geminiMode?: GeminiMode; geminiConcurrency?: number; skip?: boolean; geminiModel?: string; geminiBatch?: boolean; samplesOnly?: boolean; speakers?: number };
   budgetUsd?: number;
@@ -90,6 +91,13 @@ export function pitch(input: PitchInput): Pitch {
   if (art.refsOnly) {
     references = art.refTargets ?? references;
     shotsToRender = 0;
+    cover = 0;
+  }
+  if (art.extrasOnly) {
+    // Before they're directed: all four. After: the ones not yet rendered for their prompt.
+    const extras = buildArtJobs(input.events).filter((j) => j.key.startsWith("extra-"));
+    references = 0;
+    shotsToRender = extras.length ? extras.filter((j) => input.artManifest?.[j.key]?.prompt !== j.prompt).length : 4;
     cover = 0;
   }
   // Retakes: triage spends exactly its share; inspection-and-retry averages ~0.4 per image.

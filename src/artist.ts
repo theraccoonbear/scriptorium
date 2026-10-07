@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { postJson, requireKey } from "./providers.ts";
 import { parseJson } from "./roles.ts";
-import type { ArtistBackendSpec, ArtistConfig, CoverArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
+import type { ArtistBackendSpec, ArtistConfig, CoverArtData, ExtrasArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
 import { readVisualRefs, refKey, storyArtStyle } from "./visualrefs.ts";
 import { replay } from "./bible.ts";
 import { isBudgetError } from "./usage.ts";
@@ -30,6 +30,7 @@ export interface ImageRequest {
   // Character portraits and earlier renders, passed as visual references for continuity.
   references: Image[];
   aspectRatio?: string;  // overrides the backend's default (portraits are 3:4)
+  imageSize?: string;    // "1K" (default), "2K" or "4K"
   style?: string;        // the story's art style, sent with every image
   direction?: string;    // the author's art direction for the image model, sent with every image
 }
@@ -40,6 +41,7 @@ export const PROP_LABEL = "A key object that appears in this image — match its
 export const CAST_PHOTO_LABEL = "Real photo of the person or animal this character IS — the portrait must be unmistakably them (same face and features, build, skin, hair; for an animal, breed, coat and markings), redrawn in the story's art style and dressed as the description says, not as in the photo:";
 export const CAST_PORTRAIT_LABEL = "Canonical look of a character who appears in this image — a real cast member, so this likeness is intended: match their face, build, hair, colors and clothing exactly, but NOT the reference's pose, expression or framing: pose and move them exactly as this image's description says:";
 export const AUTHOR_DESIGN_LABEL = "The author's own drawing of this character — their design: follow its face, hair and facial hair, colouring, build, clothing and gear exactly, but redraw it in the story's art style (not the drawing's medium or line), posed as the description says. A drawing, not a real person:";
+export const REFRAME_LABEL = "THE image to reproduce — this exact picture: the same people, poses, place, light, colour grade and photographic look. Reframe it to this new shape: extend the scene naturally at the edges (or crop) so it fills the frame, keeping the main figures whole and central, with open sky at the top. Don't redraw, restyle, add or remove anything:";
 export const SCENE_LABEL = "Earlier image from the same story — match its art style, not its composition or poses:";
 export const STYLE_LABEL = "Reference image of something ELSE from the same story — match only its art style, not its subject:";
 
@@ -106,7 +108,22 @@ export interface ArtJob {
   characters?: string[];
   location?: string;
   props?: string[];
+  aspectRatio?: string;   // extras: their own shapes (key art 2:3, 16:9, 1:1)
+  imageSize?: string;     // extras: "2K"
+  maxPortraits?: number;  // extras: the cast photo passes everyone in it
+  from?: string;          // key art: the key of the image it reframes (the cover)
+  // The author's override of the story's art style / direction for this image (extras).
+  lookStyle?: string;
+  lookDirection?: string;
 }
+
+// The extras (#49): key art in the shapes streaming apps use, and a cast photo.
+// All textless (titles are set separately); 2K.
+export const KEY_ART: Record<string, string> = { "extra-keyart-2x3": "2:3", "extra-keyart-16x9": "16:9", "extra-keyart-1x1": "1:1" };
+export const CAST_PHOTO_KEY = "extra-cast";
+export const EXTRAS_SIZE = "2K";
+export const MAX_CAST_PHOTO = 8;  // characters in the cast photo (and portraits passed)
+const STYLE_SCENES_FOR_EXTRAS = 3;  // finished scenes shown to an extra for its look
 
 // Canonical references first (characters, locations, props — every later
 // image may use them), then the latest scene_art per scene (in scene order,
@@ -114,12 +131,15 @@ export interface ArtJob {
 export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
   const scenes = new Map<number, SceneArtData>();
   let cover: CoverArtData | undefined;
+  let extras: ExtrasArtData | undefined;
   for (const e of events) {
     if (e.type === "scene_art") {
       const d = e.data as SceneArtData;
       scenes.set(d.sceneIndex, d);
     } else if (e.type === "cover_art") {
       cover = e.data as CoverArtData;
+    } else if (e.type === "extras_art") {
+      extras = e.data as ExtrasArtData;
     }
   }
   const order: Record<VisualRefKind, number> = { character: 0, location: 1, prop: 2 };
@@ -152,23 +172,39 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
         ...(shot.props ? { props: shot.props } : {})
       }));
     });
-  if (cover) {
-    // The cover features the story's most-shown characters, place and props.
-    const top = (ids: string[], have: Set<string>, n: number) => {
-      const counts = new Map<string, number>();
-      for (const id of ids) if (have.has(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
-      return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n).map(([id]) => id);
-    };
-    const characters = top(jobs.flatMap((j) => j.characters ?? []), refIds("character"), 4);
-    const location = top(jobs.flatMap((j) => (j.location ? [j.location] : [])), refIds("location"), 1)[0];
-    const props = top(jobs.flatMap((j) => j.props ?? []), refIds("prop"), 2);
-    jobs.push({
-      key: "cover",
-      prompt: cover.prompt,
-      ...(characters.length > 0 ? { characters } : {}),
-      ...(location ? { location } : {}),
-      ...(props.length > 0 ? { props } : {})
-    });
+  // The cover and key art feature the story's most-shown characters, place and props.
+  const top = (ids: string[], have: Set<string>, n: number) => {
+    const counts = new Map<string, number>();
+    for (const id of ids) if (have.has(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n).map(([id]) => id);
+  };
+  const shots = [...jobs];
+  const featured = {
+    characters: top(shots.flatMap((j) => j.characters ?? []), refIds("character"), 4),
+    location: top(shots.flatMap((j) => (j.location ? [j.location] : [])), refIds("location"), 1)[0],
+    props: top(shots.flatMap((j) => j.props ?? []), refIds("prop"), 2)
+  };
+  const feature = {
+    ...(featured.characters.length > 0 ? { characters: featured.characters } : {}),
+    ...(featured.location ? { location: featured.location } : {}),
+    ...(featured.props.length > 0 ? { props: featured.props } : {})
+  };
+  if (cover) jobs.push({ key: "cover", prompt: cover.prompt, ...feature });
+  if (extras) {
+    // Every story prompt ends with the art style, verbatim; an extra without it
+    // drifts to the image model's own look, so it's added when missing.
+    const style = events.filter((e) => e.type === "art_style").map((e) => (e.data as { style?: string }).style?.trim()).filter(Boolean).at(-1);
+    const styled = (p: string) => (style && !p.includes(style) ? `${p.trim()} ${style}` : p);
+    // Key art is the cover, reframed to each shape: the cover is already in the
+    // story's look and true to the story, which a fresh poster prompt wasn't
+    // (it drifted to a glossy game-render look and invented a battle).
+    for (const [key, aspectRatio] of Object.entries(KEY_ART)) {
+      jobs.push(cover
+        ? { key, prompt: styled(cover.prompt), from: "cover", aspectRatio, imageSize: EXTRAS_SIZE }
+        : { key, prompt: styled(extras.keyArt), ...feature, aspectRatio, imageSize: EXTRAS_SIZE });
+    }
+    const castIds = extras.castCharacters.filter((id) => refIds("character").has(id)).slice(0, MAX_CAST_PHOTO);
+    jobs.push({ key: CAST_PHOTO_KEY, prompt: styled(extras.castPhoto), ...(castIds.length ? { characters: castIds } : {}), aspectRatio: "3:2", imageSize: EXTRAS_SIZE, maxPortraits: MAX_CAST_PHOTO });
   }
   return withShotNotes(withCurrentStyle([...refJobs, ...jobs], events), events);
 }
@@ -181,9 +217,10 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
 export async function shotInputs(job: ArtJob, manifest: ArtManifest, artDir: string, maxPortraits = 3): Promise<Record<string, string>> {
   const have = (key: string) => Boolean(manifest[key]);
   const keys = [
-    ...(job.characters ?? []).map((id) => refKey("character", id)).filter(have).slice(0, maxPortraits),
+    ...(job.characters ?? []).map((id) => refKey("character", id)).filter(have).slice(0, job.maxPortraits ?? maxPortraits),
     ...(job.location ? [refKey("location", job.location)] : []).filter(have),
-    ...(job.props ?? []).map((id) => refKey("prop", id)).filter(have).slice(0, 2)
+    ...(job.props ?? []).map((id) => refKey("prop", id)).filter(have).slice(0, 2),
+    ...(job.from ? [job.from] : []).filter(have)  // a reframed image is redone when its source changes
   ];
   return refHashes(keys, manifest, artDir);
 }
@@ -371,6 +408,8 @@ export interface ArtOptions {
   approved?: ReadonlySet<string>;
   only?: "references";     // render just the reference portraits, places and props
   keys?: string[];         // render just these shots (and the cover, if named); references still load
+  // The author's overrides of the story's art style and direction, by key (extras).
+  overrides?: Record<string, { style?: string; direction?: string }>;
   redoKeys?: string[];     // render these shots again even if nothing changed (not approved ones)
   // Longest side, in px, of images sent as references (default 768) and of the
   // candidate sent for inspection (default 1024); 0 sends them full size. Files
@@ -443,7 +482,14 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   // to each prompt to restate.
   const style = storyArtStyle(events);
   const direction = opts.direction?.trim() || undefined;
-  const jobs = buildArtJobs(events);
+  const jobs = buildArtJobs(events).map((job) => {
+    const o = opts.overrides?.[job.key];
+    if (!o || (!o.style?.trim() && !o.direction?.trim())) return job;
+    const lookStyle = o.style?.trim() || undefined;
+    // The prompt ends with the story's style verbatim: swap in the override.
+    const prompt = lookStyle && style && job.prompt.includes(style) ? job.prompt.split(style).join(lookStyle) : lookStyle && !job.prompt.includes(lookStyle) ? `${job.prompt} ${lookStyle}` : job.prompt;
+    return { ...job, prompt, ...(lookStyle ? { lookStyle } : {}), ...(o.direction?.trim() ? { lookDirection: o.direction.trim() } : {}) };
+  });
   const refs = new Map<string, Image>();       // refKey(kind, id) -> reference image
   // Each scene's first shot is the style anchor for that scene's other shots,
   // so those can render in parallel instead of each waiting for the last.
@@ -472,6 +518,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   // lose track past a handful of references, hence the caps. A reference job
   // gets two earlier references, for style only.
   const referencesFor = async (job: ArtJob): Promise<Image[]> => {
+    // Key art reframes the cover: that image is the whole reference.
+    if (job.from && manifest[job.from]) return [{ ...(await shrink(await loadImage(join(outDir, manifest[job.from].file)), 2048)), label: REFRAME_LABEL }];
     if (job.ref) {
       // A cast member's portrait is drawn from their photos; a designed character's from the author's drawing.
       const photos = await Promise.all((job.photos ?? []).slice(0, 3).map(async (p) => ({ ...(await shrink(await loadImage(join(opts.runDir, p)), referenceSize)), label: job.design ? AUTHOR_DESIGN_LABEL : CAST_PHOTO_LABEL })));
@@ -480,7 +528,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       return [...photos, ...(anchor ? [{ ...anchor, label: STYLE_LABEL }] : [])];
     }
     const canon = [
-      ...refImages("character", job.characters ?? [], maxPortraits),
+      ...refImages("character", job.characters ?? [], job.maxPortraits ?? maxPortraits),
       ...refImages("location", job.location ? [job.location] : [], 1),
       ...refImages("prop", job.props ?? [], 2)
     ];
@@ -490,7 +538,10 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const byScene = [...anchors.entries()].sort((a, b) => a[0] - b[0]);
     const scene = (imgs: Image[]) => imgs.map((img) => ({ ...img, label: SCENE_LABEL }));
     let style: Image[];
-    if (job.sceneIndex === undefined) style = scene(byScene.slice(canon.length > 0 ? -1 : -maxReferences).map(([, img]) => img));
+    // Extras look most like the story when shown several of its scenes, not just the last.
+    // The cover and extras sum up the story: shown several of its scenes, they keep its look.
+    if (job.key.startsWith("extra-") || job.key === "cover") style = scene(byScene.slice(-STYLE_SCENES_FOR_EXTRAS).map(([, img]) => img));
+    else if (job.sceneIndex === undefined) style = scene(byScene.slice(canon.length > 0 ? -1 : -maxReferences).map(([, img]) => img));
     else if (!isAnchor(job)) style = scene(anchors.has(job.sceneIndex) ? [anchors.get(job.sceneIndex)!] : []);
     else if (canon.length > 0) style = [];
     else if (refs.size > 0) style = [...refs.values()].slice(0, maxReferences).map((img) => ({ ...img, label: STYLE_LABEL }));
@@ -511,7 +562,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const changed = !job.ref && prior?.refs ? changedRefs(prior.refs, await refHashes(Object.keys(prior.refs), manifest, outDir)) : [];
     if (approved && changed.length) emit({ type: "stale_approved", key: job.key, refs: changed });
     const redo = opts.redoKeys?.includes(job.key) ?? false;
-    if (approved || (!opts.force && !redo && changed.length === 0 && prior && prior.prompt === job.prompt && prior.style === style && prior.direction === direction && prior.photos === job.photoKey && existing.has(prior.file))) {
+    if (approved || (!opts.force && !redo && changed.length === 0 && prior && prior.prompt === job.prompt && prior.style === (job.lookStyle ?? style) && prior.direction === (job.lookDirection ?? direction) && prior.photos === job.photoKey && existing.has(prior.file))) {
       // Same image, but keep its placement current in case the shot's anchor moved.
       prior.sceneIndex = job.sceneIndex;
       prior.startParagraph = job.startParagraph;
@@ -526,7 +577,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const references = await referencesFor(job);
     try {
       const forInspection = (img: Image) => shrink(img, inspectSize);
-      const entry = await renderOne(job, references, opts.backend, opts.inspector, triage && !job.ref ? 1 : maxAttempts, emit, style, forInspection, direction, names);
+      const entry = await renderOne(job, references, opts.backend, opts.inspector, triage && !job.ref ? 1 : maxAttempts, emit, job.lookStyle ?? style, forInspection, job.lookDirection ?? direction, names);
       if (triage && !job.ref && entry.severity !== undefined) scored.set(job.key, { job, severity: entry.severity, ...(entry.retakePrompt ? { retakePrompt: entry.retakePrompt } : {}) });
       const file = artFile(job.key, extensionFor(entry.image.mimeType));
       await keepPrevious(job.key);
@@ -539,8 +590,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         ...(job.ref ? { refKind: job.ref.kind, refId: job.ref.id } : {}),
         prompt: job.prompt,
         finalPrompt: entry.finalPrompt,
-        ...(style ? { style } : {}),
-        ...(direction ? { direction } : {}),
+        ...((job.lookStyle ?? style) ? { style: job.lookStyle ?? style } : {}),
+        ...((job.lookDirection ?? direction) ? { direction: job.lookDirection ?? direction } : {}),
         ...(job.photoKey ? { photos: job.photoKey } : {}),
         ...(job.ref ? {} : { refs: await shotInputs(job, manifest, outDir, maxPortraits) }),
         attempts: entry.attempts,
@@ -567,7 +618,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const picked = opts.keys ? new Set(opts.keys) : undefined;
   // With keys, a reference renders only if a named shot uses it (finished ones still load).
   const needed = new Set(jobs.filter((j) => picked?.has(j.key)).flatMap((j) => [...(j.characters ?? []).map((id) => `character-${id}`), ...(j.location ? [`location-${j.location}`] : []), ...(j.props ?? []).map((id) => `prop-${id}`)]));
-  const indexed = jobs.map((job, index) => ({ job, index })).filter(({ job }) => !picked || picked.has(job.key) || (job.ref && (needed.has(job.key) || Boolean(manifest[job.key]))));
+  // Extras render only when asked for by key (the extras phase), with its overrides.
+  const indexed = jobs.map((job, index) => ({ job, index })).filter(({ job }) => (picked ? picked.has(job.key) || (job.ref && (needed.has(job.key) || Boolean(manifest[job.key]))) : !job.key.startsWith("extra-")));
   const refJobs = indexed.filter(({ job }) => job.ref);
   const stages = [
     refJobs.slice(0, 1),
@@ -575,7 +627,9 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     ...(opts.only === "references" ? [] : [
       indexed.filter(({ job }) => isAnchor(job)),
       indexed.filter(({ job }) => !job.ref && !isAnchor(job) && job.sceneIndex !== undefined),
-      indexed.filter(({ job }) => !job.ref && job.sceneIndex === undefined)
+      indexed.filter(({ job }) => !job.ref && job.sceneIndex === undefined && !job.from),
+      // Drawn from another image (key art from the cover): after it.
+      indexed.filter(({ job }) => job.from)
     ])
   ];
   // A run with no references chains each scene's first shot to the one before
@@ -598,7 +652,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     await inParallel(worst, opts.concurrency ?? 4, async ({ job, severity, retakePrompt }) => {
       try {
         const references = await referencesFor(job);
-        const again = await renderOne({ ...job, prompt: retakePrompt ?? job.prompt }, references, opts.backend, opts.inspector, 1, emit, style, (img) => shrink(img, inspectSize), direction, names);
+        const again = await renderOne({ ...job, prompt: retakePrompt ?? job.prompt }, references, opts.backend, opts.inspector, 1, emit, job.lookStyle ?? style, (img) => shrink(img, inspectSize), job.lookDirection ?? direction, names);
         const after = again.severity ?? severity;
         const kept = after < severity;
         if (kept) {
@@ -657,7 +711,7 @@ export async function renderOne(
       // The last gate before the image model: no names, ever (see stripNames).
       const gated = stripNames(prompt, names);
       if (gated.removed.length) emit({ type: "names_removed", key: job.key, names: gated.removed });
-      image = await backend.generate({ prompt: gated.text, references, ...(style ? { style } : {}), ...(direction ? { direction } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : {}) });
+      image = await backend.generate({ prompt: gated.text, references, ...(style ? { style } : {}), ...(direction ? { direction } : {}), ...(job.ref ? { aspectRatio: REF_ASPECT[job.ref.kind] } : job.aspectRatio ? { aspectRatio: job.aspectRatio } : {}), ...(job.imageSize ? { imageSize: job.imageSize } : {}) });
     } catch (err) {
       if (isBudgetError(err)) throw err;
       issues = [`generation failed: ${err instanceof Error ? err.message : String(err)}`];
@@ -766,7 +820,7 @@ async function geminiGenerate(spec: GeminiSpec, role: string, body: unknown, sle
 }
 
 // One image request body, and the image out of its response (live or batch).
-export function imageRequest(spec: GeminiSpec, { prompt, references, aspectRatio, style, direction }: ImageRequest): Record<string, unknown> {
+export function imageRequest(spec: GeminiSpec, { prompt, references, aspectRatio, imageSize, style, direction }: ImageRequest): Record<string, unknown> {
   const parts: GeminiPart[] = [];
   if (style) parts.push({ text: `ART STYLE — every image of this story uses exactly this style; render in it regardless of the references' subjects: ${style}` });
   if (direction) parts.push({ text: `AUTHOR ART DIRECTION — applies to every image; follow it exactly: ${direction}` });
@@ -779,7 +833,7 @@ export function imageRequest(spec: GeminiSpec, { prompt, references, aspectRatio
     contents: [{ role: "user", parts }],
     generationConfig: {
       responseModalities: ["IMAGE"],
-      imageConfig: { aspectRatio: aspectRatio ?? spec.aspectRatio ?? "16:9" }
+      imageConfig: { aspectRatio: aspectRatio ?? spec.aspectRatio ?? "16:9", ...(imageSize ? { imageSize } : {}) }
     }
   };
 }

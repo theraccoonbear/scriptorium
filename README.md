@@ -301,6 +301,26 @@ Output goes to `<run>/art/`: `character-<id>`, `location-<id>`, `prop-<id>`, `sc
 - **Changes:** a new image, even at the same path, remakes that portrait on the next `--only refs`, unless you've approved the portrait.
 - **Description:** keep a written `appearance` too. The art director writes every shot from text, so the words carry the look into scenes.
 
+### Extras
+
+`npm run make -- <story.json> --only extras` makes the bonus artwork, at 2K, without text (titles are set separately):
+
+- **Key art**, the story's streaming tile, at 2:3, 16:9 and 1:1. It's the story's cover, reframed to each shape, so it always matches the cover. It's re-made whenever the cover changes.
+- **A cast photo**: the principal characters posing out of character on set.
+
+`npm run review -- <story.json> extras` makes their contact sheet. `--redo extra-cast` retakes one, and `--redo extras` directs both again. By default they use the story's art style and direction. To set them explicitly:
+
+```jsonc
+"extras": {
+  "style": "…",                     // replaces the story's art style, for every extra
+  "direction": "…",                 // replaces the author's art direction for the image model
+  "keyArt":    { "style": "…" },    // just the key art
+  "castPhoto": { "direction": "…" } // just the cast photo
+}
+```
+
+The most specific setting wins. Changing one re-makes only the extras it applies to.
+
 ## Video
 
 `video` turns a run's art and audiobook into:

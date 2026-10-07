@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders } from "./providers.ts";
-import { planReferences, planShots, runStory } from "./engine.ts";
+import { planExtras, planReferences, planShots, runStory } from "./engine.ts";
 import { readApprovals } from "./approvals.ts";
 import { syncCharacterSheet } from "./characterSheet.ts";
 import { geminiSpeaker } from "./geminiTts.ts";
@@ -16,7 +16,7 @@ import { cueSheetFor, cuesFromSheet, generateCues, geminiVoiceCheck, lyriaCompos
 import type { Compose, MusicSettings, VoiceCheck } from "./music.ts";
 import type { TitleSettings } from "./titles.ts";
 import type { EncoderChoice } from "./video.ts";
-import { BatchImageBackend, CAST_PHOTO_LABEL, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig } from "./artist.ts";
+import { BatchImageBackend, CAST_PHOTO_KEY, CAST_PHOTO_LABEL, KEY_ART, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig } from "./artist.ts";
 import type { ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
@@ -206,7 +206,8 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
         if (locked.length) throw new Error(`${locked.join(", ")} ${locked.length === 1 ? "is" : "are"} approved — revoke the approval before redoing`);
         // The author's correction rides with the shot's prompt from now on.
         if (phase.notes) for (const key of phase.shotRedo ?? []) await log.append("shot_note", { key, note: phase.notes });
-        const planned = await planShots({ config, log, roles, runDir, ...(phase.replan?.length ? { replan: phase.replan } : {}) });
+        // --redo cover: the cover is directed again (a new prompt), then rendered.
+        const planned = await planShots({ config, log, roles, runDir, ...(phase.replan?.length ? { replan: phase.replan } : {}), ...(phase.shotRedo?.includes("cover") ? { redirectCover: true } : {}) });
         if (planned) console.error(`[scriptorium] ${c.ok(`shots planned for ${planned} scene${planned === 1 ? "" : "s"}`)}`);
       }
       events = log.events;
@@ -214,6 +215,29 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
       throw new Error("the refs step needs a config with an artdirector role");
     }
     return artStepInner(runDir, config, events, force, { approved, ...(phase.only ? { only: phase.only } : {}), ...(phase.shotRedo?.length ? { redoKeys: phase.shotRedo } : {}) });
+  });
+}
+
+// The extras phase (#49): key art (2:3, 16:9, 1:1) and a cast photo, in the
+// story's art style, at 2K; directed once, then rendered like the cover.
+// redo: these extras keys again (a new prompt with redirect, or just new takes).
+export async function extrasStep(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, opts: { redo?: string[]; redirect?: boolean; notes?: string } = {}) {
+  return accounted(runDir, config, "extras", async () => {
+    const approved = new Set((await readApprovals(runDir)).art);
+    const roles = buildRoleProviders(config);
+    if (!roles.artdirector) throw new Error("the extras step needs a config with an artdirector role");
+    const locked = (opts.redo ?? []).filter((k) => approved.has(k));
+    if (locked.length) throw new Error(`${locked.join(", ")} ${locked.length === 1 ? "is" : "are"} approved — revoke the approval before redoing`);
+    const log = new EventLog(runDir);
+    await log.load();
+    if (opts.notes) for (const key of opts.redo ?? []) await log.append("shot_note", { key, note: opts.notes });
+    if (await planExtras({ config, log, roles, runDir, redo: opts.redirect === true })) console.error(`[scriptorium] ${c.ok("extras planned: key art and a cast photo")}`);
+    const keys = [...Object.keys(KEY_ART), CAST_PHOTO_KEY];
+    // The author's overrides of the story's look: for all extras, or the key art / cast photo alone.
+    const x = config.extras ?? {};
+    const look = (own?: { style?: string; direction?: string }) => ({ ...(own?.style ?? x.style ? { style: own?.style ?? x.style } : {}), ...(own?.direction ?? x.direction ? { direction: own?.direction ?? x.direction } : {}) });
+    const overrides = Object.fromEntries([...Object.keys(KEY_ART).map((k) => [k, look(x.keyArt)]), [CAST_PHOTO_KEY, look(x.castPhoto)]].filter(([, o]) => Object.keys(o as object).length));
+    return artStepInner(runDir, config, log.events, force, { approved, keys, ...(Object.keys(overrides).length ? { overrides } : {}), ...(opts.redo?.length ? { redoKeys: opts.redo } : {}) });
   });
 }
 
@@ -240,7 +264,7 @@ function triageCap(runDir: string, config: StoryConfig, _events: StoryEvent[]): 
   };
 }
 
-async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, lock: { approved?: ReadonlySet<string>; only?: "references"; redoKeys?: string[] } = {}) {
+async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, lock: { approved?: ReadonlySet<string>; only?: "references"; redoKeys?: string[]; keys?: string[]; overrides?: Record<string, { style?: string; direction?: string }> } = {}) {
   const artist = resolveArtistConfig(config.artist);
   // Batch Mode: every image a stage asks for goes out together, at half price.
   const batch = artist.batch === true && artist.image.type === "gemini";

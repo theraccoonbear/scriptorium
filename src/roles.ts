@@ -368,9 +368,15 @@ MODES:
   - Vary the framing across shots: wide establishing views, medium shots of characters interacting, close-ups on hands, faces, and objects that matter.
   - At most THREE named characters in any shot; favour singles and two-shots. Image models blend the features of a crowd of specific people. When more of the company are present, they are unnamed, out-of-focus background figures: leave them out of characters and don't describe them.
   - characters: the ids of every named character visible in the shot (empty for none; never more than three). location: the id of the place the shot is set ("" if none fits). props: the ids of KNOWN PROPS visible in the shot. Their reference images are given to the image model.
-- COVER: one montage/compilation image that sums up the whole story's action, for a video thumbnail and opening card. Combine the key characters, places, and conflicts into a single composition with a clear focal point — dramatic and in motion, like a film poster, not a lineup of standing figures.
+- COVER: one image that sums up the whole story, for a video thumbnail and opening card: the key characters, places and conflicts combined into a single composition with a clear focal point, dramatic and in motion, not a lineup of standing figures. It is made in the story's ART STYLE like every other image — the same camera, lenses, light and grade as the scenes, as if photographed on the film's own sets. Never describe it as a poster, montage, collage, composite, illustration or render: those words turn the image into glossy digital artwork. Give it real depth of field (a sharp focal subject, softer background), natural motivated light and the scenes' colour grade.
   Output ONLY JSON:
   {"prompt":string}
+- EXTRAS: bonus artwork for the finished story, in the story's own art style. Two prompts:
+  - keyArt: the story's key art — the image on its streaming tile. One striking, textless composition with a clear focal point: the story's central figure(s), place and conflict, true to what happens in the story. Made in the story's ART STYLE exactly like the scenes (same camera, lenses, light, grade; real depth of field) — never described as a poster, montage, composite, illustration or render. It will be framed tall (2:3), wide (16:9) and square (1:1): keep the subject in the middle third, with open sky, darkness or texture at the top for a title to sit on. No text, lettering, logos or borders.
+  - castPhoto: a behind-the-scenes cast photo — the story's principal characters posing together between takes, in full costume on the set, relaxed and in good humour, as a film cast would for a publicity still. Each is described by appearance and costume exactly as canon (never by name). Anyone playing a creature, monster or masked part wears the costume with its mask or head off, held under an arm or at their side, their own ordinary face showing. Faces are ordinary, original faces: never resembling any real actor. A group photo, everyone visible head to toe or waist up, no text.
+  - castCharacters: the ids of every character in the cast photo (the principal cast, at most eight).
+  Output ONLY JSON:
+  {"keyArt":string,"castPhoto":string,"castCharacters":[string]}
 
 PROMPT RULES:
 - One paragraph, 80-150 words, in present tense, describing what the camera sees. Lead with the camera angle and the action — what each body is doing, in specific physical verbs — then setting, light and art style.
@@ -1336,7 +1342,7 @@ export async function reviewPatch(role: Role, params: {
   });
 }
 
-export type ArtMode = "scene" | "cover" | "references";
+export type ArtMode = "scene" | "cover" | "references" | "extras";
 
 export interface ArtShot {
   startParagraph: number; // 0-based index into the scene's paragraphs
@@ -1365,6 +1371,7 @@ export interface ArtDirection {
   artStyle?: string;           // references mode, when the story had no style yet
   shots?: ArtShot[];           // scene mode only
   references?: ArtReference[]; // references mode only
+  extras?: { keyArt: string; castPhoto: string; castCharacters: string[] };  // extras mode only
 }
 
 // One shot per ~45s of narration: at ~150 wpm that is ~110 words.
@@ -1511,9 +1518,9 @@ export async function artDirect(role: Role, params: {
     const discover = params.discoverProps ?? true;
     parts.push(`Create references for — characters: ${characterIds.join(", ") || "(none)"}; locations: ${locationIds.join(", ") || "(none)"}; props: ${[...objectIds, ...(params.redoProps ?? [])].join(", ") || "(none)"}${discover ? "; plus any other new key props." : ". No other props this time."}`);
   } else {
-    parts.push("MODE: COVER");
+    parts.push(mode === "extras" ? "MODE: EXTRAS" : "MODE: COVER");
     const summary = (beats ?? []).map((b, n) => `${n + 1}. [${b.location}] ${b.goal} — ${b.conflict}`).join("\n");
-    parts.push(`STORY SO FAR (one line per scene):\n${summary}`);
+    parts.push(`${mode === "extras" ? "THE STORY" : "STORY SO FAR"} (one line per scene):\n${summary}`);
   }
   // Keep continuity context bounded: the last few prompts carry the established look.
   const recent = previousPrompts.slice(-4);
@@ -1550,6 +1557,14 @@ export async function artDirect(role: Role, params: {
     });
     const defined = !artStyle && typeof (result as { art_style?: unknown }).art_style === "string" ? (result as { art_style: string }).art_style.trim() : "";
     return { result: { prompt: references[0]?.prompt ?? "", references, ...(defined ? { artStyle: defined } : {}) }, prompt, system, raw };
+  }
+  if (mode === "extras") {
+    const r = (result ?? {}) as { keyArt?: unknown; castPhoto?: unknown; castCharacters?: unknown };
+    const keyArt = typeof r.keyArt === "string" ? r.keyArt.trim() : "";
+    const castPhoto = typeof r.castPhoto === "string" ? r.castPhoto.trim() : "";
+    if (!keyArt || !castPhoto) throw new Error("art director returned no key art or cast photo prompt");
+    const castCharacters = (Array.isArray(r.castCharacters) ? r.castCharacters : []).map(String).filter((id, i, all) => bible.characters[id] && all.indexOf(id) === i).slice(0, 8);
+    return { result: { prompt: keyArt, extras: { keyArt, castPhoto, castCharacters } }, prompt, system, raw };
   }
   const out = result as Partial<ArtDirection>;
   if (typeof out.prompt !== "string" || !out.prompt.trim()) {

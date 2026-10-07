@@ -69,7 +69,7 @@ test("renderArt writes one image per job plus a manifest, passing earlier render
   const result = await renderArt(storyEvents(), { runDir, backend, maxReferences: 1 });
   assert.equal(result.rendered, 3);
   assert.deepEqual((await readdir(join(runDir, "art"), { recursive: true })).sort(), ["art.json", "cover", "cover/cover.png", "scene", "scene/01", "scene/01/scene.png", "scene/02", "scene/02/scene.png"], "one folder per kind");
-  assert.deepEqual(backend.calls.map((c) => c.references.length), [0, 1, 1]);
+  assert.deepEqual(backend.calls.map((c) => c.references.length), [0, 1, 2], "the cover is shown several scenes for their look");
   const manifest: ArtManifest = JSON.parse(await readFile(join(runDir, "art", "art.json"), "utf8"));
   assert.equal(manifest["scene-02"].prompt, "a hedgehog in a burrow");
   assert.equal(manifest.cover.accepted, true);
