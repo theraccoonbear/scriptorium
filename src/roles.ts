@@ -161,6 +161,45 @@ export const ISSUE_RULES = `CRITICAL RULES:
 
 // The canon re-check (#133): a written scene against canon that may have
 // arrived after it was written — the author's character sheet, notes, bible.
+// The cast check (#143): shot prompts never name anyone, so a character can be
+// described in a prompt but missing from its tags, and drawn without their
+// portrait as a stranger. This reads each prompt against the cast's looks and
+// says who it describes, foreground first.
+export const SHOT_CAST_SYSTEM = `You check illustration prompts for a story. Each SHOT PROMPT describes a picture without using anyone's name. The CAST lists the story's characters by id, with how each one looks.
+
+For each shot, list the ids of the cast members the prompt describes as visible in the picture — matched by their description (kind of person or creature, build, hair, face, clothing, gear), even when partly or loosely described. Order them by prominence: the main subject first, then the rest from foreground to background.
+- Count only someone the prompt actually describes. Unnamed extras ("a crowd", "a barkeep" when no cast member is a barkeep, "two guards") are not cast members.
+- A description that fits two cast members equally: pick the one the scene is about; if you can't tell, leave both out.
+- Never invent ids: use only the ids in the CAST.
+
+Output ONLY JSON: {"shots":[{"n":number,"characters":[id]}]}`;
+
+export async function checkShotCast(role: Role, p: { cast: { id: string; look: string }[]; shots: { n: number; prompt: string }[] }): Promise<RoleOutput<Record<number, string[]>>> {
+  const prompt = [
+    `CAST:\n${p.cast.map((c) => `- ${c.id}: ${c.look}`).join("\n")}`,
+    `SHOT PROMPTS:\n${p.shots.map((s) => `${s.n}. ${s.prompt}`).join("\n")}`
+  ].join("\n\n");
+  const out = await callJson(role, { role: "castcheck", system: SHOT_CAST_SYSTEM, prompt, ctx: { task: "shotcast", knownIds: p.cast.map((c) => c.id) } });
+  const known = new Set(p.cast.map((c) => c.id));
+  const raw = (out.result as { shots?: unknown })?.shots;
+  const result: Record<number, string[]> = {};
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const r = item as { n?: unknown; characters?: unknown };
+    const n = Number(r.n);
+    if (!Number.isInteger(n)) continue;
+    result[n] = [...new Set((Array.isArray(r.characters) ? r.characters : []).map(String).filter((id) => known.has(id)))];
+  }
+  return { ...out, result };
+}
+
+// A shot's cast after the check: whoever the prompt describes, most prominent
+// first, then anyone the art director tagged that the check didn't list (never
+// dropped), up to `max`.
+export const MAX_SHOT_CAST = 8;  // past three, the portraits go on one contact sheet
+export function mergeShotCast(tagged: string[], described: string[] | undefined, max = MAX_SHOT_CAST): string[] {
+  return [...new Set([...(described ?? []), ...tagged])].slice(0, Math.max(max, tagged.length));
+}
+
 export const CANON_SYSTEM = `You check a finished scene of a story against its CANON, which may have been written after the scene. Find every place the PROSE or the SHOT PROMPTS contradict the canon.
 
 Output ONLY JSON:

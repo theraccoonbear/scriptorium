@@ -389,6 +389,7 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
       else if (event.type === "job_failed") console.error(`[scriptorium] ${c.fail(`${event.key} failed: ${event.error}`)}`);
       else if (event.type === "triage") console.error(`[scriptorium] ${c.blue(c.bold(`triage: ${event.scored} images scored — retaking the worst ${event.retakes}`))}`);
       else if (event.type === "names_removed") console.error(`[scriptorium]   ${c.retry(`${event.key}: removed names from the image prompt: ${event.names.join(", ")}`)}`);
+      else if (event.type === "portraits_dropped") console.error(`[scriptorium]   ${c.retry(`${event.key}: no contact sheet (is ImageMagick installed?) — drawn without the portraits of ${event.dropped.join(", ")}`)}`);
       else if (event.type === "stale_approved") console.error(`[scriptorium]   ${c.retry(`${event.key}: drawn from ${event.refs.join(", ")}, which changed — approved, so it stays (revoke to reshoot)`)}`);
       else if (event.type === "retake_done") console.error(`[scriptorium]   ${event.kept ? c.ok(`${event.key}: retake kept (severity ${event.before} → ${event.after})`) : c.dim(`${event.key}: retake no better (${event.before} → ${event.after}) — kept the first`)}`);
     }
