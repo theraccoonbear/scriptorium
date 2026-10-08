@@ -319,6 +319,10 @@ export interface MakeOptions {
   noWait?: boolean;  // another command holds the run: stop instead of waiting (#139)
 }
 
+// The extras an edit in place can change (#150): the key art in its three shapes and the cast photo.
+const EDITABLE_EXTRAS = /^extra-(keyart-(2x3|16x9|1x1)|cast)$/;
+export interface ExtrasEdit { keys: string[]; note: string; source?: string; with?: string[] }
+
 // Shots to redo in the art step: by key (with the author's note), or whole scenes re-planned.
 export interface ShotRedo { redo: string[]; replan: number[]; note?: string; edit?: { keys: string[]; note: string; source?: string; with?: string[] } }
 
@@ -328,7 +332,7 @@ export interface StepRunners {
   refs: (story: ResolvedStory, events: StoryEvent[], redo: string[], notes?: string) => Promise<void>;
   voices: (story: ResolvedStory, events: StoryEvent[], redo: string[]) => Promise<void>;
   art: (story: ResolvedStory, events: StoryEvent[], shots?: ShotRedo) => Promise<void>;
-  extras: (story: ResolvedStory, events: StoryEvent[], redo: string[], notes?: string) => Promise<void>;
+  extras: (story: ResolvedStory, events: StoryEvent[], redo: string[], notes?: string, edit?: ExtrasEdit) => Promise<void>;
   canon: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   audiobook: (story: ResolvedStory, events: StoryEvent[], opts?: { freshPalette?: boolean }) => Promise<void>;
   music: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
@@ -370,7 +374,7 @@ const defaultRunners: StepRunners = {
     });
   },
   // --redo extras directs the key art and cast photo again; --redo extra-cast just retakes one.
-  extras: async (s, events, redo, notes) => { await extrasStep(s.runDir, s.config, events, false, { redo: redo.filter((r) => r !== "extras"), redirect: redo.includes("extras"), ...(notes ? { notes } : {}), ...(s.title ? { title: s.title } : {}), ...(s.subtitle ? { subtitle: s.subtitle } : {}), base: dirname(resolve(s.file)) }); },
+  extras: async (s, events, redo, notes, edit) => { await extrasStep(s.runDir, s.config, events, false, { redo: redo.filter((r) => r !== "extras"), redirect: redo.includes("extras"), ...(notes ? { notes } : {}), ...(edit ? { edit } : {}), ...(s.title ? { title: s.title } : {}), ...(s.subtitle ? { subtitle: s.subtitle } : {}), base: dirname(resolve(s.file)) }); },
   audiobook: async (s, events, opts) => { await audiobookStep(s.runDir, events, { ...audiobookOptions(s), ...(opts?.freshPalette ? { freshPalette: true } : {}) }); },
   // Off unless the story file has a "music" block.
   music: async (s) => {
@@ -536,11 +540,14 @@ async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {
   if ((redoShots.length || replanScenes.length) && !steps.includes("art")) throw new Error(`--redo scene-…: shots are redone in the art step (--only art)`);
   const edit = opts.edit ?? [];
   if (edit.length) {
-    const bad = edit.filter((k) => !/^scene-\d+-\d+$/.test(k) && k !== "cover");
-    if (bad.length) throw new Error(`--edit ${bad.join(",")}: only shots (scene-NN-MM) and the cover can be edited`);
+    const bad = edit.filter((k) => !/^scene-\d+-\d+$/.test(k) && k !== "cover" && !EDITABLE_EXTRAS.test(k));
+    if (bad.length) throw new Error(`--edit ${bad.join(",")}: only shots (scene-NN-MM), the cover, the key art (extra-keyart-2x3|16x9|1x1) and the cast photo (extra-cast) can be edited`);
+    const extras = edit.filter((k) => EDITABLE_EXTRAS.test(k));
+    if (extras.length && extras.length !== edit.length) throw new Error("--edit: extras and shots go in separate runs (they're edited in different phases)");
+    if (extras.length && !steps.includes("extras")) throw new Error("--edit extra-…: the key art and cast photo are edited in the extras phase (--only extras)");
     if (!opts.notes) throw new Error("--edit needs --note: the one change to make");
     if (redo.length) throw new Error("--edit and --redo go in separate runs (the note would apply to both)");
-    if (!steps.includes("art")) throw new Error("--edit scene-…: images are edited in the art step (--only art)");
+    if (!extras.length && !steps.includes("art")) throw new Error("--edit scene-…: images are edited in the art step (--only art)");
     if (opts.source && edit.length > 1) throw new Error("--source names one image's earlier take: edit one image at a time");
   } else if (opts.source || opts.with?.length) throw new Error(`${opts.source ? "--source" : "--with"} goes with --edit`);
   if (opts.notes && !edit.length && redoRefs.length === 0 && redoShots.length === 0 && redoExtras.filter((r) => r !== "extras").length === 0) throw new Error("--note goes with --redo <kind>:<id>, --redo scene-NN-MM, --redo extra-… or --edit scene-NN-MM");
@@ -587,7 +594,11 @@ async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {
     if (stage[0] === "extras") {
       const events = await new EventLog(story.runDir).load();
       if (!events.some((e) => e.type === "scene_committed")) throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
-      await withImageRound(story.runDir, await snapshotArt(story.runDir), () => run.extras(story, events, redoExtras, opts.notes), redoExtras.length ? { kind: "redo", subject: redoExtras.join(" "), ...(opts.notes ? { note: opts.notes } : {}) } : { kind: "extras", subject: "key art and cast photo" });
+      // An edit of the key art or cast photo (#150) runs here, like a shot's in the art step.
+      const extrasEdit = edit.length && edit.every((k) => EDITABLE_EXTRAS.test(k)) ? { keys: edit, note: opts.notes!, ...(opts.source ? { source: opts.source } : {}), ...(opts.with?.length ? { with: opts.with } : {}) } : undefined;
+      const round = extrasEdit ? { kind: "edit", subject: edit.join(" "), note: opts.notes, ...(opts.source ? { source: opts.source } : {}) }
+        : redoExtras.length ? { kind: "redo", subject: redoExtras.join(" "), ...(opts.notes ? { note: opts.notes } : {}) } : { kind: "extras", subject: "key art and cast photo" };
+      await withImageRound(story.runDir, await snapshotArt(story.runDir), () => run.extras(story, events, redoExtras, extrasEdit ? undefined : opts.notes, extrasEdit), round);
       continue;
     }
     if (stage[0] === "canon") {
