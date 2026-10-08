@@ -22,6 +22,10 @@ export interface TitleSettings {
   ending?: string | false;        // default "The End", or "To be continued" for a series chapter
   font?: string;                  // bundled name, system family or a font file (default EB Garamond)
   titleFont?: string;             // for the title and the ending (default Cinzel)
+  // The opening (#145): the story so far, scrolling up after the title — for a
+  // story that starts partway through. Text, or paragraphs; false/absent = none.
+  crawl?: string | string[] | false;
+  logo?: boolean;                 // the extras' title logo over the key art (default on when made)
 }
 
 // What the video draws, resolved: every string final, every font a file.
@@ -36,6 +40,22 @@ export interface TitleCards {
   font: string;
   titleFont: string;
   narration?: string;                  // the narrated title's WAV, relative to the run dir
+  // The opening (#145), relative to the run dir: the title logo (alpha) and the
+  // text-free key art it sits on; the crawl's paragraphs.
+  logo?: string;
+  openingArt?: string;
+  crawl?: string[];
+}
+
+// The extras' title logo and text-free 16:9 key art, when the extras step made them.
+export const OPENING_LOGO = "art/extra/logo.png";
+export const OPENING_ART = "art/extra/keyart-16x9.jpg";
+
+// The crawl's paragraphs, from the story file's text or list.
+export function crawlParagraphs(crawl: string | string[] | false | undefined): string[] {
+  if (!crawl) return [];
+  const list = Array.isArray(crawl) ? crawl : crawl.split(/\n\s*\n/);
+  return list.map((p) => p.replace(/\s+/g, " ").trim()).filter(Boolean);
 }
 
 // ---- scene titles ----
@@ -275,6 +295,10 @@ export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOpt
   }
 
   const ending = s.ending === false ? undefined : s.ending ?? (opts.series ? "To be continued" : "The End");
+  const has = async (f: string) => readFile(join(opts.runDir, f)).then(() => true, () => false);
+  const logo = title && s.logo !== false && (await has(OPENING_LOGO)) ? OPENING_LOGO : undefined;
+  const openingArt = (await has(OPENING_ART)) ? OPENING_ART : undefined;
+  const crawl = crawlParagraphs(s.crawl);
   return {
     title,
     subtitle: title ? opts.subtitle?.trim() || undefined : undefined,
@@ -285,6 +309,9 @@ export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOpt
     next: opts.series?.next ? `Next: ${opts.series.next}` : undefined,
     font: await resolveFont(s.font ?? "EB Garamond", opts.base),
     titleFont: await resolveFont(s.titleFont ?? "Cinzel", opts.base),
-    narration
+    narration,
+    ...(logo ? { logo } : {}),
+    ...(openingArt && (logo || crawl.length) ? { openingArt } : {}),
+    ...(crawl.length ? { crawl } : {})
   };
 }

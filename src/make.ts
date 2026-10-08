@@ -225,8 +225,8 @@ function checkVideoTitles(path: string, raw: StoryFile) {
   }
   const t = raw.video?.titles;
   if (t === undefined || t === false) return;
-  if (typeof t !== "object" || t === null) throw new Error(`${path}: video "titles" must be false or { opening, narrate, sceneTitles, credits, ending, font, titleFont }`);
-  for (const k of ["opening", "narrate", "credits"] as const) {
+  if (typeof t !== "object" || t === null) throw new Error(`${path}: video "titles" must be false or { opening, narrate, sceneTitles, credits, ending, font, titleFont, crawl, logo }`);
+  for (const k of ["opening", "narrate", "credits", "logo"] as const) {
     if (t[k] !== undefined && typeof t[k] !== "boolean") throw new Error(`${path}: video titles "${k}" must be true or false`);
   }
   if (t.sceneTitles !== undefined && typeof t.sceneTitles !== "boolean" && !(Array.isArray(t.sceneTitles) && t.sceneTitles.every((x) => typeof x === "string"))) {
@@ -235,6 +235,9 @@ function checkVideoTitles(path: string, raw: StoryFile) {
   if (t.ending !== undefined && t.ending !== false && typeof t.ending !== "string") throw new Error(`${path}: video titles "ending" must be text (e.g. "The End") or false`);
   for (const k of ["font", "titleFont"] as const) {
     if (t[k] !== undefined && typeof t[k] !== "string") throw new Error(`${path}: video titles "${k}" must be a font name or file`);
+  }
+  if (t.crawl !== undefined && t.crawl !== false && typeof t.crawl !== "string" && !(Array.isArray(t.crawl) && t.crawl.every((x) => typeof x === "string"))) {
+    throw new Error(`${path}: video titles "crawl" must be text, a list of paragraphs, or false`);
   }
 }
 

@@ -65,7 +65,7 @@ export interface TimelineScene {
 
 // One clip of the finished video, in order. Every length is in whole frames,
 // and the picture, the sound and the subtitles are all laid out from this list.
-export type PartKind = "intro" | "gap" | "card" | "scene" | "end" | "credits" | "next";
+export type PartKind = "intro" | "crawl" | "gap" | "card" | "scene" | "end" | "credits" | "next";
 export interface TimelinePart {
   kind: PartKind;
   file: string;            // in video/parts/
@@ -191,6 +191,7 @@ export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: Vid
 
   const parts: TimelinePart[] = [];
   if (introFrames > 0) parts.push({ kind: "intro", file: "intro.mp4", frames: introFrames });
+  if (titles?.crawl?.length) parts.push({ kind: "crawl", file: "crawl.mp4", frames: toFrames(crawlSec(titles.crawl)) });
   scenes.forEach((s, k) => {
     const nn = String(s.index + 1).padStart(2, "0");
     if (cardFrames > 0) parts.push({ kind: "card", file: `card-${nn}.mp4`, frames: cardFrames, scene: k });
@@ -277,7 +278,28 @@ export function introFilterGraph(introFrames: number): string {
 
 // One line of text on a card: centered, faded up at `in` and out by `out` (seconds into the card).
 export interface CardText { text: string; font: string; size: number; y: number; in: number; out: number }
-export interface CardSpec { cover: boolean; texts: CardText[] }
+// `art`: the image behind the card (default the cover); `logo`: the title logo
+// (alpha) over it; `crawl`: text scrolling up the frame for the card's length.
+export interface CardSpec { cover: boolean; texts: CardText[]; art?: string; logo?: string; crawl?: { text: string; font: string; size: number } }
+
+// The crawl reads at an easy pace, ~2.5 words a second, with time to settle in.
+export function crawlSec(paragraphs: string[]): number {
+  const words = paragraphs.join(" ").split(/\s+/).filter(Boolean).length;
+  return Math.max(12, words / 2.5 + 5);
+}
+
+// Paragraphs wrapped to lines of at most `width` characters, a blank line between.
+export function wrapCrawl(paragraphs: string[], width = 46): string {
+  return paragraphs.map((p) => {
+    const lines: string[] = [];
+    let line = "";
+    for (const w of p.split(/\s+/)) {
+      if (line && (line + " " + w).length > width) { lines.push(line); line = w; } else line = line ? `${line} ${w}` : w;
+    }
+    if (line) lines.push(line);
+    return lines.join("\n");
+  }).join("\n\n");
+}
 
 const TEXT_FADE = 0.7;
 const TEXT_MAX_WIDTH = 1680;
@@ -299,6 +321,11 @@ export function cardSpec(part: TimelinePart, timeline: Timeline, titles: TitleCa
   switch (part.kind) {
     case "intro": {
       const texts: CardText[] = [];
+      // The title logo over the key art (the subtitle beneath it), when the extras made them.
+      if (titles.logo) {
+        if (titles.subtitle) texts.push(line(titles.subtitle, false, 60, 800, 2.2, len - 1.2));
+        return { cover: Boolean(titles.openingArt ?? timeline.cover), texts, ...(titles.openingArt ? { art: titles.openingArt } : {}), logo: titles.logo };
+      }
       if (titles.title) {
         const until = len - 1.2;
         texts.push(line(titles.title, true, 112, titles.subtitle ? 490 : 540, 1.2, until));
@@ -312,6 +339,8 @@ export function cardSpec(part: TimelinePart, timeline: Timeline, titles: TitleCa
       const title = titles.sceneTitles[scene.index];
       return { cover: false, texts: title ? [line(numeral, true, 60, 470, 0.5), line(title, false, 84, 590, 0.9)] : [line(numeral, true, 96, 540, 0.5)] };
     }
+    case "crawl":
+      return { cover: Boolean(titles.openingArt ?? timeline.cover), texts: [], ...(titles.openingArt ? { art: titles.openingArt } : {}), crawl: { text: wrapCrawl(titles.crawl ?? []), font: titles.font, size: 58 } };
     case "end":
       return { cover: false, texts: [line(titles.ending!, true, 96, 540, 0.6)] };
     case "credits": {
@@ -345,9 +374,20 @@ function drawText(t: CardText, textFile: string): string {
 export function cardFilterGraph(spec: CardSpec, frames: number, textFile: (text: string) => string): string {
   const len = sec(frames);
   const edge = Math.min(0.75, len / 4);
-  const base = spec.cover
-    ? `[0:v]${kenBurnsFilter("zoom_in", frames)}${spec.texts.length ? ",drawbox=x=0:y=0:w=iw:h=ih:color=black@0.4:t=fill" : ""}`
+  // Dimmed under words: a little under the logo, more under the crawl.
+  const dim = spec.crawl ? 0.62 : spec.logo ? 0.2 : spec.texts.length ? 0.4 : 0;
+  let base = spec.cover
+    ? `[0:v]${kenBurnsFilter("zoom_in", frames)}${dim ? `,drawbox=x=0:y=0:w=iw:h=ih:color=black@${dim}:t=fill` : ""}`
     : `color=black:s=${WIDTH}x${HEIGHT}:r=${FPS}:d=${len},format=yuv420p`;
+  // The logo fades in and settles, then fades before the card does.
+  if (spec.logo) {
+    const logoIn = spec.cover ? 1 : 0;
+    base = `${base}[bg];[${logoIn}:v]loop=loop=-1:size=1,setpts=N/${FPS}/TB,format=rgba,scale=w='min(1500,560*iw/ih)':h=-1,fade=t=in:st=1.0:d=1.6:alpha=1,fade=t=out:st=${Math.max(2.6, len - 1.8)}:d=1.0:alpha=1[logo];[bg][logo]overlay=x=(W-w)/2:y=H*0.2-h/2:format=auto,format=yuv420p`;
+  }
+  // The crawl scrolls from below the frame to above it over the card's length.
+  if (spec.crawl) {
+    base += `,drawtext=fontfile=${quoted(spec.crawl.font)}:textfile=${quoted(textFile(spec.crawl.text))}:expansion=none:fontsize=${spec.crawl.size}:line_spacing=${Math.round(spec.crawl.size * 0.45)}:text_align=C:fontcolor=0xF2E8D5:shadowcolor=black@0.85:shadowx=3:shadowy=3:x=(w-text_w)/2:y='h-(h+text_h)*t/${len}'`;
+  }
   const text = spec.texts.map((t) => `,${drawText(t, textFile(t.text))}`).join("");
   return `${base}${text},fade=t=in:d=${edge},fade=t=out:st=${len - edge}:d=${edge},trim=end_frame=${frames}[out]`;
 }
@@ -437,7 +477,10 @@ function musicGraph(timeline: Timeline, inputs: ReturnType<typeof musicInputs>, 
       labels.push(`[${label}]`);
       continue;
     }
-    const d = sec(part.frames);
+    // The opening's crawl shares the theme with the title: one stretch of it.
+    let frames = part.frames;
+    if (part.kind === "intro") while (parts[k + 1]?.kind === "crawl") frames += parts[++k].frames;
+    const d = sec(frames);
     const input = part.kind === "intro" ? at("intro") : part.kind === "scene" ? at(part.scene!) : undefined;
     if (input === undefined) lines.push(`anullsrc=r=48000:cl=stereo,atrim=end=${d}[${label}]`);
     else if (part.kind === "intro") {
@@ -684,7 +727,7 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
       continue;
     }
     const spec = cardSpec(part, timeline, opts.titles!);
-    graphs.set(part, { inputs: spec.cover ? [timeline.cover!] : [], filter: cardFilterGraph(spec, part.frames, textFile) });
+    graphs.set(part, { inputs: [...(spec.cover ? [spec.art ?? timeline.cover!] : []), ...(spec.logo ? [spec.logo] : [])], filter: cardFilterGraph(spec, part.frames, textFile) });
   }
   if (texts.size) {
     await mkdir(textDir, { recursive: true });
