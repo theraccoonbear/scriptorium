@@ -6,6 +6,7 @@ import { renderStory } from "./engine.ts";
 import { checkCanon } from "./roles.ts";
 import type { CanonIssue } from "./roles.ts";
 import { findRound, newRound, readRound } from "./rounds.ts";
+import { markRound } from "./pending.ts";
 import type { Round, RoundInfo } from "./rounds.ts";
 import type { Role, SceneArtData, SceneCommittedData, StoryEvent } from "./types.ts";
 
@@ -104,6 +105,8 @@ export async function applyCanonFixes(o: { runDir: string; round?: number; skip?
   }
   await writeFile(file, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
   await writeFile(join(o.runDir, "story.md"), renderStory(events) + "\n");
+  // The round is dealt with: what was applied and what was left (#137).
+  await markRound(round, { applied: { at: new Date().toISOString(), fixes: applied.map((f) => f.n), skipped: o.skip ?? [], missing: missing.map((f) => f.n) } });
   const approved = new Set((await readApprovals(o.runDir)).art);
   const approvedShots = [...new Set(applied.filter((f) => f.where !== "prose" && approved.has(f.where)).map((f) => f.where))];
   return { applied, missing, approvedShots, backup };

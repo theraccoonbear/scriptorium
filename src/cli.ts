@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { findLedgers, filterEntries, ledgerFor, retag, spendAcross, spendForRun } from "./spend.ts";
+import { closeRounds, formatPending, roundStatuses } from "./pending.ts";
 import { join } from "node:path";
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
@@ -325,8 +326,22 @@ async function main() {
   }
 
   if (command === "review") {
-    const [storyFile, kind] = positionals;
-    if (!storyFile || !(REVIEW_KINDS as readonly string[]).includes(kind)) throw new Error(`usage: review <story.json> ${REVIEW_KINDS.join("|")}`);
+    const [storyFile, kind, ...rest] = positionals;
+    // What's waiting on the author, with the files to look at (#137, #123); and closing rounds seen.
+    if (storyFile && kind === "pending") {
+      const story = await loadStoryFile(storyFile);
+      console.log(formatPending(await roundStatuses(story.runDir), storyFile));
+      return;
+    }
+    if (storyFile && kind === "done") {
+      const numbers = rest.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+      if (numbers.length === 0) throw new Error(`usage: review <story.json> done <round number>... [--note "…"]`);
+      const story = await loadStoryFile(storyFile);
+      const closed = await closeRounds(story.runDir, numbers, values.note);
+      console.error(`[scriptorium] ${c.ok(`closed ${closed.join(", ")}`)}`);
+      return;
+    }
+    if (!storyFile || !(REVIEW_KINDS as readonly string[]).includes(kind)) throw new Error(`usage: review <story.json> ${REVIEW_KINDS.join("|")}|pending | review <story.json> done <N>... [--note "…"]`);
     const story = await loadStoryFile(storyFile);
     const out = await buildReview(story.runDir, kind as ReviewKind);
     for (const f of out.files) console.log(f);

@@ -1,3 +1,4 @@
+import { markRound } from "./pending.ts";
 import { execFile } from "node:child_process";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -126,5 +127,6 @@ export async function pickAudition(o: { storyFile: string; runDir: string; id: s
       await writeFile(sheetFile, JSON.stringify(sheet, null, 2) + "\n");
     }
   } catch { /* no sheet: the voice alone */ }
+  await markRound(round, { picked: c.voice });  // the round is dealt with (#137)
   return { voice: c.voice, ...(vocal ? { vocal } : {}), round };
 }
