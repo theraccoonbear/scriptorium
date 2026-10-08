@@ -42,6 +42,8 @@ export interface PitchInput {
   audio?: { narration?: "kokoro" | "gemini"; dialogue?: "kokoro" | "gemini"; geminiMode?: GeminiMode; geminiConcurrency?: number; skip?: boolean; geminiModel?: string; geminiBatch?: boolean; samplesOnly?: boolean; speakers?: number };
   budgetUsd?: number;
   artManifest?: Record<string, { prompt: string }>;  // art/art.json: images already rendered
+  approved?: string[];                               // approved images: never redrawn, so never counted (#136)
+  redo?: string[];                                   // --redo keys (scene-01-02, character:nell): redrawn whatever their prompt
   scenesVoiced?: number;                             // scenes whose audio is already rendered
   // The score: a theme plus one cue per scene (`cues`), `made` of them already clean.
   music?: { skip?: boolean; cues?: number; made?: number };
@@ -82,14 +84,18 @@ export function pitch(input: PitchInput): Pitch {
   let cover = 1;
   // Images already rendered for the same prompt are skipped, as the art step skips them.
   if (input.artManifest && directed.size > 0) {
-    const pending = buildArtJobs(input.events).filter((j) => input.artManifest![j.key]?.prompt !== j.prompt);
+    // What the art step will draw: what's changed and not approved, plus what's redone.
+    const approved = new Set(input.approved ?? []);
+    const redo = new Set((input.redo ?? []).map((r) => r.replace(":", "-")));
+    const pending = buildArtJobs(input.events).filter((j) => redo.has(j.key) || (!approved.has(j.key) && input.artManifest![j.key]?.prompt !== j.prompt));
     references = pending.filter((j) => j.ref).length + Math.max(0, undirectedScenes) * 2;
     shotsToRender = pending.filter((j) => !j.ref && j.sceneIndex !== undefined).length + Math.max(0, undirectedScenes) * Math.round(TYPICAL.wordsPerScene / (input.wordsPerShot ?? 110));
     cover = pending.some((j) => j.key === "cover") || input.scenes > committed.length ? 1 : 0;
   }
   const art = input.art ?? {};
   if (art.refsOnly) {
-    references = art.refTargets ?? references;
+    const redoRefs = (input.redo ?? []).filter((r) => /^(character|location|prop):/.test(r)).length;
+    references = (art.refTargets ?? references) + redoRefs;
     shotsToRender = 0;
     cover = 0;
   }

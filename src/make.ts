@@ -369,7 +369,7 @@ function audiobookOptions(s: ResolvedStory): AudiobookStepOptions {
 const SETTINGS_FILE = "story-settings.json";
 
 // The story's pitch: what the steps to run will need and cost.
-export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: readonly Step[] = STEPS): Pitch {
+export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: readonly Step[] = STEPS, redo: string[] = []): Pitch {
   const artist = story.config.artist ?? {};
   return pitch({
     events,
@@ -379,7 +379,7 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     art: {
       maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, batch: artist.batch,
       skip: !(steps.includes("art") || steps.includes("refs") || steps.includes("extras")) || !story.config.roles.artdirector,
-      ...(steps.includes("refs") && !steps.includes("art") ? { refsOnly: true, refTargets: refTargets(events) } : {}),
+      ...(steps.includes("refs") && !steps.includes("art") ? { refsOnly: true, refTargets: refTargets(events, approvedArt(story.runDir), redo) } : {}),
       ...(steps.includes("extras") && !steps.includes("art") && !steps.includes("refs") ? { extrasOnly: true } : {})
     },
     audio: {
@@ -389,6 +389,8 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     },
     ...(story.config.budget ? { budgetUsd: story.config.budget.usd } : {}),
     ...readJson<Record<string, { prompt: string }>>(join(story.runDir, "art", "art.json"), (m) => ({ artManifest: m })),
+    approved: [...approvedArt(story.runDir)],
+    ...(redo.length ? { redo } : {}),
     music: {
       skip: !steps.includes("music") || !story.music,
       cues: (story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length) + 1,
@@ -399,14 +401,20 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
 }
 
 // References the refs phase would make: portraits and places without one,
-// portraits the sheet has changed, and a couple of key props.
-function refTargets(events: StoryEvent[]): number {
+// portraits the sheet has changed (unless approved or redone: those are
+// counted as redos), and a couple of key props.
+function refTargets(events: StoryEvent[], approved: ReadonlySet<string> = new Set(), redo: string[] = []): number {
   const have = refAppearances(events);
   const bible = replay(events);
   return portraitIds(events).filter((id) => !have.characters[id]).length
     + Object.keys(bible.locations).filter((id) => !have.locations[id]).length
-    + staleCharacterRefs(events).length
+    + staleCharacterRefs(events).filter((id) => !approved.has(`character-${id}`) && !redo.includes(`character:${id}`)).length
     + (Object.keys(have.props).length === 0 ? 2 : 0);
+}
+
+// Approved art keys (approvals.json), read synchronously for the pitch.
+function approvedArt(runDir: string): Set<string> {
+  try { return new Set((JSON.parse(readFileSync(join(runDir, "approvals.json"), "utf8")) as { art?: string[] }).art ?? []); } catch { return new Set(); }
 }
 
 function readJson<T>(path: string, wrap: (value: T) => object): object {
@@ -478,7 +486,7 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
 
   console.error(`[scriptorium] ${c.dim(`make ${storyPath} → ${story.runDir} (${steps.join(" → ")})`)}`);
   // The pitch, before anything is spent (the full breakdown: npm run pitch).
-  const p = storyPitch(story, await loadRun(story.runDir), steps);
+  const p = storyPitch(story, await loadRun(story.runDir), steps, redo);
   console.error(`[scriptorium] ${c.dim(`pitch: ~${usd(p.totalUsd)} to spend (images ~${usd(p.images.usd)}, voice ~${usd(p.audio.usd)}${p.music.cues ? `, music ~${usd(p.music.usd)}` : ""}, ${p.audio.geminiRequests} Gemini voice requests)${story.config.budget ? ` · budget ${usd(story.config.budget.usd)}` : ""}`)}`);
   for (const w of p.warnings) console.error(`[scriptorium] ${c.retry(w)}`);
   // Art and audio don't depend on each other: they run in the story's order

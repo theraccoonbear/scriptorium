@@ -37,6 +37,24 @@ test("with the story written, tagged and directed, counts are exact — and rend
   assert.equal(changed.images.references, 1, "a changed prompt is redone");
 });
 
+// Issue #136: the art pitch counted approved images whose prompt had changed
+// (the art step never redraws those) and missed what --redo redraws.
+test("the art pitch counts what the art step will draw: not approved images, plus redos", () => {
+  const events = [
+    ev(0, "scene_committed", { index: 0, prose: "Rain.", bible: { characters: {} } }),
+    ev(1, "visual_ref", { kind: "character", id: "nell", appearance: "a", prompt: "portrait nell, new style" }),
+    ev(2, "scene_art", { sceneIndex: 0, prompt: "s1", shots: [{ startParagraph: 0, prompt: "s1" }, { startParagraph: 0, prompt: "s2" }] }),
+    ev(3, "cover_art", { sceneCount: 1, prompt: "cover" })
+  ];
+  const artManifest = { "character-nell": { prompt: "portrait nell, old style" }, "scene-01-01": { prompt: "s1" }, "scene-01-02": { prompt: "s2" }, cover: { prompt: "cover" } };
+  const approvedOnly = pitch({ events, scenes: 1, artManifest, approved: ["character-nell"] });
+  assert.deepEqual([approvedOnly.images.generations, approvedOnly.images.usd], [0, 0], "an approved portrait whose style changed costs nothing");
+  const oneShot = pitch({ events, scenes: 1, artManifest, approved: ["character-nell"], redo: ["scene-01-02"] });
+  assert.deepEqual([oneShot.images.references, oneShot.images.shots, oneShot.images.cover], [0, 1, 0], "a --redo of one shot pitches one shot");
+  const refs = pitch({ events, scenes: 1, artManifest, approved: ["character-nell"], redo: ["character:nell"], art: { refsOnly: true, refTargets: 0 } });
+  assert.equal(refs.images.references, 1, "a --redo of a reference counts in the refs phase");
+});
+
 test("the pitch warns about multi-day voicing and blown budgets, and uses the run's own costs", () => {
   const many = pitch({ events: [], scenes: 6, audio: { narration: "gemini", dialogue: "gemini", geminiMode: "line" }, budgetUsd: 1 });
   assert.ok(many.audio.days > 1);
