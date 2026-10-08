@@ -411,6 +411,7 @@ export interface AudiobookStepOptions {
   characterVoices?: Record<string, string>;
   geminiMode?: GeminiMode;
   paletteSize?: number;  // palette mode: tones per speaker (default 4)
+  freshPalette?: boolean;  // design the tone palettes anew (--redo palette); otherwise they're kept (#135)
   geminiRpm?: number;
   geminiFallback?: "kokoro" | "gemini";
   pauseScale?: number;
@@ -467,7 +468,7 @@ async function prepareVoices(runDir: string, events: StoryEvent[], opts: Audiobo
     if (!role) throw new Error('geminiMode "palette" needs a config (for the voice director\'s model) — pass --config');
     const log = new EventLog(runDir);
     await log.load();
-    palette = await designRun(log, role, opts.paletteSize ?? 4);
+    palette = await designRun(log, role, opts.paletteSize ?? 4, { fresh: opts.freshPalette });
     for (const [speaker, p] of Object.entries(palette.speakers)) console.error(`[scriptorium] ${c.dim(`palette ${speaker}: ${p.tones.join(" · ")}`)}`);
     events = log.events;
   }

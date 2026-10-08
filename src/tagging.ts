@@ -239,8 +239,11 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
   const done = sceneTags(log.events);
   const tagged: number[] = [];
   const committed = log.events.filter((e) => e.type === "scene_committed");
+  // Only each scene's latest version: a superseded draft is never voiced.
+  const latest = new Map(committed.map((e) => [(e.data as SceneCommittedData).index, e]));
   for (const e of committed) {
     const d = e.data as SceneCommittedData;
+    if (latest.get(d.index) !== e) continue;
     // The cast as it stood once this scene was committed, plus speakers already found.
     const bible = replay(log.events.slice(0, log.events.indexOf(e) + 1));
     const known = new Set(Object.keys(bible.characters));
@@ -283,8 +286,13 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
     for (const ch of checked.checks) console.error(`[scriptorium]     ${ch}`);
     // A tone is kept only while it indexes the final speaker's palette (a quote check may have changed the speaker).
     const finalTones = tones && palettes ? checked.tags.map((tag, n) => (tag === tonedFor[n] && tones[n] !== null && tones[n]! < (palettes[tag]?.length ?? 0) ? tones[n] : null)) : undefined;
+    // Paragraphs the edit didn't touch keep their earlier tag, tone and delivery,
+    // so their voice requests (and caches) stay the same (#135).
+    const delivery = [...out.result.delivery];
+    const kept = keepUnchanged(log.events, d.index, paragraphs, { tags: checked.tags, delivery, ...(finalTones ? { tones: finalTones } : {}) }, palette?.source);
+    if (kept > 0) console.error(`[scriptorium]   scene ${d.index + 1}: ${kept} unchanged paragraph${kept === 1 ? "" : "s"} keep their earlier tags and tones`);
     const data: SceneTagsData = {
-      version: TAGGER_VERSION, index: d.index, source: proseHash(d.prose), tags: checked.tags, delivery: out.result.delivery, speakers: out.result.newSpeakers,
+      version: TAGGER_VERSION, index: d.index, source: proseHash(d.prose), tags: checked.tags, delivery, speakers: out.result.newSpeakers,
       ...(checked.checks.length ? { checks: checked.checks } : {}),
       ...(finalTones && palette ? { tones: finalTones, palette: palette.source } : {})
     };
@@ -293,6 +301,63 @@ export async function tagRun(log: EventLog, role: Role, onScene: (index: number,
     onScene(d.index, [...new Set(checked.tags.filter((t) => t !== "narrator"))]);
   }
   return tagged;
+}
+
+// The scene's previous tags (for an earlier version of its prose, under the
+// same palette) and that prose, newest first; undefined when there are none.
+export function previousTags(events: StoryEvent[], index: number, palette?: string): { tags: SceneTagsData; prose: string } | undefined {
+  const proseBy = new Map<string, string>();
+  for (const e of events) if (e.type === "scene_committed" && (e.data as SceneCommittedData).index === index) proseBy.set(proseHash((e.data as SceneCommittedData).prose), (e.data as SceneCommittedData).prose);
+  for (const e of [...events].reverse()) {
+    if (e.type !== "scene_tags") continue;
+    const t = e.data as SceneTagsData;
+    if (t.index !== index || (t.version ?? 1) < TAGGER_VERSION || (palette !== undefined && t.palette !== palette)) continue;
+    const prose = proseBy.get(t.source);
+    if (prose !== undefined) return { tags: t, prose };
+  }
+  return undefined;
+}
+
+// Copies the earlier tag, tone and delivery onto each paragraph whose text is
+// unchanged since the scene was last tagged (each earlier paragraph used once).
+// Returns how many paragraphs kept theirs.
+export function keepUnchanged(events: StoryEvent[], index: number, paragraphs: string[], into: { tags: string[]; delivery: string[]; tones?: (number | null)[] }, palette?: string): number {
+  const before = previousTags(events, index, palette);
+  if (!before) return 0;
+  const old = proseParagraphs(before.prose);
+  const unused = new Map<string, number[]>();
+  old.forEach((p, i) => unused.set(p, [...(unused.get(p) ?? []), i]));
+  let kept = 0;
+  paragraphs.forEach((p, n) => {
+    const i = unused.get(p)?.shift();
+    if (i === undefined || before.tags.tags[i] === undefined) return;
+    into.tags[n] = before.tags.tags[i];
+    into.delivery[n] = before.tags.delivery[i] ?? "";
+    if (into.tones) into.tones[n] = before.tags.tones?.[i] ?? null;
+    kept++;
+  });
+  return kept;
+}
+
+// How much of the book has to be voiced again because its prose changed since
+// it was tagged (#149): the words of paragraphs that are new or edited, as a
+// share of all the book's words. A scene never tagged counts whole.
+export function changedShare(events: StoryEvent[]): number {
+  const current = sceneTags(events);
+  let changed = 0;
+  let total = 0;
+  const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
+  const latest = new Map<number, string>();
+  for (const e of events) if (e.type === "scene_committed") latest.set((e.data as SceneCommittedData).index, (e.data as SceneCommittedData).prose);
+  for (const [index, prose] of latest) {
+    const paragraphs = proseParagraphs(prose);
+    total += paragraphs.reduce((n, p) => n + words(p), 0);
+    if (current.has(index)) continue;
+    const before = previousTags(events, index);
+    const old = new Set(before ? proseParagraphs(before.prose) : []);
+    changed += paragraphs.filter((p) => !old.has(p)).reduce((n, p) => n + words(p), 0);
+  }
+  return total > 0 ? changed / total : 0;
 }
 
 // ---- tone palettes (geminiMode "palette") ----
@@ -318,22 +383,27 @@ function paletteInputs(events: StoryEvent[], size: number) {
   return { cast, script, source };
 }
 
+// The story's palette: the newest one made by this palette logic at this size.
+// It is kept when the script changes (#135): a prose edit re-designing every
+// tone would re-tag and re-voice the whole book. `fresh` asks for a new one.
 export function latestPalette(events: StoryEvent[], size: number): TonePaletteData | undefined {
-  const { source } = paletteInputs(events, size);
-  const e = [...events].reverse().find((x) => x.type === "tone_palette" && (x.data as TonePaletteData).source === source);
+  const e = [...events].reverse().find((x) => x.type === "tone_palette" && (x.data as TonePaletteData).version === PALETTE_VERSION && (x.data as TonePaletteData).size === size);
   return e?.data as TonePaletteData | undefined;
 }
 
-// Designs every speaker's tone palette from the whole script (once per script
-// and cast), the narrator's included: its registers come from this story.
-export async function designRun(log: EventLog, role: Role, size: number): Promise<TonePaletteData> {
-  const existing = latestPalette(log.events, size);
-  if (existing) return existing;
+// Designs every speaker's tone palette from the whole script, the narrator's
+// included: its registers come from this story. Once made it stays (#135); a
+// speaker who joins later gets tones of their own, added under the same
+// palette, so every scene tagged with it stays valid. `fresh` designs anew.
+export async function designRun(log: EventLog, role: Role, size: number, opts: { fresh?: boolean } = {}): Promise<TonePaletteData> {
+  const existing = opts.fresh ? undefined : latestPalette(log.events, size);
   const { cast, script, source } = paletteInputs(log.events, size);
-  const out = await designPalettes(role, { script, cast, size });
-  const speakers: Record<string, { tones: string[] }> = {};
-  for (const [id, tones] of Object.entries(out.result)) speakers[id] = { tones };
-  const data: TonePaletteData = { version: PALETTE_VERSION, size, source, speakers };
+  const missing = existing ? cast.filter((c) => !existing.speakers[c.id]) : cast;
+  if (existing && missing.length === 0) return existing;
+  const out = await designPalettes(role, { script, cast: missing, size });
+  const speakers: Record<string, { tones: string[] }> = { ...existing?.speakers };
+  for (const [id, tones] of Object.entries(out.result)) if (!existing || !speakers[id]) speakers[id] = { tones };
+  const data: TonePaletteData = { version: PALETTE_VERSION, size, source: existing?.source ?? source, speakers };
   await log.append("tone_palette", data);
   return data;
 }

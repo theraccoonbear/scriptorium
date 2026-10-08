@@ -45,6 +45,7 @@ export interface PitchInput {
   approved?: string[];                               // approved images: never redrawn, so never counted (#136)
   redo?: string[];                                   // --redo keys (scene-01-02, character:nell): redrawn whatever their prompt
   scenesVoiced?: number;                             // scenes whose audio is already rendered
+  revoiceShare?: number;                             // share of the book's words changed since voiced (#149)
   // The score: a theme plus one cue per scene (`cues`), `made` of them already clean.
   music?: { skip?: boolean; cues?: number; made?: number };
 }
@@ -118,7 +119,8 @@ export function pitch(input: PitchInput): Pitch {
   // Voice: Gemini requests by mode (exact when the scenes are tagged and batched).
   const audio = input.audio ?? {};
   // Scenes already voiced are skipped, as the audiobook step skips them.
-  const unvoiced = input.scenes > 0 ? Math.max(0, input.scenes - (input.scenesVoiced ?? 0)) / input.scenes : 0;
+  // Plus lines edited since they were voiced: only those are voiced again (#135, #149).
+  const unvoiced = Math.min(1, (input.scenes > 0 ? Math.max(0, input.scenes - (input.scenesVoiced ?? 0)) / input.scenes : 0) + (input.scenesVoiced ? input.revoiceShare ?? 0 : 0));
   let seconds = audio.skip ? 0 : (words / TYPICAL.wordsPerSecond) * unvoiced;
   const narrationShare = audio.narration === "gemini" ? 1 : 0;
   const dialogueShare = audio.dialogue === "gemini" ? 1 : 0;
