@@ -300,11 +300,12 @@ export interface MakeOptions {
   notes?: string;   // the author's corrections for the remade refs
   edit?: string[];  // images to edit in place with the note (#141): scene-03-10, cover
   source?: string;  // the take to edit, run-relative (art/previous/…); default the current image
+  with?: string[];  // an edit's likeness references: art keys (character-rantoul, scene-06-07)
   steps?: Partial<StepRunners>;  // injectable for tests
 }
 
 // Shots to redo in the art step: by key (with the author's note), or whole scenes re-planned.
-export interface ShotRedo { redo: string[]; replan: number[]; note?: string; edit?: { keys: string[]; note: string; source?: string } }
+export interface ShotRedo { redo: string[]; replan: number[]; note?: string; edit?: { keys: string[]; note: string; source?: string; with?: string[] } }
 
 export interface StepRunners {
   story: (story: ResolvedStory) => Promise<void>;
@@ -494,7 +495,7 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
     if (redo.length) throw new Error("--edit and --redo go in separate runs (the note would apply to both)");
     if (!steps.includes("art")) throw new Error("--edit scene-…: images are edited in the art step (--only art)");
     if (opts.source && edit.length > 1) throw new Error("--source names one image's earlier take: edit one image at a time");
-  } else if (opts.source) throw new Error("--source goes with --edit");
+  } else if (opts.source || opts.with?.length) throw new Error(`${opts.source ? "--source" : "--with"} goes with --edit`);
   if (opts.notes && !edit.length && redoRefs.length === 0 && redoShots.length === 0 && redoExtras.filter((r) => r !== "extras").length === 0) throw new Error("--note goes with --redo <kind>:<id>, --redo scene-NN-MM, --redo extra-… or --edit scene-NN-MM");
   await mkdir(story.runDir, { recursive: true });
 
@@ -562,7 +563,7 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
       throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
     }
     // Both finish (or fail) before the first failure is reported.
-    const shots: ShotRedo = { redo: redoShots, replan: replanScenes, ...(opts.notes && redoShots.length ? { note: opts.notes } : {}), ...(edit.length ? { edit: { keys: edit, note: opts.notes!, ...(opts.source ? { source: opts.source } : {}) } } : {}) };
+    const shots: ShotRedo = { redo: redoShots, replan: replanScenes, ...(opts.notes && redoShots.length ? { note: opts.notes } : {}), ...(edit.length ? { edit: { keys: edit, note: opts.notes!, ...(opts.source ? { source: opts.source } : {}), ...(opts.with?.length ? { with: opts.with } : {}) } } : {}) };
     const artRound = edit.length
       ? { kind: "edit", subject: edit.join(" "), note: opts.notes, ...(opts.source ? { source: opts.source } : {}) }
       : redoShots.length || replanScenes.length

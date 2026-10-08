@@ -44,6 +44,8 @@ export const AUTHOR_DESIGN_LABEL = "The author's own drawing of this character �
 export const REFRAME_LABEL = "THE image to reproduce — this exact picture: the same people, poses, place, light, colour grade and photographic look. Reframe it to this new shape: extend the scene naturally at the edges (or crop) so it fills the frame, keeping the main figures whole and central, with open sky at the top. Don't redraw, restyle, add or remove anything:";
 // An edit (#141): the image itself, changed in one way only.
 export const EDIT_LABEL = "THE image to edit — this exact picture. Keep everything in it as it is: the same people, faces, poses, place, light, colour grade, framing and photographic look. Make only the change described:";
+// An edit's likeness references (--with): who or what in the picture should look like this.
+export const EDIT_WITH_LABEL = "Reference for how someone or something in the picture to edit should look — match their face, build, hair and clothing exactly; ignore this reference's pose, place and framing:";
 export const SCENE_LABEL = "Earlier image from the same story — match its art style, not its composition or poses:";
 export const STYLE_LABEL = "Reference image of something ELSE from the same story — match only its art style, not its subject:";
 
@@ -371,7 +373,7 @@ export interface ManifestEntry {
   retaken?: boolean;    // triage replaced the first image with a better retake
   // Edits made in place (#141), oldest first: the author's instruction, and the
   // image it was applied to when that wasn't the current one.
-  edits?: { note: string; at: string; source?: string }[];
+  edits?: { note: string; at: string; source?: string; with?: string[] }[];
   // A shot's inputs: each reference image it was drawn with (art key -> hash of
   // the image). A reference that changes afterwards makes the shot out of date.
   refs?: Record<string, string>;
@@ -419,7 +421,8 @@ export interface ArtOptions {
   // Edit these images in place (#141): the image (or `source`, a run-relative
   // earlier take) is the only reference, and the note the only instruction.
   // The shot's prompt is kept, so an edited image isn't seen as out of date.
-  edits?: Record<string, { note: string; source?: string }>;
+  // `with`: other images (portraits, other shots) showing how someone in it should look.
+  edits?: Record<string, { note: string; source?: string; with?: string[] }>;
   // Longest side, in px, of images sent as references (default 768) and of the
   // candidate sent for inspection (default 1024); 0 sends them full size. Files
   // on disk stay full size. References are most of each request's size.
@@ -624,14 +627,17 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
 
   // An edit: the image (or an earlier take) as the only reference, the note as
   // the instruction; the story's style isn't restated, the image carries it.
-  async function editOne(job: ArtJob, index: number, edit: { note: string; source?: string }) {
+  async function editOne(job: ArtJob, index: number, edit: { note: string; source?: string; with?: string[] }) {
     const prior = manifest[job.key];
     if (!prior) throw new Error(`${job.key} has no image to edit — render it first`);
     if (opts.approved?.has(job.key)) throw new Error(`${job.key} is approved — revoke the approval before editing it`);
     const source = edit.source ? join(opts.runDir, edit.source) : join(outDir, prior.file);
+    const missing = (edit.with ?? []).filter((k) => !manifest[k]);
+    if (missing.length) throw new Error(`--with ${missing.join(", ")}: no such image (art keys, e.g. character-rantoul or scene-06-07)`);
     emit({ type: "job_start", key: job.key, index, total: jobs.length });
     try {
-      const references = [{ ...(await shrink(await loadImage(source), 2048)), label: EDIT_LABEL }];
+      const likeness = await Promise.all((edit.with ?? []).map(async (k) => ({ ...(await shrink(await loadImage(join(outDir, manifest[k].file)), referenceSize)), label: EDIT_WITH_LABEL })));
+      const references = [{ ...(await shrink(await loadImage(source), 2048)), label: EDIT_LABEL }, ...likeness];
       const entry = await renderOne({ ...job, prompt: edit.note }, references, opts.backend, opts.inspector, maxAttempts, emit, undefined, (img) => shrink(img, inspectSize), job.lookDirection ?? direction, names);
       const file = artFile(job.key, extensionFor(entry.image.mimeType));
       await keepPrevious(job.key);
@@ -645,7 +651,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         accepted: entry.accepted,
         issues: entry.issues,
         ...(entry.severity !== undefined ? { severity: entry.severity } : {}),
-        edits: [...(prior.edits ?? []), { note: edit.note, at: new Date().toISOString(), ...(edit.source ? { source: edit.source } : {}) }]
+        edits: [...(prior.edits ?? []), { note: edit.note, at: new Date().toISOString(), ...(edit.source ? { source: edit.source } : {}), ...(edit.with?.length ? { with: edit.with } : {}) }]
       };
       await saveManifest();
       await keep(job, entry.image);

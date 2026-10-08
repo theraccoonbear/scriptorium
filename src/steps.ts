@@ -188,7 +188,7 @@ export interface ArtPhase {
   shotRedo?: string[]; // shot keys to render again (scene-04-07, cover), with notes as the author's correction
   replan?: number[];   // scene indexes whose shots are planned again
   notes?: string;
-  edit?: { keys: string[]; note: string; source?: string };  // edit these images in place (#141)
+  edit?: { keys: string[]; note: string; source?: string; with?: string[] };  // edit these images in place (#141)
 }
 
 // Plans whatever art the run is missing (with the config's art director), then
@@ -220,7 +220,7 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
       throw new Error("the refs step needs a config with an artdirector role");
     }
     // An edit renders just the edited images.
-    const edit = phase.edit?.keys.length ? { keys: phase.edit.keys, edits: Object.fromEntries(phase.edit.keys.map((k) => [k, { note: phase.edit!.note, ...(phase.edit!.source ? { source: phase.edit!.source } : {}) }])) } : {};
+    const edit = phase.edit?.keys.length ? { keys: phase.edit.keys, edits: Object.fromEntries(phase.edit.keys.map((k) => [k, { note: phase.edit!.note, ...(phase.edit!.source ? { source: phase.edit!.source } : {}), ...(phase.edit!.with?.length ? { with: phase.edit!.with } : {}) }])) } : {};
     return artStepInner(runDir, config, events, force, { approved, ...(phase.only ? { only: phase.only } : {}), ...(phase.shotRedo?.length ? { redoKeys: phase.shotRedo } : {}), ...edit });
   });
 }
@@ -362,7 +362,7 @@ function triageCap(runDir: string, config: StoryConfig, _events: StoryEvent[]): 
   };
 }
 
-async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, lock: { approved?: ReadonlySet<string>; only?: "references"; redoKeys?: string[]; keys?: string[]; overrides?: Record<string, { style?: string; direction?: string }>; edits?: Record<string, { note: string; source?: string }> } = {}) {
+async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, lock: { approved?: ReadonlySet<string>; only?: "references"; redoKeys?: string[]; keys?: string[]; overrides?: Record<string, { style?: string; direction?: string }>; edits?: Record<string, { note: string; source?: string; with?: string[] }> } = {}) {
   const artist = resolveArtistConfig(config.artist);
   // Batch Mode: every image a stage asks for goes out together, at half price.
   const batch = artist.batch === true && artist.image.type === "gemini";
