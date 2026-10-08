@@ -159,6 +159,40 @@ export const ISSUE_RULES = `CRITICAL RULES:
 - NEVER include an issue if your reasoning concludes "this is not an issue." If it's fine, omit it.
 - Each issue must be a concrete, specific problem with a quotable entity and, where one exists, the rule it breaks.`;
 
+// The canon re-check (#133): a written scene against canon that may have
+// arrived after it was written — the author's character sheet, notes, bible.
+export const CANON_SYSTEM = `You check a finished scene of a story against its CANON, which may have been written after the scene. Find every place the PROSE or the SHOT PROMPTS contradict the canon.
+
+Output ONLY JSON:
+{"issues":[{"where":string,"quote":string,"canon":string,"contradicts":boolean,"fix":string}]}
+
+- where: "prose" or a shot key (e.g. "scene-01-03").
+- quote: the exact contradicting words, copied verbatim from the prose or prompt (short: the phrase or sentence, enough to be unique).
+- canon: the canon statement it contradicts, quoted or closely paraphrased from the CANON (e.g. "always barefoot").
+- contradicts: true only when the canon explicitly states something the text can't also be true with. A detail the canon simply doesn't mention is NOT a contradiction: don't list it at all.
+- fix: the replacement for quote: the smallest change that agrees with canon and keeps the prose's voice, rhythm and jokes. An empty string removes the quote; then make sure the sentence around it still reads.
+- Only real contradictions of something the canon states: appearance, clothing and footwear, gear and weapons, names, species, size, relationships, places, events. Not style, not things the canon doesn't mention, not interpretation, not missing details. Read the whole scene: a contradiction can be a single word ("boot" for someone canon says is always barefoot).
+- No contradictions: "issues":[].`;
+
+export interface CanonIssue { where: string; quote: string; canon: string; fix: string }
+
+export async function checkCanon(role: Role, p: { canon: string; prose: string; shots: { key: string; prompt: string }[] }): Promise<RoleOutput<CanonIssue[]>> {
+  const prompt = [
+    `CANON:\n${p.canon}`,
+    `PROSE:\n${p.prose}`,
+    p.shots.length ? `SHOT PROMPTS:\n${p.shots.map((s) => `- ${s.key}: ${s.prompt}`).join("\n")}` : ""
+  ].filter(Boolean).join("\n\n");
+  const out = await callJson(role, { role: "continuist", system: CANON_SYSTEM, prompt, ctx: { task: "canon" } });
+  const raw = ((out.result as { issues?: unknown })?.issues ?? []) as Record<string, unknown>[];
+  const issues = (Array.isArray(raw) ? raw : []).filter((i) => i.contradicts === true)
+    .map((i) => ({ where: String(i.where ?? "prose"), quote: String(i.quote ?? ""), canon: String(i.canon ?? ""), fix: String(i.fix ?? "") }))
+    // "the canon doesn't say" is not a contradiction, however it's flagged.
+    .filter((i) => !/\b(not (specified|described|mentioned|in canon)|doesn't (say|mention|specify)|does not (say|mention|specify)|not contradict|accurate to canon|no appearance details)\b/i.test(i.canon))
+    // A quote that isn't really there can't be fixed: dropped.
+    .filter((i) => i.quote && (i.where === "prose" ? p.prose.includes(i.quote) : p.shots.find((s) => s.key === i.where)?.prompt.includes(i.quote)));
+  return { ...out, result: issues };
+}
+
 export const CONTINUIST_SYSTEM = `You are the Continuity Guard. Check the scene against the bible, the beat spec, the open setups, and all previous scenes.
 
 Output ONLY JSON:

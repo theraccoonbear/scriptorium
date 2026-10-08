@@ -102,6 +102,14 @@ Re-running `make` finishes whatever's missing: the story resumes from its event 
 
 The individual commands below still work for one-off steps.
 
+## Canon check
+
+The continuist checks each scene against canon as it's written, but canon can arrive later: a character sheet, the author's answers. `npm run make -- <story.json> --only canon` re-reads every written scene, and its shot prompts, against today's canon: the character sheet and the story's context notes. Every contradiction goes in a review round, `review/rounds/NN-canon-check/legend.txt`, with its scene, the text, the canon it breaks and a proposed fix.
+
+- **Applying:** `npm run canon -- <story.json> --apply` (`--skip 2,5` to leave some) applies the fixes. It backs up the event log, rewrites the prose and prompts, and names any approved shots that changed so you can revoke and redo them. Then `--only audiobook`, `--only art` and `--only video` re-voice, redraw and rebuild only what changed.
+- **Model:** it uses a `canon` role if the config has one, else the editor, else the continuist. It needs careful reading, so a strong model is best: on a 6-scene story, Opus found every contradiction for about $1, where Haiku missed most.
+- **When:** after `--only characters` records a changed sheet, `make` suggests running it.
+
 ## Run with Docker
 
 The image has Node, ffmpeg, ImageMagick, fontconfig and the npm dependencies installed (about 1 GB). Your checkout is mounted at `/app`, so stories, contexts, runs and `.env` stay on your machine. Rebuild only when `package-lock.json` changes.

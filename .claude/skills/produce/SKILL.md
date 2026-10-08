@@ -52,6 +52,8 @@ Run `npm run pitch -- <story.json> --only <phase>` and tell the author, in a lin
 - `voiced` decides who gets a cast voice. Unset, a speaker is cast when they say at least `audiobook.castMin` characters (default 120) in the story; everyone else is read by the narrator, lightly in character. `"voiced": true` casts them anyway; `"voiced": false` always gives them to the narrator.
 - Re-run `--only characters` after edits: it records them (and adds any new characters without touching the author's text).
 
+**After the sheet changes on a written story:** run `npm run make -- <story.json> --only canon` (about $1 with Opus for 6 scenes; pitch it). Send its `legend.txt` in the review format, and let the author choose which fixes to apply with `npm run canon -- <story.json> --apply --skip …`.
+
 ## Phase 2: portraits
 
 After `--only refs`, build the contact sheet (`npm run review -- <story.json> refs`) and send it to the author. Then, per image:

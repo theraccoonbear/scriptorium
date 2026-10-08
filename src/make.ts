@@ -1,4 +1,5 @@
 import { narratorReads } from "./casting.ts";
+import { runCanonCheck } from "./canon.ts";
 import type { Pronunciations } from "./geminiTts.ts";
 import { changedKeys, imageRound, snapshotArt } from "./rounds.ts";
 import type { ArtSnapshot } from "./rounds.ts";
@@ -8,11 +9,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { EventLog } from "./eventlog.ts";
-import { checkDirection } from "./providers.ts";
+import { buildRoleProviders, checkDirection } from "./providers.ts";
 import { formatSummary, readLedger, summarize, usd } from "./usage.ts";
 import { pitch } from "./pitch.ts";
 import type { Pitch } from "./pitch.ts";
-import { artStep, audiobookStep, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
+import { accounted, artStep, audiobookStep, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
 import type { AudiobookStepOptions } from "./steps.ts";
 import { portraitIds, recordedSheet, syncCharacterSheet } from "./characterSheet.ts";
 import { staleCharacterRefs } from "./engine.ts";
@@ -117,8 +118,9 @@ export const STEPS = ["story", "art", "audiobook", "music", "video"] as const;
 // Review phases, run on their own with --only before the steps they feed:
 // the character sheet, reference portraits, and cast voices with samples.
 // extras: bonus artwork (key art, a cast photo), only when named.
-export const PHASES = ["characters", "refs", "voices", "extras"] as const;
-const ALL_STEPS = ["story", "characters", "refs", "voices", "art", "extras", "audiobook", "music", "video"] as const;
+// canon: re-check the written story against today's canon (#133), only when named.
+export const PHASES = ["characters", "canon", "refs", "voices", "extras"] as const;
+const ALL_STEPS = ["story", "characters", "canon", "refs", "voices", "art", "extras", "audiobook", "music", "video"] as const;
 export const STEP_ORDERS = ["audio-first", "art-first", "parallel"] as const;
 export type StepOrder = (typeof STEP_ORDERS)[number];
 export type Step = (typeof ALL_STEPS)[number];
@@ -309,6 +311,7 @@ export interface StepRunners {
   voices: (story: ResolvedStory, events: StoryEvent[], redo: string[]) => Promise<void>;
   art: (story: ResolvedStory, events: StoryEvent[], shots?: ShotRedo) => Promise<void>;
   extras: (story: ResolvedStory, events: StoryEvent[], redo: string[], notes?: string) => Promise<void>;
+  canon: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   audiobook: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   music: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   video: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
@@ -328,11 +331,26 @@ const defaultRunners: StepRunners = {
     const sync = await syncCharacterSheet(s.runDir, log);
     const n = Object.keys(recordedSheet(log.events) ?? {}).length;
     console.error(`[scriptorium] ${c.ok(sync.created ? `character sheet drafted: ${n} characters` : `character sheet: ${n} characters${sync.added.length ? `, added ${sync.added.join(", ")}` : ""}${sync.recorded ? " — your edits recorded" : ""}`)} ${c.dim(sync.file)}`);
+    // New canon reaches written scenes only through a check (#133).
+    if (sync.recorded && !sync.created) console.error(`[scriptorium] ${c.dim(`the sheet changed after the story was written — check the prose against it: npm run make -- ${s.file} --only canon`)}`);
   },
   refs: async (s, events, redo, notes) => { await artStep(s.runDir, s.config, events, false, { only: "references", redo, ...(notes ? { notes } : {}) }); },
   voices: async (s, events, redo) => { await voicesStep(s.runDir, events, { ...audiobookOptions(s), redo }); },
   // make never re-renders finished work; the individual commands take --force for that.
   art: async (s, events, shots) => { await artStep(s.runDir, s.config, events, false, shots ? { shotRedo: shots.redo, replan: shots.replan, ...(shots.note ? { notes: shots.note } : {}) } : {}); },
+  canon: async (s, events) => {
+    // Careful reading across whole scenes: a "canon" role if the config has one, else the editor, else the continuist.
+    const roles = buildRoleProviders(s.config);
+    const role = roles.canon ?? roles.editor ?? roles.continuist;
+    if (!role) throw new Error("the canon check needs a config with a canon, editor or continuist role");
+    const contexts = await Promise.all(s.contextPaths.map((p) => readFile(p, "utf8")));
+    await accounted(s.runDir, s.config, "canon", async () => {
+      const { round, findings } = await runCanonCheck({ runDir: s.runDir, events, role, contexts, log: (m) => console.error(`[scriptorium] ${c.dim(m)}`) });
+      if (!round) { console.error(`[scriptorium] ${c.ok("the story agrees with its canon")}`); return; }
+      console.error(`[scriptorium] ${c.retry(`${findings.length} contradiction${findings.length === 1 ? "" : "s"} with canon — ${join(round.dir, "legend.txt")}`)}`);
+      console.error(`[scriptorium] ${c.dim(`apply the fixes: npm run canon -- ${s.file} --apply  (--skip 2,5 to leave some)`)}`);
+    });
+  },
   // --redo extras directs the key art and cast photo again; --redo extra-cast just retakes one.
   extras: async (s, events, redo, notes) => { await extrasStep(s.runDir, s.config, events, false, { redo: redo.filter((r) => r !== "extras"), redirect: redo.includes("extras"), ...(notes ? { notes } : {}), ...(s.title ? { title: s.title } : {}), ...(s.subtitle ? { subtitle: s.subtitle } : {}), base: dirname(resolve(s.file)) }); },
   audiobook: async (s, events) => { await audiobookStep(s.runDir, events, audiobookOptions(s)); },
@@ -418,6 +436,7 @@ function rank(step: Step, order: StepOrder): number {
   if (step === "art") return order === "art-first" ? 1 : 2;
   if (step === "audiobook") return order === "art-first" ? 2 : 1;
   if (step === "characters") return 0.1;
+  if (step === "canon") return 0.15;
   if (step === "refs") return 0.2;
   if (step === "voices") return 0.3;
   if (step === "extras") return 2.2;  // after the art it draws on
@@ -502,6 +521,12 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
       const events = await new EventLog(story.runDir).load();
       if (!events.some((e) => e.type === "scene_committed")) throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
       await withImageRound(story.runDir, await snapshotArt(story.runDir), () => run.extras(story, events, redoExtras, opts.notes), redoExtras.length ? { kind: "redo", subject: redoExtras.join(" "), ...(opts.notes ? { note: opts.notes } : {}) } : { kind: "extras", subject: "key art and cast photo" });
+      continue;
+    }
+    if (stage[0] === "canon") {
+      const events = await new EventLog(story.runDir).load();
+      if (!events.some((e) => e.type === "scene_committed")) throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
+      await run.canon(story, events);
       continue;
     }
     if (stage[0] === "characters" || stage[0] === "refs" || stage[0] === "voices") {

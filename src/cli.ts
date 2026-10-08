@@ -22,6 +22,8 @@ import type { GeminiMode } from "./geminiBatch.ts";
 import { c } from "./colors.ts";
 import { doctor, systemDeps } from "./doctor.ts";
 import { formatAudition, pickAudition, runAudition } from "./auditions.ts";
+import { applyCanonFixes } from "./canon.ts";
+import { findRound } from "./rounds.ts";
 import { geminiSpeaker } from "./geminiTts.ts";
 import { fetchLibrary } from "./voiceLibrary.ts";
 
@@ -71,6 +73,8 @@ const USAGE = `scriptorium <command> [options]
                                                          a review round
   audition <story.json> <speaker> --pick N [--round NN] pin candidate N; a new direction becomes their
                                                          vocal line; remakes their sample and the reel
+  canon <story.json> [--apply [--skip N,…]]           show the latest canon check (make --only canon), or
+                                                         apply its fixes to the prose and shot prompts
   doctor [<story.json>]                                 what your API keys and tools can make (free);
                                                          with a story file, whether it can run
   pitch <story.json>                                    what the story will need and cost, before spending
@@ -213,7 +217,9 @@ async function main() {
       voices: { type: "string" },
       count: { type: "string" },
       pick: { type: "string" },
-      round: { type: "string" }
+      round: { type: "string" },
+      apply: { type: "boolean" },
+      skip: { type: "string" }
     }
   });
 
@@ -294,6 +300,25 @@ async function main() {
     const story = await loadStoryFile(storyFile);
     const a = await setApproval(story.runDir, targets, !values.revoke);
     console.log(`${c.ok(values.revoke ? "revoked" : "approved")} ${targets.join(", ")} ${c.dim(`(art: ${a.art.length} approved, voices: ${a.voices.length} approved)`)}`);
+    return;
+  }
+
+  if (command === "canon") {
+    const [storyFile] = positionals;
+    if (!storyFile) throw new Error("usage: canon <story.json> [--apply [--skip 2,5] [--round NN]]  (check first: make <story.json> --only canon)");
+    const story = await loadStoryFile(storyFile);
+    if (!values.apply) {
+      const round = await findRound(story.runDir, "canon", "check", values.round ? Number(values.round) : undefined);
+      if (!round) throw new Error(`no canon check yet — run: npm run make -- ${storyFile} --only canon`);
+      console.log(await readFile(join(round.dir, "legend.txt"), "utf8"));
+      return;
+    }
+    const skip = (values.skip ?? "").split(",").map((x) => Number(x.trim())).filter((n) => n > 0);
+    const r = await applyCanonFixes({ runDir: story.runDir, ...(values.round ? { round: Number(values.round) } : {}), skip });
+    console.error(`[scriptorium] ${c.ok(`${r.applied.length} fix${r.applied.length === 1 ? "" : "es"} applied`)} ${c.dim(`(event log backed up: ${r.backup})`)}`);
+    if (r.missing.length) console.error(`[scriptorium] ${c.retry(`${r.missing.length} not applied — the text had already changed: ${r.missing.map((f) => f.n).join(", ")}`)}`);
+    if (r.approvedShots.length) console.error(`[scriptorium] ${c.retry(`approved shots whose prompts changed — revoke and redo them: npm run approve -- ${storyFile} ${r.approvedShots.join(" ")} --revoke`)}`);
+    console.error(`[scriptorium] ${c.dim(`then: --only audiobook re-voices the changed lines, --only art redraws changed shots, --only video rebuilds`)}`);
     return;
   }
 
