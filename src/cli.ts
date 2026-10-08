@@ -77,7 +77,7 @@ const USAGE = `scriptorium <command> [options]
                                                          apply its fixes to the prose and shot prompts
   doctor [<story.json>]                                 what your API keys and tools can make (free);
                                                          with a story file, whether it can run
-  pitch <story.json>                                    what the story will need and cost, before spending
+  pitch <story.json> [--only …] [--redo …]             what the story will need and cost, before spending
   cast  <story.json> [--as "..."]                      preview the story's cast: describe each member from
                                                          their photos and render one portrait each
   cost  --out <dir>                                     what a run has spent so far, by step, role and model
@@ -268,7 +268,8 @@ async function main() {
     const story = await loadStoryFile(storyFile);
     const events = await new EventLog(story.runDir).load();
     const steps = values.only ? planSteps(values.only) : undefined;
-    console.log(formatPitch(storyPitch(story, events, steps), story.config.budget?.usd));
+    const redo = (values.redo ?? "").split(",").map((r) => r.trim()).filter(Boolean);
+    console.log(formatPitch(storyPitch(story, events, steps, redo), story.config.budget?.usd));
     return;
   }
 
