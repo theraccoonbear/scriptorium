@@ -187,7 +187,9 @@ test("continuist can flag unaddressed practical gaps", () => {
 test("art director prompt covers both modes, continuity, and video framing", () => {
   assert.ok(ARTDIRECTOR_SYSTEM.includes('{"prompt":string}'), "missing output shape");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("- SCENE:"), "missing scene mode");
-  assert.ok(ARTDIRECTOR_SYSTEM.includes('{"shots":[{"start_paragraph":number,"prompt":string,"characters":[characterId],"location":locationId,"props":[propId]}]}'), "missing shots output shape");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes('"shots":[{"start_paragraph":number,"prompt":string,"characters":[characterId],"location":locationId,"props":[propId]}]}'), "missing shots output shape");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes('{"continuity":[{"from_paragraph":number,'), "missing the continuity sheet (#140)");
+  assert.ok(ARTDIRECTOR_SYSTEM.includes("A night shot is never sunlit"), "missing the agree-with-the-moment rule");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("first shot starts at paragraph 1"), "missing first-shot anchor rule");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("Spread shots across the WHOLE scene"), "missing whole-scene coverage rule");
   assert.ok(ARTDIRECTOR_SYSTEM.includes("Vary the framing"), "missing framing variety rule");
