@@ -24,6 +24,11 @@ test("usage is read from every provider's response shape", () => {
 });
 
 test("cost = tokens × per-million prices, cache priced separately", () => {
+  // Haiku 5.5 is priced by prompt length: a prompt over 100K tokens pays the higher rate on all of it.
+  const h55 = DEFAULT_PRICES["claude-haiku-5-5"];
+  assert.equal(costOf({ input: 50_000, output: 10_000, cacheRead: 0, cacheWrite: 0 }, h55), (50_000 * 0.1 + 10_000 * 0.5) / 1e6);
+  assert.equal(costOf({ input: 60_000, output: 10_000, cacheRead: 50_000, cacheWrite: 0 }, h55), (60_000 * 0.5 + 10_000 * 2.5 + 50_000 * 0.05) / 1e6);
+  assert.deepEqual(priceFor("claude-haiku-5-5", DEFAULT_PRICES), h55);
   const haiku = DEFAULT_PRICES["claude-haiku-4-5"];
   assert.equal(costOf({ input: 1_000_000, output: 200_000, cacheRead: 1_000_000, cacheWrite: 0 }, haiku), 1 + 1 + 0.1);
   // One Gemini image (~1120 output tokens at $60/M) ≈ $0.067, matching Google's per-image price.
