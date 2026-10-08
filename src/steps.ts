@@ -50,7 +50,7 @@ import type { Bible, SceneCommittedData, StoryConfig, StoryEvent } from "./types
 // audio — see each other's spend against the budget), and each carries its own
 // step label through its async work.
 export async function accounted<T>(runDir: string, config: StoryConfig | undefined, step: string, fn: () => Promise<T>): Promise<T> {
-  const acc = accountantFor(runDir, { pricing: config?.pricing, budgetUsd: config?.budget?.usd });
+  const acc = accountantFor(runDir, { pricing: config?.pricing, budgetUsd: config?.budget?.usd, ...(config?.budget?.count ? { budgetKinds: config.budget.count } : {}) });
   const before = acc.spentIn(step);
   try {
     return await runAccounted(acc, step, fn);
