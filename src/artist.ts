@@ -42,6 +42,8 @@ export const CAST_PHOTO_LABEL = "Real photo of the person or animal this charact
 export const CAST_PORTRAIT_LABEL = "Canonical look of a character who appears in this image — a real cast member, so this likeness is intended: match their face, build, hair, colors and clothing exactly, but NOT the reference's pose, expression or framing: pose and move them exactly as this image's description says:";
 export const AUTHOR_DESIGN_LABEL = "The author's own drawing of this character — their design: follow its face, hair and facial hair, colouring, build, clothing and gear exactly, but redraw it in the story's art style (not the drawing's medium or line), posed as the description says. A drawing, not a real person:";
 export const REFRAME_LABEL = "THE image to reproduce — this exact picture: the same people, poses, place, light, colour grade and photographic look. Reframe it to this new shape: extend the scene naturally at the edges (or crop) so it fills the frame, keeping the main figures whole and central, with open sky at the top. Don't redraw, restyle, add or remove anything:";
+// An edit (#141): the image itself, changed in one way only.
+export const EDIT_LABEL = "THE image to edit — this exact picture. Keep everything in it as it is: the same people, faces, poses, place, light, colour grade, framing and photographic look. Make only the change described:";
 export const SCENE_LABEL = "Earlier image from the same story — match its art style, not its composition or poses:";
 export const STYLE_LABEL = "Reference image of something ELSE from the same story — match only its art style, not its subject:";
 
@@ -367,6 +369,9 @@ export interface ManifestEntry {
   issues: string[];
   severity?: number;    // the inspector's 0-10 score for the kept image
   retaken?: boolean;    // triage replaced the first image with a better retake
+  // Edits made in place (#141), oldest first: the author's instruction, and the
+  // image it was applied to when that wasn't the current one.
+  edits?: { note: string; at: string; source?: string }[];
   // A shot's inputs: each reference image it was drawn with (art key -> hash of
   // the image). A reference that changes afterwards makes the shot out of date.
   refs?: Record<string, string>;
@@ -411,6 +416,10 @@ export interface ArtOptions {
   // The author's overrides of the story's art style and direction, by key (extras).
   overrides?: Record<string, { style?: string; direction?: string }>;
   redoKeys?: string[];     // render these shots again even if nothing changed (not approved ones)
+  // Edit these images in place (#141): the image (or `source`, a run-relative
+  // earlier take) is the only reference, and the note the only instruction.
+  // The shot's prompt is kept, so an edited image isn't seen as out of date.
+  edits?: Record<string, { note: string; source?: string }>;
   // Longest side, in px, of images sent as references (default 768) and of the
   // candidate sent for inspection (default 1024); 0 sends them full size. Files
   // on disk stay full size. References are most of each request's size.
@@ -557,6 +566,8 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const scored = new Map<string, { job: ArtJob; severity: number; retakePrompt?: string }>();
   const one = async (job: ArtJob, index: number) => {
     const prior = manifest[job.key];
+    const edit = opts.edits?.[job.key];
+    if (edit) return editOne(job, index, edit);
     const approved = Boolean(opts.approved?.has(job.key) && prior && existing.has(prior.file));
     // A shot drawn from a reference that has since changed is out of date (a reshoot).
     const changed = !job.ref && prior?.refs ? changedRefs(prior.refs, await refHashes(Object.keys(prior.refs), manifest, outDir)) : [];
@@ -610,6 +621,42 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       emit({ type: "job_failed", key: job.key, error: err instanceof Error ? err.message : String(err) });
     }
   };
+
+  // An edit: the image (or an earlier take) as the only reference, the note as
+  // the instruction; the story's style isn't restated, the image carries it.
+  async function editOne(job: ArtJob, index: number, edit: { note: string; source?: string }) {
+    const prior = manifest[job.key];
+    if (!prior) throw new Error(`${job.key} has no image to edit — render it first`);
+    if (opts.approved?.has(job.key)) throw new Error(`${job.key} is approved — revoke the approval before editing it`);
+    const source = edit.source ? join(opts.runDir, edit.source) : join(outDir, prior.file);
+    emit({ type: "job_start", key: job.key, index, total: jobs.length });
+    try {
+      const references = [{ ...(await shrink(await loadImage(source), 2048)), label: EDIT_LABEL }];
+      const entry = await renderOne({ ...job, prompt: edit.note }, references, opts.backend, opts.inspector, maxAttempts, emit, undefined, (img) => shrink(img, inspectSize), job.lookDirection ?? direction, names);
+      const file = artFile(job.key, extensionFor(entry.image.mimeType));
+      await keepPrevious(job.key);
+      await mkdir(dirname(join(outDir, file)), { recursive: true });
+      await writeFile(join(outDir, file), entry.image.data);
+      manifest[job.key] = {
+        ...prior,
+        file,
+        finalPrompt: entry.finalPrompt,
+        attempts: entry.attempts,
+        accepted: entry.accepted,
+        issues: entry.issues,
+        ...(entry.severity !== undefined ? { severity: entry.severity } : {}),
+        edits: [...(prior.edits ?? []), { note: edit.note, at: new Date().toISOString(), ...(edit.source ? { source: edit.source } : {}) }]
+      };
+      await saveManifest();
+      await keep(job, entry.image);
+      result.rendered++;
+      emit({ type: "job_done", key: job.key, file, attempts: entry.attempts, accepted: entry.accepted });
+    } catch (err) {
+      if (isBudgetError(err)) throw err;
+      result.failed++;
+      emit({ type: "job_failed", key: job.key, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   // References first (every shot uses them), then each scene's first shot (the
   // anchors), then every other shot, then the cover — each stage in parallel.

@@ -188,6 +188,7 @@ export interface ArtPhase {
   shotRedo?: string[]; // shot keys to render again (scene-04-07, cover), with notes as the author's correction
   replan?: number[];   // scene indexes whose shots are planned again
   notes?: string;
+  edit?: { keys: string[]; note: string; source?: string };  // edit these images in place (#141)
 }
 
 // Plans whatever art the run is missing (with the config's art director), then
@@ -206,7 +207,7 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
         if (made.length) console.error(`[scriptorium] ${c.ok(`${made.length} reference${made.length === 1 ? "" : "s"} planned`)} ${c.dim(made.join(", "))}`);
       } else {
         if (phase.redo?.length) throw new Error("--redo kind:id applies to the refs step (make --only refs --redo kind:id)");
-        const locked = (phase.shotRedo ?? []).filter((k) => approved.has(k));
+        const locked = [...(phase.shotRedo ?? []), ...(phase.edit?.keys ?? [])].filter((k) => approved.has(k));
         if (locked.length) throw new Error(`${locked.join(", ")} ${locked.length === 1 ? "is" : "are"} approved — revoke the approval before redoing`);
         // The author's correction rides with the shot's prompt from now on.
         if (phase.notes) for (const key of phase.shotRedo ?? []) await log.append("shot_note", { key, note: phase.notes });
@@ -218,7 +219,9 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
     } else if (phase.only === "references" || phase.redo?.length) {
       throw new Error("the refs step needs a config with an artdirector role");
     }
-    return artStepInner(runDir, config, events, force, { approved, ...(phase.only ? { only: phase.only } : {}), ...(phase.shotRedo?.length ? { redoKeys: phase.shotRedo } : {}) });
+    // An edit renders just the edited images.
+    const edit = phase.edit?.keys.length ? { keys: phase.edit.keys, edits: Object.fromEntries(phase.edit.keys.map((k) => [k, { note: phase.edit!.note, ...(phase.edit!.source ? { source: phase.edit!.source } : {}) }])) } : {};
+    return artStepInner(runDir, config, events, force, { approved, ...(phase.only ? { only: phase.only } : {}), ...(phase.shotRedo?.length ? { redoKeys: phase.shotRedo } : {}), ...edit });
   });
 }
 
@@ -359,7 +362,7 @@ function triageCap(runDir: string, config: StoryConfig, _events: StoryEvent[]): 
   };
 }
 
-async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, lock: { approved?: ReadonlySet<string>; only?: "references"; redoKeys?: string[]; keys?: string[]; overrides?: Record<string, { style?: string; direction?: string }> } = {}) {
+async function artStepInner(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, lock: { approved?: ReadonlySet<string>; only?: "references"; redoKeys?: string[]; keys?: string[]; overrides?: Record<string, { style?: string; direction?: string }>; edits?: Record<string, { note: string; source?: string }> } = {}) {
   const artist = resolveArtistConfig(config.artist);
   // Batch Mode: every image a stage asks for goes out together, at half price.
   const batch = artist.batch === true && artist.image.type === "gemini";
