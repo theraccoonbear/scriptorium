@@ -298,11 +298,13 @@ export interface MakeOptions {
   stepOrder?: StepOrder;  // overrides the story file's
   redo?: string[];  // refs to remake ("character:nell") or voices to recast ("voice:nell")
   notes?: string;   // the author's corrections for the remade refs
+  edit?: string[];  // images to edit in place with the note (#141): scene-03-10, cover
+  source?: string;  // the take to edit, run-relative (art/previous/…); default the current image
   steps?: Partial<StepRunners>;  // injectable for tests
 }
 
 // Shots to redo in the art step: by key (with the author's note), or whole scenes re-planned.
-export interface ShotRedo { redo: string[]; replan: number[]; note?: string }
+export interface ShotRedo { redo: string[]; replan: number[]; note?: string; edit?: { keys: string[]; note: string; source?: string } }
 
 export interface StepRunners {
   story: (story: ResolvedStory) => Promise<void>;
@@ -337,7 +339,7 @@ const defaultRunners: StepRunners = {
   refs: async (s, events, redo, notes) => { await artStep(s.runDir, s.config, events, false, { only: "references", redo, ...(notes ? { notes } : {}) }); },
   voices: async (s, events, redo) => { await voicesStep(s.runDir, events, { ...audiobookOptions(s), redo }); },
   // make never re-renders finished work; the individual commands take --force for that.
-  art: async (s, events, shots) => { await artStep(s.runDir, s.config, events, false, shots ? { shotRedo: shots.redo, replan: shots.replan, ...(shots.note ? { notes: shots.note } : {}) } : {}); },
+  art: async (s, events, shots) => { await artStep(s.runDir, s.config, events, false, shots ? { shotRedo: shots.redo, replan: shots.replan, ...(shots.note ? { notes: shots.note } : {}), ...(shots.edit ? { edit: shots.edit } : {}) } : {}); },
   canon: async (s, events) => {
     // Careful reading across whole scenes: a "canon" role if the config has one, else the editor, else the continuist.
     const roles = buildRoleProviders(s.config);
@@ -484,7 +486,16 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   if (redoRefs.length && !steps.includes("refs")) throw new Error(`--redo ${redoRefs.join(",")}: references are remade in the refs phase (--only refs)`);
   if (redoVoices.length && !steps.includes("voices")) throw new Error(`--redo voice:…: voices are recast in the voices phase (--only voices)`);
   if ((redoShots.length || replanScenes.length) && !steps.includes("art")) throw new Error(`--redo scene-…: shots are redone in the art step (--only art)`);
-  if (opts.notes && redoRefs.length === 0 && redoShots.length === 0 && redoExtras.filter((r) => r !== "extras").length === 0) throw new Error("--note goes with --redo <kind>:<id>, --redo scene-NN-MM or --redo extra-…");
+  const edit = opts.edit ?? [];
+  if (edit.length) {
+    const bad = edit.filter((k) => !/^scene-\d+-\d+$/.test(k) && k !== "cover");
+    if (bad.length) throw new Error(`--edit ${bad.join(",")}: only shots (scene-NN-MM) and the cover can be edited`);
+    if (!opts.notes) throw new Error("--edit needs --note: the one change to make");
+    if (redo.length) throw new Error("--edit and --redo go in separate runs (the note would apply to both)");
+    if (!steps.includes("art")) throw new Error("--edit scene-…: images are edited in the art step (--only art)");
+    if (opts.source && edit.length > 1) throw new Error("--source names one image's earlier take: edit one image at a time");
+  } else if (opts.source) throw new Error("--source goes with --edit");
+  if (opts.notes && !edit.length && redoRefs.length === 0 && redoShots.length === 0 && redoExtras.filter((r) => r !== "extras").length === 0) throw new Error("--note goes with --redo <kind>:<id>, --redo scene-NN-MM, --redo extra-… or --edit scene-NN-MM");
   await mkdir(story.runDir, { recursive: true });
 
   // Guard the story in progress against changed settings.
@@ -551,8 +562,10 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
       throw new Error(`no committed scenes in ${story.runDir} — run the story step first`);
     }
     // Both finish (or fail) before the first failure is reported.
-    const shots: ShotRedo = { redo: redoShots, replan: replanScenes, ...(opts.notes && redoShots.length ? { note: opts.notes } : {}) };
-    const artRound = redoShots.length || replanScenes.length
+    const shots: ShotRedo = { redo: redoShots, replan: replanScenes, ...(opts.notes && redoShots.length ? { note: opts.notes } : {}), ...(edit.length ? { edit: { keys: edit, note: opts.notes!, ...(opts.source ? { source: opts.source } : {}) } } : {}) };
+    const artRound = edit.length
+      ? { kind: "edit", subject: edit.join(" "), note: opts.notes, ...(opts.source ? { source: opts.source } : {}) }
+      : redoShots.length || replanScenes.length
       ? { kind: "redo", subject: [...redoShots, ...replanScenes.map((i) => `scene ${i + 1}`)].join(" "), ...(shots.note ? { note: shots.note } : {}) }
       : { kind: "shots", subject: "new" };
     const before = stage.includes("art") ? await snapshotArt(story.runDir) : new Map();

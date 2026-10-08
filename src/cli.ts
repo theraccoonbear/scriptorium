@@ -39,6 +39,8 @@ const USAGE = `scriptorium <command> [options]
           voices       cast every speaker and render a sample of each (audiobook/samples/)
         [--redo character:<id>,voice:<id>,...] [--note "..."]
                        remake these references (with your corrections) or recast these voices
+        [--only art --edit scene-NN-MM --note "..." [--source art/previous/<key>/<take>.jpg]]
+                       edit an image in place: one change, everything else kept (or edit an earlier take)
   review <story.json> refs|shots|voices|music
   reshoot <story.json>                                   list shots drawn from references that changed since (make --only art reshoots them)
         build the review files for a phase in <run>/review/: a labeled contact sheet of the
@@ -211,6 +213,8 @@ async function main() {
       narration: { type: "string" },
       parallel: { type: "string" },
       note: { type: "string" },
+      edit: { type: "string" },
+      source: { type: "string" },
       revoke: { type: "boolean" },
       as: { type: "string" },
       direction: { type: "string" },
@@ -360,7 +364,8 @@ async function main() {
     const order = values["step-order"];
     if (order !== undefined && !(STEP_ORDERS as readonly string[]).includes(order)) throw new Error(`--step-order must be one of ${STEP_ORDERS.join(", ")}`);
     const redo = (values.redo ?? "").split(",").map((r) => r.trim()).filter(Boolean);
-    await make(storyFile, { only: values.only, from: values.from, force: values.force, ...(order ? { stepOrder: order as StepOrder } : {}), ...(redo.length ? { redo } : {}), ...(values.note ? { notes: values.note } : {}) });
+    const edit = (values.edit ?? "").split(",").map((r) => r.trim()).filter(Boolean);
+    await make(storyFile, { only: values.only, from: values.from, force: values.force, ...(order ? { stepOrder: order as StepOrder } : {}), ...(redo.length ? { redo } : {}), ...(edit.length ? { edit } : {}), ...(values.source ? { source: values.source } : {}), ...(values.note ? { notes: values.note } : {}) });
     return;
   }
 
