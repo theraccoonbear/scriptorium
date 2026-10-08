@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EDIT_LABEL, MockImageBackend, renderArt } from "../src/artist.ts";
+import { EDIT_LABEL, EDIT_WITH_LABEL, MockImageBackend, renderArt } from "../src/artist.ts";
 import type { ArtManifest } from "../src/artist.ts";
 import { make } from "../src/make.ts";
 import type { StoryEvent } from "../src/types.ts";
@@ -57,6 +57,16 @@ test("--source edits an earlier take instead of the current image", async () => 
   assert.equal((await manifestOf(runDir))["scene-01-01"].edits![0].source, source);
 });
 
+test("--with passes other images (a portrait, another shot) as likeness references after the image", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-edit-"));
+  await renderArt(events, { runDir, backend: new MockImageBackend(), shrink: same });
+  const backend = new MockImageBackend();
+  await renderArt(events, { runDir, backend, shrink: same, keys: ["scene-01-01"], edits: { "scene-01-01": { note: "dress him as on the cover", with: ["cover"] } } });
+  assert.deepEqual(backend.calls[0].references.map((r) => r.label), [EDIT_LABEL, EDIT_WITH_LABEL]);
+  assert.deepEqual((await manifestOf(runDir))["scene-01-01"].edits![0].with, ["cover"]);
+  await assert.rejects(renderArt(events, { runDir, backend: new MockImageBackend(), shrink: same, keys: ["scene-01-01"], edits: { "scene-01-01": { note: "x", with: ["character-nobody"] } } }), /no such image/);
+});
+
 test("an approved image isn't edited until the approval is revoked", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "scriptorium-edit-"));
   await renderArt(events, { runDir, backend: new MockImageBackend(), shrink: same });
@@ -73,4 +83,5 @@ test("make --edit needs a note, a shot or the cover, the art step, and its own r
   await assert.rejects(make(file, { only: "audiobook", edit: ["scene-01-01"], notes: "x" }), /art step/);
   await assert.rejects(make(file, { only: "art", edit: ["scene-01-01"], redo: ["scene-01-02"], notes: "x" }), /separate runs/);
   await assert.rejects(make(file, { only: "art", source: "art/previous/x.jpg" }), /--source goes with --edit/);
+  await assert.rejects(make(file, { only: "art", with: ["character-nell"] }), /--with goes with --edit/);
 });
