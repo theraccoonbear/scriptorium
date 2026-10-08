@@ -16,12 +16,16 @@ export interface Price {
   cacheRead?: number;
   cacheWrite?: number;
   perRequest?: number;
+  // A model priced by prompt length (Haiku 5.5): prompts of more than `above`
+  // input tokens (uncached + cache reads + writes) pay these prices instead.
+  longPrompt?: { above: number; input: number; output: number; cacheRead?: number; cacheWrite?: number };
 }
 
 export const DEFAULT_PRICES: Readonly<Record<string, Price>> = {
   // Anthropic (first-party API rates)
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
-  "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, longPrompt: { above: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 } },
+  "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
   "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
   // Google (Developer API; 2026 introductory rates, several double on 2027-01-01)
   "gemini-3.8-flash-tts": { input: 0.5, output: 9 },
@@ -79,7 +83,9 @@ export function extractUsage(data: unknown): Usage | undefined {
   };
 }
 
-export function costOf(u: Usage, p: Price): number {
+export function costOf(u: Usage, price: Price): number {
+  const long = price.longPrompt && u.input + u.cacheRead + u.cacheWrite > price.longPrompt.above ? price.longPrompt : undefined;
+  const p = long ?? price;
   return (u.input * p.input + u.output * p.output + u.cacheRead * (p.cacheRead ?? p.input) + u.cacheWrite * (p.cacheWrite ?? p.input)) / 1e6;
 }
 
