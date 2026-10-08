@@ -14,6 +14,8 @@ import { COST_KINDS, formatSummary, getCostKey, parseCostKind, readLedger, setCo
 import type { CostKind } from "./usage.ts";
 import { pitch } from "./pitch.ts";
 import { changedShare } from "./tagging.ts";
+import { withRunLock } from "./runLock.ts";
+import type { LockOptions } from "./runLock.ts";
 import type { Pitch } from "./pitch.ts";
 import { accounted, artStep, audiobookStep, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
 import type { AudiobookStepOptions } from "./steps.ts";
@@ -314,6 +316,7 @@ export interface MakeOptions {
   costKind?: CostKind;
   costTag?: string;
   steps?: Partial<StepRunners>;  // injectable for tests
+  noWait?: boolean;  // another command holds the run: stop instead of waiting (#139)
 }
 
 // Shots to redo in the art step: by key (with the author's note), or whole scenes re-planned.
@@ -488,16 +491,29 @@ async function withImageRound(runDir: string, before: ArtSnapshot, fn: () => Pro
 // The run's spend is keyed (#148): the kind asked for (option, command line,
 // environment), else rework for a redo or an edit, else production (or
 // experiment, for a run under runs/_scratch/).
+// One make per run at a time (#139): a second waits for the first (or, with
+// noWait, stops). Read-only commands don't take the lock.
 export async function make(storyPath: string, opts: MakeOptions = {}): Promise<Step[]> {
   const previous = getCostKey();
   const kind = opts.costKind ?? previous.kind ?? parseCostKind(process.env.SCRIPTORIUM_COST_KIND, "SCRIPTORIUM_COST_KIND") ?? (opts.redo?.length || opts.edit?.length ? "rework" : undefined);
   const tag = opts.costTag ?? previous.tag;
   setCostKey({ ...(kind ? { kind } : {}), ...(tag ? { tag } : {}) });
   try {
-    return await makeRun(storyPath, opts);
+    const { runDir } = await loadStoryFile(storyPath);
+    return await withRunLock(runDir, runLockOptions(`make ${opts.only ? `--only ${opts.only}` : storyPath}`, opts.noWait), () => makeRun(storyPath, opts));
   } finally {
     setCostKey(previous);
   }
+}
+
+// How a waiting command says what it's waiting for.
+export function runLockOptions(command: string, noWait?: boolean): LockOptions {
+  return {
+    command,
+    wait: !noWait,
+    onWait: (h) => console.error(`[scriptorium] ${c.retry(`waiting for "${h.command}" (pid ${h.pid}, started ${h.started}) to finish with this run…`)}`),
+    onStale: (h) => console.error(`[scriptorium] ${c.dim(`taking over the lock left by "${h.command}" (pid ${h.pid}, no longer running)`)}`)
+  };
 }
 
 async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {

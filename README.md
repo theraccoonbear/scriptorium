@@ -443,6 +443,10 @@ Other config keys:
 | `artWordsPerShot` | 110 | Narration words per art shot. |
 | `artist` | Gemini | `image` and `inspector` backends (`gemini` or `mock`; `"inspector": null` skips review), `maxAttempts`, `maxReferences`, `referenceSize`, `inspectSize`. |
 
+## One command per run
+
+`make`, `canon --apply` and `audition` hold a lock on the run (`<run>/.lock`) while they work, because two at once would overwrite each other's art manifest, event log and rounds. A second command on the same run waits for the first and prints what it's waiting for. `--no-wait` makes it stop instead. A lock left by a process that died is taken over. `approve` and the read-only commands (`pitch`, `review`, `show`, `spend`) don't lock, so you can approve images while a render runs.
+
 ## Spend
 
 Every paid API call is logged to `<run>/usage.jsonl`. That covers the text roles, Gemini images, the image inspector and Gemini TTS; Kokoro and ffmpeg are local and free. Each entry records the step, role, model, token counts and estimated cost. `make` and the individual commands print what each step spent, `make` ends with a breakdown by step, role and model, and `cost --out <run>` reports on any run.
