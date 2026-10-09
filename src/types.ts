@@ -84,11 +84,22 @@ export interface Thread {
   status: string;
 }
 
+// What a setup is for (#93). A promise must pay off; a red herring pays off by
+// misdirecting (shown to be nothing, never given a secret meaning); an open
+// question may stay open on purpose; a motif recurs and never needs paying.
+// A setup without a kind is a promise, as before.
+export type SetupKind = "promise" | "red_herring" | "open_question" | "motif";
+export const SETUP_KINDS: readonly SetupKind[] = ["promise", "red_herring", "open_question", "motif"];
 export interface Setup {
   id: string;
   text: string;
   openedAt: number;
+  kind?: SetupKind;
+  purpose?: string;   // the hidden layer: what it's for ("makes the reader suspect Nell"); never stated in the prose
 }
+// How much the story leaves unsaid (#93): tidy explains everything by the end;
+// some lets a couple of questions survive; lots plants and keeps them freely.
+export type Ambiguity = "tidy" | "some" | "lots";
 
 export interface BibleSummary {
   arcs: string[];
@@ -116,6 +127,7 @@ export interface Bible {
   objects: Record<string, StoryObject>;
   threads: Record<string, Thread>;
   ledger: Setup[];
+  hiddenTruths?: string[];  // what's really going on (#93): kept consistent, never stated outright
   resolvedDecisions: string[];
   // The creator's tension plan, one target (1-10) per scene; null where it gave none.
   arc?: Array<number | null>;
@@ -133,6 +145,8 @@ export interface Beat {
   payoffs: string[];
   title?: string;     // the scene's title card ("The Pardon"): a few words, no spoilers
   turn?: string;      // what changes in this scene that its people didn't see coming
+  plants?: { id: string; text: string; kind: SetupKind; purpose?: string }[];  // setups planted on purpose (#93)
+  keepImplied?: string[];  // what this scene leaves implied on purpose: never flagged as unresolved
 }
 
 export interface Patch {
@@ -140,7 +154,7 @@ export interface Patch {
   upsertLocations?: Partial<Location>[];
   upsertObjects?: Partial<StoryObject>[];
   upsertThreads?: Partial<Thread>[];
-  openSetups?: { id: string; text?: string }[];
+  openSetups?: { id: string; text?: string; kind?: SetupKind; purpose?: string }[];
   paySetups?: string[];
   resolveDecisions?: string[];
   timeline?: string;
@@ -327,6 +341,7 @@ export interface StoryConfig {
   maxRevisions?: number;
   overdueAfter?: number;
   sceneWords?: WordBudget;
+  ambiguity?: Ambiguity;  // how much the story leaves unsaid (#93): "tidy", "some" (default) or "lots"
   length?: import("./length.ts").LengthSetting;  // a running time (#170): { minutes, scenes?, wordsPerMinute?, fit? }
   providers: Record<string, ProviderSpec>;
   roles: Record<string, RoleSpec>;

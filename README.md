@@ -183,7 +183,7 @@ Outside the run folder, the story file in `stories/`, your `contexts/` and any `
 | **worldbuilder** | Names characters and places that belong in the setting. | optional |
 | **creator** | Builds the foundation: premise, tone, **art style**, cast (with gender), locations, **key objects**, threads, the story's **tension arc**, and scene 1's beat. Runs on the `director`'s provider. | — |
 | **director** | Plans each later scene as a JSON beat spec, including the scene's **turn**. Never writes prose. | yes |
-| **writer** | Writes the scene in the POV character's voice, inside a word band. | yes |
+| **writer** | Writes the scene in the POV character's voice, inside a word band. It may end a draft with **writer's notes** for the reviewers (a motif it's seeding, a reveal left implied on purpose). These are cut off before the prose goes anywhere, and the reviewers read them as intent, never as evidence. Every role's thread file keeps them. | yes |
 | **editor** | Line-edits each draft before review: hunts machine-prose tics, trims about 10%, and keeps every event, name and speaker tag. An edit that guts or pads the scene is discarded. | optional |
 | **continuist** | Blocks continuity and canon errors: POV, timeline, constraints, setups, key-object contradictions. | yes |
 | **critic** | Blocks craft problems: pacing, telling-not-showing, sensory detail, voice drift, recurring style tics. | optional |
@@ -468,7 +468,8 @@ Other config keys:
 | `maxRevisions` | 2 | Drafts per scene = this + 1 (or `--max-attempts`). |
 | `length` | — | A running time: `{ "minutes": 12, "scenes"?: 3, "wordsPerMinute"?: 156, "fit"?: "check" \| "compress" \| "off" }`. Sets the scene count (about 10 minutes a scene) and each scene's word budget at the narrator's pace (measured from the run's audiobook once there is one), weighted by the arc. Before writing, a fit check stops a plan that needs far more time, listing what to stretch, cut or split (`<run>/length.md`); `"compress"` goes ahead and tightens it. Drafts more than 15% over their budget are trimmed. |
 | `sceneWords` | `{min:1200,max:1800}` | The writer's word band; overrides `length`'s budgets. The critic blocks more than 2× overshoot. |
-| `overdueAfter` | 3 | Scenes before an open setup must be paid off. |
+| `overdueAfter` | 3 | Scenes before an open promise must be paid off. |
+| `ambiguity` | `"some"` | How much the story leaves unsaid. Setups have kinds: a **promise** must pay off; a **red herring** misdirects and is shown to be nothing or left standing, never given a secret meaning; an **open question** may stay open; a **motif** recurs and never needs paying. The director plants them on purpose (`plants` in the beat, with a purpose) and marks what a scene leaves implied (`keepImplied`). The creator may set **hidden truths**, which every role keeps consistent and the prose never states. Only promises fall due mid-story. At the end, `"tidy"` settles every red herring and open question; `"some"` lets the two newest questions stand; `"lots"` leaves them all. The beat gate catches an invented explanation for a red herring or open question, and the continuist catches a hidden truth stated outright. |
 | `speakerTags` | false | Have the writer tag paragraphs itself (or `--speaker-tags`). Not needed: the audiobook's voice director labels plain prose. |
 | `artWordsPerShot` | 110 | Narration words per art shot. |
 | `artist` | Gemini | `image` and `inspector` backends (`gemini` or `mock`; `"inspector": null` skips review), `maxAttempts`, `maxReferences`, `referenceSize`, `inspectSize`. |

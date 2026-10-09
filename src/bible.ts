@@ -1,6 +1,7 @@
 // The story bible is derived state. Only the archivist's patches change it,
 // and it is always rebuilt by replaying the event log.
-import type { AuthorCharactersData, Bible, Character, Patch, SheetCharacter, StoryEvent } from "./types.ts";
+import { SETUP_KINDS } from "./types.ts";
+import type { AuthorCharactersData, Bible, Character, Patch, Setup, SheetCharacter, StoryEvent } from "./types.ts";
 
 const RECENT_KEEP = 2;
 const ARC_CHUNK = 2;
@@ -58,9 +59,12 @@ export function applyPatch(bible: Bible, patch: Patch | undefined, index: number
   for (const t of p.upsertThreads || []) {
     upsert(next.threads, t);
   }
+  // A setup's kind is set when it opens and never changed after: a red herring
+  // can't quietly become a promise (#93).
   for (const s of p.openSetups || []) {
     if (s && s.id && !next.ledger.some((x) => x.id === s.id)) {
-      next.ledger.push({ id: s.id, text: s.text || "", openedAt: index });
+      const kind = s.kind && SETUP_KINDS.includes(s.kind) && s.kind !== "promise" ? s.kind : undefined;
+      next.ledger.push({ id: s.id, text: s.text || "", openedAt: index, ...(kind ? { kind } : {}), ...(s.purpose?.trim() ? { purpose: s.purpose.trim() } : {}) });
     }
   }
   const paid = new Set(p.paySetups || []);
@@ -137,7 +141,8 @@ export function renderBible(bible: Bible): string {
   const threads = Object.values(bible.threads)
     .map((t) => `- ${t.id}: ${t.title} [${t.status}]`)
     .join("\n");
-  const ledger = bible.ledger.map((s) => `- ${s.id} (opened S${s.openedAt + 1}): ${s.text}`).join("\n");
+  const kindLabel = (s: Setup) => (s.kind && s.kind !== "promise" ? ` [${s.kind.replace("_", " ")}${s.purpose ? ` — purpose: ${s.purpose}` : ""}]` : s.purpose ? ` [purpose: ${s.purpose}]` : "");
+  const ledger = bible.ledger.map((s) => `- ${s.id}${kindLabel(s)} (opened S${s.openedAt + 1}): ${s.text}`).join("\n");
   const decisions = bible.resolvedDecisions.map((d) => `- ${d}`).join("\n");
   return [
     `PREMISE: ${bible.premise}`,
@@ -147,7 +152,8 @@ export function renderBible(bible: Bible): string {
     `LOCATIONS:\n${locs || "(none)"}`,
     `KEY OBJECTS (physical descriptions are canon):\n${objects || "(none)"}`,
     `THREADS:\n${threads || "(none)"}`,
-    `OPEN SETUPS (Chekhov ledger):\n${ledger || "(none)"}`,
+    `OPEN SETUPS (Chekhov ledger; a promise must pay off, a red herring misdirects and is never given a secret meaning, an open question may stay open, a motif recurs):\n${ledger || "(none)"}`,
+    ...(bible.hiddenTruths?.length ? [`HIDDEN TRUTHS (what's really going on — keep every scene consistent with them, NEVER state them outright in the prose):\n${bible.hiddenTruths.map((t) => `- ${t}`).join("\n")}`] : []),
     `RESOLVED DECISIONS (do not re-litigate without new pressure):\n${decisions || "(none)"}`,
     `EARLIER ARCS:\n${bible.summary.arcs.join("\n") || "(none)"}`,
     `RECENT SCENES:\n${bible.summary.recent.join("\n") || "(none)"}`

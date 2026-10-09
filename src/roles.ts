@@ -13,6 +13,7 @@ import type {
   Role,
   RoleOutput,
   Setup,
+  Ambiguity,
   Verdict,
   VisualRefKind,
   WordBudget,
@@ -40,6 +41,23 @@ const BEAT_CRAFT = `WRITE THE BEAT AS OUTCOMES, NOT CHOREOGRAPHY — the Writer 
 - Physical canon (sizes, colors, materials) already lives in the bible; don't copy it into constraints.
 - Leave room for surprise: a beat whose every move is fixed reads as a checklist.`;
 
+// How the gates read the writer's notes: intent that can explain a choice, never evidence.
+const NOTES_RULE = `WRITER'S NOTES, when given, say what the writer meant. Use them to understand a deliberate choice (a motif being seeded, a reveal left implied, a detail planted to mislead) and don't flag it as a mistake when the beat and bible allow it. They are never evidence: judge only what the prose itself establishes. A note claiming something the page doesn't show counts for nothing.`;
+
+// What each kind of setup is for (#93): shared by the roles that plant, gate and record them.
+export const SETUP_KINDS_RULES = `SETUP KINDS — not every detail is a promise:
+- promise: a setup the story must pay off (a clue that matters, a weapon on the wall).
+- red_herring: pays off by MISDIRECTING — it steers suspicion, then is shown to be nothing or simply left standing. It is never given a secret meaning or hidden purpose later.
+- open_question: may stay open on purpose; the story never owes it an answer.
+- motif: an image or phrase that recurs and resonates; it never needs paying off.
+A setup's purpose (what it does to the reader) and the story's HIDDEN TRUTHS are the hidden layer: every role keeps them consistent, and the prose never states them outright.`;
+
+// How the director plants setups on purpose, and what it may leave implied (#93).
+const PLANTS_RULES = `${SETUP_KINDS_RULES}
+plants: setups this scene plants ON PURPOSE, each with its kind and its purpose (what it does to the reader). Plain clues that will matter are promises; plant a red herring, open question or motif only when AMBIGUITY allows it and it serves the story. [] is fine.
+payoffs: list a red herring here only when this scene shows it to be nothing; never give it a secret meaning. Never "pay off" a motif or an open question by explaining it.
+keepImplied: what this scene leaves for the reader to infer on purpose (a feeling, a suspicion, a hidden truth glimpsed). mustReveal is what must be established; keepImplied must never be stated outright. [] when nothing.`;
+
 const CREATOR_SYSTEM = `You are the Creator. You generate the foundation for a procedurally generated story.
 Output ONLY JSON with this shape:
 {
@@ -51,7 +69,8 @@ Output ONLY JSON with this shape:
   "objects":[{"id":string,"name":string,"description":string,"owner":characterId}],
   "threads":[{"id":string,"title":string,"status":"open"}],
   "arc":[number],
-  "beat":{"title":string,"turn":string,"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[]}
+  "hidden_truths":[string],
+  "beat":{"title":string,"turn":string,"goal":string,"conflict":string,"pov":characterId,"location":locationId,"mustReveal":string,"constraints":[string],"payoffs":[],"plants":[{"id":string,"text":string,"kind":"promise"|"red_herring"|"open_question"|"motif","purpose":string}],"keepImplied":[string]}
 }
 arc: the story's tension plan, one target from 1 (calm) to 10 (peak) for each scene, in order — shaped for THIS story and its genre (a slow burn, an early shock, a farce that escalates, a quiet ending), not a stock curve. Keep the author's ARC values where given and fill the rest. Scene 1's beat plays at arc[0].
 art_style: how this world is portrayed in pictures, decided with the tone — one or two sentences naming the medium and rendering (e.g. gouache illustration, ink and watercolor, oil painting, woodcut), palette, light, line quality, level of detail, and mood. Specific enough that two illustrators would produce images that look like the same book. Suited to this story's genre and tone; never name a living artist.
@@ -60,6 +79,8 @@ vocal: how the character SOUNDS, for casting the audiobook — apparent age, pit
 objects: the story's KEY OBJECTS — signature items a character carries or uses, or things the plot turns on (an instrument, a relic, a letter). Usually 0-3. The description is canon for every later scene and image, so make it physically exact and true to what that kind of object really is: overall size AND width or thickness at its key points (e.g. "five feet long, an inch across at the mouthpiece, widening to a six-inch bell"), shape, materials, and how it is held or used. A real-world kind of object (an alpenhorn, a longbow) must have that object's real form and handling unless the premise deliberately changes it.
 Give each character's gender as "female" or "male" when the story has one in mind; use "" for unspecified, non-binary, or genderless characters. It picks their audiobook narration voice.
 The beat is the first scene. Payoffs must be empty (no prior setups exist).
+hidden_truths: 0-3 things that are really going on beneath the story (who is lying, what the house wants) that the story keeps consistent but never states outright. [] when the story has none.
+${PLANTS_RULES}
 The beat's title is the scene's title, shown on its title card in the video — two to five words, no spoilers. If the STORY CONTEXT names this scene ("Scene 1 — The ditch"), use that name.
 Create the premise, setting, and cast that make the best story — one character, five, whatever serves it.
 You will be given character names and location names — use them exactly, do not invent new ones.
@@ -68,7 +89,8 @@ ${BEAT_CRAFT}`;
 
 export const DIRECTOR_SYSTEM = `You are the Director of a procedurally generated story. You never write prose.
 Plan the next scene as a beat spec. Output ONLY JSON with this shape:
-{"title":string,"turn":string,"goal":string,"conflict":string,"pov":characterId,"location":string,"mustReveal":string,"constraints":[string],"payoffs":[setupId]}
+{"title":string,"turn":string,"goal":string,"conflict":string,"pov":characterId,"location":string,"mustReveal":string,"constraints":[string],"payoffs":[setupId],"plants":[{"id":string,"text":string,"kind":"promise"|"red_herring"|"open_question"|"motif","purpose":string}],"keepImplied":[string]}
+${PLANTS_RULES}
 title: the scene's title, shown on its title card in the video — two to five words, no spoilers. If the STORY CONTEXT names this scene ("Scene 2 — The pardon"), use that name.
 Honor the tension target, and give the scene its turn (see TURN). Every overdue setup must appear in payoffs.
 Never contradict the bible.
@@ -93,6 +115,7 @@ THE CONTRACT (non-negotiable):
 - MUST REVEAL is what the reader must come to understand. Let them understand it through what happens; a character voices part of it only if they truly would, and never as a summary.
 - KEY OBJECTS in the bible have canon physical descriptions: depict and handle them exactly as described — never give an object a feature, size, or way of being held that its description rules out. A description binds that object only, not others of its kind.
 - Do not resolve anything the beat does not resolve. Output only the scene text.
+- WRITER'S NOTES (optional): after the scene, a line "### WRITER'S NOTES" and at most five short bullets telling the reviewers about deliberate choices that could look like mistakes: a motif you're seeding, a reveal left implied on purpose, a detail planted to mislead. Never a summary of the scene, never part of it. The notes are cut off before anyone reads the story.
 
 CRAFT:
 - A scene turns. Someone wants something, meets resistance, and comes out changed — winning, losing, or learning at a cost. Find the turn and build to it. Make obstacles push back; let victory cost something.
@@ -142,7 +165,9 @@ SPEC ISSUE TYPES (for reviewing beat specs and bible patches, not prose):
 - WRONG_PAYOFF: a payoff doesn't match its setup, or a required setup is missing
 - INADEQUATE_SPEC: required fields missing/empty, duplicate names, or output too generic to use
 - REHASH: the beat re-litigates an already-resolved decision without introducing new pressure
-- OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events, or explains, reveals or connects something the plan leaves unexplained`;
+- OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events, or explains, reveals or connects something the plan leaves unexplained
+- INVENTED_EXPLANATION: the spec gives a red herring, an open question or a motif a secret meaning, hidden purpose or explanation, or pays a red herring off as if it were a true clue
+- HIDDEN_TRUTH_STATED: the prose states outright one of the bible's HIDDEN TRUTHS, a setup's purpose, or something the beat's keepImplied leaves implied`;
 
 // Shared issue contract for ALL gates. One schema, one dedup key — a gate that
 // omits `constraint` degrades repeat-detection to prose quotes that change every
@@ -307,9 +332,12 @@ PRACTICAL GAPS:
 
 DELIVERING THE BEAT (check this every draft):
 - The beat spec's mustReveal and every constraint are requirements the prose must ESTABLISH — on the page, in this scene, before it ends.
-- If the scene ends without establishing the mustReveal (a character never appears, an event never happens, a revelation stays implied), flag UNRESOLVED_SETUP with the beat text as the constraint.
+- If the scene ends without establishing the mustReveal (a character never appears, an event never happens, a revelation stays implied), flag UNRESOLVED_SETUP with the beat text as the constraint. What the beat lists in keepImplied stays implied ON PURPOSE: never flag it as unresolved.
+- THE HIDDEN LAYER: if the prose states outright one of the bible's HIDDEN TRUTHS, a setup's purpose, or something the beat's keepImplied leaves implied, flag HIDDEN_TRUTH_STATED (entity = the sentence; constraint = the truth it gives away). Hinting, glimpsing or letting the reader infer it is right.
 - If the prose violates an explicit constraint, flag CONSTRAINT_VIOLATION with that constraint text.
 - Do not assume a later scene will deliver what this beat requires. The beat gate approved the spec for THIS scene.
+
+${NOTES_RULE}
 
 ${ISSUE_RULES}`;
 
@@ -325,7 +353,7 @@ BLOCKING ISSUE TYPES (only these can go in "issues"):
 - SENSORY_SPECIFICITY: prose lacks concrete sensory detail where it matters. Ask only for what the POV character could actually perceive and name — never for technical precision outside their experience (exact pitches, frequency ratios, measurements). If the prose already gives a vivid, concrete impression, that is enough.
 - PACE: scene moves too fast/slow, transitions feel abrupt
 - EPISTEMIC_VIOLATION: character asserts certainty they cannot have
-- UNRESOLVED_SETUP: a required revelation or payoff is only implied, not established
+- UNRESOLVED_SETUP: a required revelation or payoff is only implied, not established (never what the beat's keepImplied leaves implied on purpose)
 - CHARACTER_ARC: behavior contradicts established personality without motivation
 - STYLE_PATTERN: a stylistic tic repeated THREE OR MORE times in this scene (recurrence required — see STYLE ENFORCEMENT)
 
@@ -348,7 +376,8 @@ DO NOT put CRAFT issues (word choice, repetition, voice, exposition style, metap
 - FLAG ONLY THE 3-5 MOST IMPACTFUL ISSUES. If you see more, pick the ones that would most confuse or alienate a reader. Everything else goes in the review.
 ${ISSUE_RULES}
 - Be honest about quality but pragmatic — not every imperfection justifies a rewrite.
-- You share this pipeline with a continuity checker. Focus on prose quality and story craft; they handle continuity.`;
+- You share this pipeline with a continuity checker. Focus on prose quality and story craft; they handle continuity.
+${NOTES_RULE}`;
 
 export const ARCHIVIST_SYSTEM = `You are the Archivist, the only role allowed to change the story bible.
 Read the committed scene and output ONLY a JSON patch:
@@ -356,7 +385,7 @@ Read the committed scene and output ONLY a JSON patch:
 "upsertLocations":[{"id":string,"name"?:string,"description"?:string}],
 "upsertObjects":[{"id":string,"name"?:string,"description"?:string,"owner"?:characterId}],
 "upsertThreads":[{"id":string,"title"?:string,"status"?:string}],
-"openSetups":[{"id":string,"text":string}],
+"openSetups":[{"id":string,"text":string,"kind":"promise"|"red_herring"|"open_question"|"motif","purpose":string}],
 "paySetups":[setupId],
 "resolveDecisions":[string],
 "timeline":"one line summary of what happened"}
@@ -364,6 +393,9 @@ Only record facts established in the scene.
 vocal: for a NEW character who speaks, one line on how they sound for the audiobook — apparent age, pitch, texture, pace, accent. Never rewrite an existing character's vocal.
 gender: set it ("female"/"male") for a NEW character when the scene establishes it (pronouns, terms like "mother" or "king"). Never change an existing character's recorded gender; omit the field when it is unclear.
 upsertObjects: add a KEY OBJECT (a signature item that recurs or drives the plot) when a scene introduces one, with a physically exact description: size AND width at its key points, shape, materials, how it is held or used — true to what that kind of object really is. Never rewrite an existing object's description.
+openSetups: give each new setup its kind and purpose. A setup the beat planted (plants) keeps the beat's kind. Otherwise judge from the scene: a detail meant to mislead is a red_herring, a mystery the story may never answer an open_question, a recurring image a motif, anything else a promise.
+paySetups: a promise the scene paid; a red herring the scene showed to be nothing. Never list a motif or an open question the scene merely touched. Never re-record an open setup as a different kind.
+${SETUP_KINDS_RULES}
 resolveDecisions: choices or commitments that CLOSED in this scene — decisions the characters will not re-make without new pressure. List only what the scene actually settles; an open or deferred choice does not belong here.`;
 
 export const BEAT_GATE_SYSTEM = `You are the Beat Gate. You review a beat spec BEFORE any prose is written.
@@ -382,6 +414,9 @@ Allowed types:
 - OFF_PLAN: the author's STORY CONTEXT plans this scene, and the spec leaves out its events, replaces them with others, or pulls in a later scene's events, or explains, reveals or connects something the plan leaves unexplained
 - REHASH: the beat re-decides something already closed, or restates a turn the story already made (its "turn" repeats one of the EARLIER TURNS, even reworded)
 - MISSING_TURN: the beat has no "turn", or its turn changes nothing; or the author pinned a TURN for this scene and the beat doesn't deliver it
+- INVENTED_EXPLANATION: the spec gives a red herring, an open question or a motif (see the ledger's kinds) a secret meaning, hidden purpose or explanation — in mustReveal, constraints or payoffs — or pays a red herring off as a true clue. Showing a red herring to be nothing is fine.
+
+${SETUP_KINDS_RULES}
 
 CHECK SPECIFICALLY:
 - If the STORY CONTEXT lays out what happens in this scene (by scene number), check the spec against it FIRST. Every event the author lists for this scene must be covered by the spec, as an outcome or a fixed moment (the spec need not fix their order); no event the author assigns to a later scene may be. A spec that goes somewhere else — however well-made — is OFF_PLAN. Bridging from where the last scene actually ended to the plan's events is fine. Then read mustReveal and payoffs against the plan: a reveal, explanation or connection the plan does not make (a secret purpose for an object, a hidden cause behind an event, a link between two of the author's details) is OFF_PLAN, however neat. In an author's story an unexplained detail is often left unexplained on purpose.
@@ -562,6 +597,7 @@ interface CreatorFoundation {
   objects?: { id?: string; name?: string; description?: string; owner?: string }[];
   threads?: { id?: string; title?: string; status?: string }[];
   arc?: unknown[];
+  hidden_truths?: unknown[];
   beat?: Beat;
 }
 
@@ -589,6 +625,8 @@ function applyBibleData(data: CreatorFoundation): Bible {
   for (const t of data.threads || []) {
     if (t.id) bible.threads[t.id] = { id: t.id, title: t.title || t.id, status: t.status || "open" };
   }
+  const truths = (Array.isArray(data.hidden_truths) ? data.hidden_truths : []).map((t) => String(t ?? "").trim()).filter(Boolean);
+  if (truths.length) bible.hiddenTruths = truths.slice(0, 3);
   // The engine settles the final arc (the author's pins win; gaps fall back).
   if (Array.isArray(data.arc)) bible.arc = data.arc.map((t) => (typeof t === "number" && t >= 1 && t <= 10 ? Math.round(t) : null));
   return bible;
@@ -671,6 +709,7 @@ export async function createAndDirect(role: Role, params: {
   context?: string;
   sceneWords?: WordBudget;
   lengthNote?: string;
+  ambiguity?: Ambiguity;
 } & TurnParams & CreativeFeedback): Promise<CreatorOutput> {
   const { sceneIndex, total, arc, world, premise, context, issues, fresh } = params;
   const charNames = (world.characters || []).map((c) => `${c.name} (${c.archetype})`).join(", ");
@@ -691,6 +730,7 @@ export async function createAndDirect(role: Role, params: {
     `SCENES: ${total} — plan the arc for all of them.`,
     arc?.some((t) => t !== null && t !== undefined) ? `ARC (the author's; keep these values, fill the nulls): ${JSON.stringify(arc)}` : "",
     lengthLines(params.sceneWords, params.lengthNote),
+    ambiguityLines(params.ambiguity),
     turnLines({ ...params, sceneIndex, total, context }),
     fix
   ].filter(Boolean).join("\n\n");
@@ -737,6 +777,19 @@ export function turnLines(p: TurnParams & { sceneIndex: number; total: number; c
   return lines.join("\n");
 }
 
+// The author's ambiguity setting (#93), as the director is told it.
+export const AMBIGUITY_GUIDE: Record<Ambiguity, string> = {
+  tidy: "AMBIGUITY: tidy — plant only promises; by the end everything is explained and every red herring is exposed as nothing.",
+  some: "AMBIGUITY: some — now and then a red herring, an open question or a motif where it deepens the story (not every scene); a couple of questions may stay open at the end.",
+  lots: "AMBIGUITY: lots — plant red herrings, open questions and motifs freely where they deepen the story; the ending may leave several questions open and lets the reader draw conclusions."
+};
+function ambiguityLines(ambiguity?: Ambiguity, standing?: Setup[]): string {
+  return [
+    ambiguity ? AMBIGUITY_GUIDE[ambiguity] : "",
+    standing?.length ? `MAY STAY AS THEY ARE (the final scene doesn't owe them a payoff — never invent an explanation for them): ${standing.map((s) => `${s.id} (${(s.kind ?? "promise").replace("_", " ")})`).join(", ")}` : ""
+  ].filter(Boolean).join("\n");
+}
+
 export async function direct(role: Role, params: {
   bible: Bible;
   sceneIndex: number;
@@ -746,6 +799,8 @@ export async function direct(role: Role, params: {
   context?: string;
   sceneWords?: WordBudget;  // this scene's share of the running time (#170)
   lengthNote?: string;      // the author chose to compress a plan longer than its running time
+  ambiguity?: Ambiguity;    // how much the story leaves unsaid (#93)
+  standing?: Setup[];       // final scene: setups that may stay as they are
 } & TurnParams & CreativeFeedback): Promise<RoleOutput<Beat>> {
   const { bible, sceneIndex, total, tension, overdue, context, issues, fresh } = params;
   const fix = feedbackBlock(
@@ -764,6 +819,7 @@ export async function direct(role: Role, params: {
     plan,
     `TENSION TARGET (1-10): ${tension}`,
     lengthLines(params.sceneWords, params.lengthNote),
+    ambiguityLines(params.ambiguity, params.standing),
     turnLines({ ...params, sceneIndex, total, context }),
     `OVERDUE SETUPS TO PAY OFF: ${overdue.map((s) => s.id).join(", ") || "none"}`,
     fix
@@ -787,7 +843,7 @@ export async function write(role: Role, params: {
   previousScenes?: string[];
   speakerTags?: boolean;
   suggestions?: Issue[];  // optional craft notes (advisory critic) — take or leave
-} & CreativeFeedback): Promise<RoleOutput<string>> {
+} & CreativeFeedback): Promise<RoleOutput<string> & { notes?: string }> {
   const { bible, beat, sceneIndex, attempt, sceneWords, previousDraft, previousScenes, speakerTags, issues, fresh, suggestions } = params;
   // Voice sheets for every character in the bible — not just POV, so minor
   // characters arrive with their own register and voices cannot converge.
@@ -855,7 +911,18 @@ export async function write(role: Role, params: {
     console.error(`[scriptorium]   ${c.retry(`writer: ${err.message} — keeping the partial draft for review`)}`);
     raw = err.partial;
   }
-  return { result: raw, prompt, system: WRITER_SYSTEM, raw };
+  const { prose, notes } = splitWriterNotes(raw);
+  return { result: prose, ...(notes ? { notes } : {}), prompt, system: WRITER_SYSTEM, raw };
+}
+
+// The writer's notes to its reviewers, cut off its draft so they never reach
+// the prose: everything from a "WRITER'S NOTES" heading on.
+const NOTES_HEADING = /^[ \t]*(?:#{1,6}[ \t]*|\*\*)?WRITER'?S?[ \t]+NOTES\b.*$/im;
+export function splitWriterNotes(raw: string): { prose: string; notes?: string } {
+  const m = NOTES_HEADING.exec(raw);
+  if (!m) return { prose: raw };
+  const notes = raw.slice(m.index + m[0].length).trim().slice(0, 1500);
+  return { prose: raw.slice(0, m.index).trimEnd(), ...(notes ? { notes } : {}) };
 }
 
 export const EDITOR_SYSTEM = `You are the Line Editor. You get one scene of a serialized story and return it edited: the same scene, better written. You are not the author. Never add, remove, reorder or change events, facts, who does what, what anyone learns, or how the scene ends; never change a proper name.
@@ -879,7 +946,7 @@ export async function edit(role: Role, params: {
   previousScene?: string;
   sceneWords?: WordBudget;
   trim?: boolean;   // the draft runs past its budget (#170): cut it to fit
-}): Promise<RoleOutput<string>> {
+}): Promise<RoleOutput<string> & { notes?: string }> {
   const { bible, prose, sceneIndex, previousScene, sceneWords, trim } = params;
   const voices = Object.values(bible.characters).filter((ch) => ch.voice).map((ch) => `- ${ch.name}: ${ch.voice}`).join("\n");
   const prompt = [
@@ -1361,10 +1428,11 @@ export interface ProseGateParams {
   previousScenes?: string[];
   previousIssues?: ReadonlyArray<Issue | string>;
   context?: string;
+  writerNotes?: string;  // the writer's stated intent for this draft
 }
 
 function buildGateContext(params: ProseGateParams): string {
-  const { bible, beat, prose, sceneIndex, attempt, sceneWords, previousScenes, previousIssues, context } = params;
+  const { bible, beat, prose, sceneIndex, attempt, sceneWords, previousScenes, previousIssues, context, writerNotes } = params;
   const priorProse = (previousScenes || [])
     .map((s, idx) => `--- SCENE ${idx + 1} (committed) ---\n${s}`)
     .join("\n\n");
@@ -1381,7 +1449,8 @@ function buildGateContext(params: ProseGateParams): string {
     priorIssues,
     beat ? `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}` : "",
     sceneWords ? `LENGTH TARGET: ${sceneWords.min}-${sceneWords.max} words` : "",
-    `CURRENT SCENE (draft ${draftNum}):\n${prose}`
+    `CURRENT SCENE (draft ${draftNum}):\n${prose}`,
+    writerNotes ? `WRITER'S NOTES (the writer's stated intent, not part of the scene):\n${writerNotes}` : ""
   ].filter(Boolean).join("\n\n");
 }
 
@@ -1553,8 +1622,9 @@ export async function archive(role: Role, params: {
   prose: string;
   sceneIndex: number;
   isFinal: boolean;
+  writerNotes?: string;
 } & CreativeFeedback): Promise<RoleOutput<Patch>> {
-  const { bible, beat, prose, sceneIndex, isFinal, issues, fresh } = params;
+  const { bible, beat, prose, sceneIndex, isFinal, issues, fresh, writerNotes } = params;
   const fix = feedbackBlock(
     issues,
     fresh,
@@ -1565,6 +1635,7 @@ export async function archive(role: Role, params: {
     renderBible(bible),
     `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`,
     `COMMITTED SCENE:\n${prose}`,
+    writerNotes ? `WRITER'S NOTES (what the writer meant — use them to give a setup the scene shows its kind and purpose; record only what the scene establishes):\n${writerNotes}` : "",
     fix
   ].filter(Boolean).join("\n\n");
   const { result, system, raw } = await callJson(role, {

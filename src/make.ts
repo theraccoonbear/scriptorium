@@ -29,7 +29,7 @@ import { replay } from "./bible.ts";
 import { refAppearances } from "./visualrefs.ts";
 import { c } from "./colors.ts";
 import { CRITIC_MODES } from "./types.ts";
-import type { StoryConfig, StoryEvent } from "./types.ts";
+import type { Ambiguity, StoryConfig, StoryEvent } from "./types.ts";
 import type { CastMember } from "./cast.ts";
 import type { TitleSettings } from "./titles.ts";
 import type { MusicSettings } from "./music.ts";
@@ -87,6 +87,7 @@ export interface StoryFile {
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
   budget?: { usd: number; count?: CostKind[] };  // stop before spending more than this on the run (counting these kinds of spend)
   rating?: RatingSetting;  // hold the story to an audience rating (#88): "PG", or { base, age, forbid, flag, allow, mode, card }
+  ambiguity?: Ambiguity;   // how much the story leaves unsaid (#93): "tidy", "some" (default) or "lots"
   length?: LengthSetting;  // a running time (#170): { "minutes": 12, "scenes": 3 }; sets the scene count and word budgets
   // How art and audio run: "audio-first" (default: voicing is cheap and listening
   // can send a story back for a rewrite before images are paid for),
@@ -156,6 +157,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...(raw.rating !== undefined ? { rating: resolveRating(raw.rating, `${path}: "rating"`) } : {}),
     ...(typeof raw.title === "string" && raw.title.trim() ? { title: raw.title.trim() } : {}),
     ...(raw.length ?? baseConfig.length ? { length: raw.length ?? baseConfig.length } : {}),
+    ...(raw.ambiguity ?? baseConfig.ambiguity ? { ambiguity: raw.ambiguity ?? baseConfig.ambiguity } : {}),
     ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
     ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {}),
     ...(raw.critic ?? baseConfig.critic ? { critic: raw.critic ?? baseConfig.critic } : {}),
@@ -166,6 +168,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
   if (raw.audiobook?.audioTags !== undefined) {
     try { resolveAudioTags(raw.audiobook.audioTags); } catch (err) { throw new Error(`${path}: ${(err as Error).message}`); }
   }
+  if (config.ambiguity !== undefined && !["tidy", "some", "lots"].includes(config.ambiguity)) throw new Error(`${path}: "ambiguity" must be "tidy", "some" or "lots"`);
   if (config.budget !== undefined && !(typeof config.budget.usd === "number" && config.budget.usd > 0)) {
     throw new Error(`${path}: "budget" must look like { "usd": 5 }`);
   }

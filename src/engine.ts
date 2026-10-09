@@ -18,16 +18,19 @@ import { readVisualRefs, refAppearances, storyArtStyle } from "./visualrefs.ts";
 import { lookOf, portraitIds, recordedSheet } from "./characterSheet.ts";
 import type { RefAppearances } from "./visualrefs.ts";
 import type {
+  Ambiguity,
   Beat,
   Bible,
   CoverArtData,
   GateResult,
   Issue,
+  Patch,
   RoleOutput,
   Role,
   Roles,
   SceneArtData,
   SceneCommittedData,
+  Setup,
   StoryConfig,
   StoryEvent,
   Verdict,
@@ -45,6 +48,36 @@ export function tensionAt(index: number, total: number): number {
   const x = (index + 0.5) / total;
   const level = x < 0.75 ? x / 0.75 : 1 - ((x - 0.75) / 0.25) * 0.6;
   return Math.max(1, Math.round(1 + level * 9));
+}
+
+// Which open setups fall due in scene i (#93). Only promises are ever overdue
+// mid-story; a red herring, an open question or a motif stands by its kind.
+// The final scene pays every promise, and by ambiguity: "tidy" also settles red
+// herrings and open questions; "some" lets the two newest open questions stand;
+// "lots" leaves them all. Motifs never fall due. `standing`: what the final
+// scene may leave as it is, for the director to know.
+export const OPEN_QUESTIONS_SURVIVING: Record<Ambiguity, number> = { tidy: 0, some: 2, lots: Infinity };
+export function dueSetups(ledger: Setup[], i: number, isFinal: boolean, overdueAfter: number, ambiguity: Ambiguity = "some"): { due: Setup[]; standing: Setup[] } {
+  const kind = (s: Setup) => s.kind ?? "promise";
+  if (!isFinal) return { due: ledger.filter((s) => kind(s) === "promise" && i - s.openedAt >= overdueAfter), standing: [] };
+  const questions = ledger.filter((s) => kind(s) === "open_question").sort((a, b) => b.openedAt - a.openedAt);
+  const keep = new Set(questions.slice(0, OPEN_QUESTIONS_SURVIVING[ambiguity]).map((s) => s.id));
+  const due = ledger.filter((s) => kind(s) === "promise" || (ambiguity === "tidy" && kind(s) === "red_herring") || (kind(s) === "open_question" && !keep.has(s.id)));
+  return { due, standing: ledger.filter((s) => !due.includes(s)) };
+}
+
+// What the director planted on purpose goes into the ledger with its kind,
+// whether or not the archivist recorded it; the plant's kind wins (#93).
+export function withPlants(patch: Patch, beat: Beat, ledger: Setup[]): Patch {
+  const plants = (beat.plants ?? []).filter((p) => p?.id && !ledger.some((s) => s.id === p.id));
+  if (plants.length === 0) return patch;
+  const open = [...(patch.openSetups ?? [])];
+  for (const p of plants) {
+    const k = open.findIndex((s) => s.id === p.id);
+    const entry = { id: p.id, text: open[k]?.text || p.text, kind: p.kind, ...(p.purpose ? { purpose: p.purpose } : {}) };
+    if (k >= 0) open[k] = entry; else open.push(entry);
+  }
+  return { ...patch, openSetups: open };
 }
 
 // Each scene's tension target: the author's pin, else the creator's arc, else the fallback.
@@ -132,6 +165,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   const total = scenes ?? config.scenes;
   if (total === undefined) throw new Error("scenes must be set via config or --scenes");
   const overdueAfter = config.overdueAfter ?? 3;
+  const ambiguity = config.ambiguity ?? "some";
   // Scene word band: writer stays inside it; critic flags >2x as blocking PACE.
   // A running time (#170) sets it instead, each scene's share weighted by the
   // arc; an explicit sceneWords still wins.
@@ -255,11 +289,10 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
     const earlierTurns = storyTurns(log.events);
     // With an author's plan, setups are paid where the plan pays them: an
     // unexplained detail may stay unexplained on purpose, so none is overdue.
-    const overdue = config.context
-      ? []
-      : isFinal
-      ? bible.ledger
-      : bible.ledger.filter((s) => i - s.openedAt >= overdueAfter);
+    // Otherwise only promises fall due (#93); the rest stand by their kind.
+    const { due: overdue, standing } = config.context
+      ? { due: [], standing: [] }
+      : dueSetups(bible.ledger, i, isFinal, overdueAfter, ambiguity);
 
     console.error(`[scriptorium] ${c.blue(c.bold(`scene ${i + 1}/${total}`))} tension=${c.yellow(creating && config.tension?.[0] == null ? "from the creator's arc" : String(tension))}${turn ? c.dim(` · the author's turn: ${turn}`) : ""}`);
     let t0 = Date.now();
@@ -323,7 +356,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         gen: async (issues, fresh, generation) => {
           t0 = Date.now();
           if (i === 0 && bible.sceneCount === 0) {
-            const out = await createAndDirect(roles.director, { sceneIndex: i, total, arc: config.tension, turn, world, premise: config.premise || undefined, context: config.context, issues, fresh, ...(length ? { sceneWords: length.sceneWords } : {}), ...(lengthNote ? { lengthNote } : {}) });
+            const out = await createAndDirect(roles.director, { sceneIndex: i, total, arc: config.tension, turn, world, premise: config.premise || undefined, context: config.context, issues, fresh, ambiguity, ...(length ? { sceneWords: length.sceneWords } : {}), ...(lengthNote ? { lengthNote } : {}) });
             createdBible = out.bible;
             bible = { ...baseBible, ...createdBible };
             const arc = planArc(total, config.tension, createdBible.arc);
@@ -334,7 +367,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
             recordTiming("director", Date.now() - t0);
             if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "creator" : `creator-g${generation}`, beat);
           } else {
-            beat = await direct(roles.director, { bible, sceneIndex: i, total, tension, turn, earlierTurns, overdue, context: config.context, issues, fresh, ...(length ? { sceneWords } : {}), ...(lengthNote ? { lengthNote } : {}) });
+            beat = await direct(roles.director, { bible, sceneIndex: i, total, tension, turn, earlierTurns, overdue, context: config.context, issues, fresh, ambiguity, ...(standing.length ? { standing } : {}), ...(length ? { sceneWords } : {}), ...(lengthNote ? { lengthNote } : {}) });
             recordTiming("director", Date.now() - t0);
             if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "director" : `director-g${generation}`, beat);
           }
@@ -374,6 +407,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       await produceBeat();
 
       let prose = "";
+      let writerNotes: string | undefined;  // the writer's notes to its reviewers on the current draft, never part of it
       let verdict: Verdict = { ok: false, issues: [] };
       let suggestions: Issue[] = [];   // advisory critic's notes for the next draft
       let attempt = 0;
@@ -401,6 +435,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         recordTiming("writer", Date.now() - t0);
         if (runDir) await writeRoleOutput(runDir, ++seq, `writer-a${attempt}`, writeOut);
         prose = writeOut.result;
+        writerNotes = writeOut.notes;
         attempt++;
 
         // Line editor (optional): polishes the draft before review. An edit
@@ -445,7 +480,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         // Continuist and critic run in parallel — identical context, different prompts.
         t0 = Date.now();
         const gateCtx = {
-          bible, beat: beat.result, prose, sceneIndex: i, attempt: attempt - 1, previousScenes, sceneWords,
+          bible, beat: beat.result, prose, sceneIndex: i, attempt: attempt - 1, previousScenes, sceneWords, ...(writerNotes ? { writerNotes } : {}),
           previousIssues: dedupIssues([...contHistory, ...criticHistory]),
           context: config.context
         };
@@ -577,7 +612,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         feedback: [],
         gen: async (issues, fresh, generation) => {
           t0 = Date.now();
-          const out = await archive(roles.archivist, { bible, beat: beat.result, prose, sceneIndex: i, isFinal, issues, fresh });
+          const out = await archive(roles.archivist, { bible, beat: beat.result, prose, sceneIndex: i, isFinal, issues, fresh, ...(writerNotes ? { writerNotes } : {}) });
           recordTiming("archivist", Date.now() - t0);
           if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "archivist" : `archivist-g${generation}`, out);
           return out;
@@ -600,13 +635,14 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         attempts: attempt
       };
       if (createdBible) data.bible = createdBible;
+      data.patch = withPlants(data.patch, beat.result, bible.ledger);
       await log.append("scene_committed", data);
       if (rating) {
         // What the censor changed on the way (#88), and what a parent should know.
         await log.append("rating_report", { index: i, changed: dedupIssues(censorHistory).map(renderIssue), flags: ratingFlags });
         if (runDir) await writeRatingReport(runDir, log.events, rating);
       }
-      bible = applyPatch(bible, archOut.result, i);
+      bible = applyPatch(bible, data.patch, i);
       console.error(`[scriptorium] ${c.ok(`scene ${i + 1} committed`)}`);
       previousScenes.push(prose);
       if (runDir) await writeStoryIncremental(runDir, log.events);
