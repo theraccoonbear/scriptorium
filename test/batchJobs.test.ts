@@ -17,7 +17,7 @@ const tmp = () => mkdtemp(join(tmpdir(), "scriptorium-batch-"));
 const noSleep = async () => {};
 
 // A fake Batch API: records submissions; each job reports pending, running, then succeeded
-// with one response per request (out of order, the second one failing).
+// with one response per request (out of order, the request with n = 1 failing).
 function fakeApi(opts: { fail?: boolean } = {}) {
   const submitted: { model: string; requests: { request: unknown; metadata: { key: string } }[] }[] = [];
   const polls = new Map<string, number>();
@@ -34,7 +34,7 @@ function fakeApi(opts: { fail?: boolean } = {}) {
     const job = submitted[Number(name.replace("batches/job", "")) - 1];
     if (n < 3) return { ok: true, status: 200, json: async () => ({ metadata: { state: n === 1 ? "BATCH_STATE_PENDING" : "BATCH_STATE_RUNNING" } }) };
     if (opts.fail) return { ok: true, status: 200, json: async () => ({ metadata: { state: "BATCH_STATE_FAILED" } }) };
-    const items = job.requests.map((r) => r.metadata.key === "1"
+    const items = job.requests.map((r) => (r.request as { n?: number }).n === 1
       ? { metadata: r.metadata, error: { message: "blocked" } }
       : { metadata: r.metadata, response: { echo: r.request, usageMetadata: { promptTokenCount: 0, candidatesTokenCount: 1_000_000 } } }).reverse();
     return { ok: true, status: 200, json: async () => ({ metadata: { state: "BATCH_STATE_SUCCEEDED" }, response: { inlinedResponses: { inlinedResponses: items } } }) };
@@ -127,8 +127,8 @@ test("a batch too big for one inline job is split into several, results back in 
   const big = Array.from({ length: 5 }, (_, n) => ({ n, image: "x".repeat(400) }));
   const items = await geminiBatchJobs({ apiKey: "k", fetch: api.fetch, sleep: noSleep, maxJobBytes: 1000 }).run("m", "artist", big);
   assert.deepEqual(api.submitted.map((j) => j.requests.length), [2, 2, 1], "split into jobs under the limit");
-  // The fake fails each job's second request (key "1"): requests 1 and 3 overall.
-  assert.deepEqual(items.map((i) => i.response?.echo.n ?? "error"), [0, "error", 2, "error", 4], "every result in its original place");
+  // The fake fails the request with n = 1, whichever job it lands in.
+  assert.deepEqual(items.map((i) => i.response?.echo.n ?? "error"), [0, "error", 2, 3, 4], "every result in its original place");
 });
 
 test("a dropped status check is retried, not taken as the job failing", async () => {
@@ -151,4 +151,21 @@ test("a dropped status check is retried, not taken as the job failing", async ()
   const stateFile = join(runDir, "jobs2.json");
   await assert.rejects(geminiBatchJobs({ apiKey: "k", stateFile, fetch: down, sleep: noSleep }).run("m", "artist", [{ n: 9 }]), /re-run later to resume/);
   assert.equal(Object.keys(JSON.parse(await readFile(stateFile, "utf8"))).length, 1, "kept, to resume");
+});
+
+test("the same requests gathered in another order resume the running job, results back in the caller's order", async () => {
+  const runDir = await tmp();
+  const api = fakeApi();
+  const stateFile = join(runDir, "jobs.json");
+  // The first run is stopped while the job runs (its status check fails for good).
+  let down = true;
+  const fetch = async (url: string, init?: { method?: string; body?: string }) => {
+    if (down && init?.method !== "POST") throw new TypeError("fetch failed");
+    return api.fetch(url, init);
+  };
+  await assert.rejects(geminiBatchJobs({ apiKey: "k", stateFile, fetch, sleep: noSleep }).run("m", "artist", [{ n: 0 }, { n: 2 }, { n: 3 }]), /resume/);
+  down = false;
+  const items = await geminiBatchJobs({ apiKey: "k", stateFile, fetch, sleep: noSleep }).run("m", "artist", [{ n: 3 }, { n: 0 }, { n: 2 }]);
+  assert.equal(api.submitted.length, 1, "resumed, not paid for again");
+  assert.deepEqual(items.map((i) => i.response?.echo.n), [3, 0, 2], "each result with its own request");
 });
