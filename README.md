@@ -457,6 +457,12 @@ Other config keys:
 
 Anything else (a speech check you've listened to, a note) is closed by hand: `npm run review -- <story.json> done <N> [--note "…"]`.
 
+## Cleaning up
+
+`npm run cleanup -- <story.json>` lists what the run no longer needs, with sizes and paths: review rounds already dealt with, the images a redo replaced once that shot is approved, and samples of speakers no longer cast. It's a dry run. `--apply` moves them to `runs/_trash/<run>/<time>/`, keeping their paths, so nothing is lost until `--purge` empties the trash.
+- **Options:** `--keep-last` keeps the newest replaced take of each shot. `--only sheets` (review sheets, which `npm run review` rebuilds) and `--only logs` (all but the newest 10 logs and threads) are included only when asked for.
+- **Never touched:** canon (the event log, character sheet, approvals, ledger, `art.json` and every image it uses, casting), the finished audiobook, music and video, `notes/`, `backups/`, and the voice batch cache. The cache is what lets an edit re-voice only the changed lines.
+
 ## Spend
 
 Every paid API call is logged to `<run>/usage.jsonl`. That covers the text roles, Gemini images, the image inspector and Gemini TTS; Kokoro and ffmpeg are local and free. Each entry records the step, role, model, token counts and estimated cost. `make` and the individual commands print what each step spent, `make` ends with a breakdown by step, role and model, and `cost --out <run>` reports on any run.

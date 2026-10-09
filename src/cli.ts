@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { findLedgers, filterEntries, ledgerFor, retag, spendAcross, spendForRun } from "./spend.ts";
+import { ALL_KINDS, findRemovable, formatRemovable, moveToTrash, purgeTrash, trashDir } from "./cleanup.ts";
+import type { CleanupKind } from "./cleanup.ts";
 import { closeRounds, formatPending, roundStatuses } from "./pending.ts";
 import { join } from "node:path";
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
@@ -247,7 +249,9 @@ async function main() {
       after: { type: "string" },
       before: { type: "string" },
       step: { type: "string" },
-      "no-wait": { type: "boolean" }
+      "no-wait": { type: "boolean" },
+      purge: { type: "boolean" },
+      "keep-last": { type: "boolean" }
     }
   });
 
@@ -322,6 +326,30 @@ async function main() {
     const steps = values.only ? planSteps(values.only) : undefined;
     const redo = (values.redo ?? "").split(",").map((r) => r.trim()).filter(Boolean);
     console.log(formatPitch(storyPitch(story, events, steps, redo), story.config.budget?.usd));
+    return;
+  }
+
+  if (command === "cleanup") {
+    // What a run no longer needs, once it's settled (#130): a dry run unless --apply.
+    const [storyFile] = positionals;
+    if (!storyFile) throw new Error("usage: cleanup <story.json> [--apply] [--only rounds,previous,samples,sheets,logs] [--keep-last] | cleanup <story.json> --purge");
+    const story = await loadStoryFile(storyFile);
+    if (values.purge) {
+      const bytes = await purgeTrash(story.runDir);
+      console.error(`[scriptorium] ${c.ok(`emptied ${trashDir(story.runDir)}`)} ${c.dim(`(${(bytes / 1e6).toFixed(1)} MB)`)}`);
+      return;
+    }
+    const only = (values.only ?? "").split(",").map((k) => k.trim()).filter(Boolean);
+    const bad = only.filter((k) => !(ALL_KINDS as readonly string[]).includes(k));
+    if (bad.length) throw new Error(`--only ${bad.join(",")}: cleanup kinds are ${ALL_KINDS.join(", ")}`);
+    const items = await findRemovable(story.runDir, { ...(only.length ? { kinds: only as CleanupKind[] } : {}), keepLast: values["keep-last"] === true });
+    if (values.apply && items.length) {
+      const dest = await moveToTrash(story.runDir, items);
+      console.log(formatRemovable(items, story.runDir, true));
+      console.error(`[scriptorium] ${c.dim(`in ${dest} — npm run cleanup -- ${storyFile} --purge empties the trash`)}`);
+      return;
+    }
+    console.log(formatRemovable(items, story.runDir, false));
     return;
   }
 

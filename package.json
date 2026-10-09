@@ -24,7 +24,8 @@
     "doctor": "node src/cli.ts doctor",
     "audition": "node src/cli.ts audition",
     "canon": "node src/cli.ts canon",
-    "spend": "node src/cli.ts spend"
+    "spend": "node src/cli.ts spend",
+    "cleanup": "node src/cli.ts cleanup"
   },
   "engines": {
     "node": ">=24"
