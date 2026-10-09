@@ -217,8 +217,15 @@ Write it like a film still's blocking:
 
 Output ONLY JSON: {"prompt":string}`;
 
-export async function blockGroupPicture(role: Role, p: { prompt: string; people: { id: string; look: string }[] }): Promise<RoleOutput<string>> {
-  const prompt = [`PROMPT:\n${p.prompt}`, `PEOPLE (each appears once, most important first):\n${p.people.map((x) => `- ${x.look}`).join("\n")}`].join("\n\n");
+// `lead`: the first person is the picture's lead (a cover's title character);
+// `note`: what the last try got wrong, for a second go.
+export async function blockGroupPicture(role: Role, p: { prompt: string; people: { id: string; look: string }[]; lead?: boolean; note?: string }): Promise<RoleOutput<string>> {
+  const prompt = [
+    `PROMPT:\n${p.prompt}`,
+    `PEOPLE (each appears once, most important first):\n${p.people.map((x) => `- ${x.look}`).join("\n")}`,
+    p.lead ? "LEAD: the first person in PEOPLE is the picture's lead — in the foreground, at the centre, the largest figure in the frame. Move them there if the prompt has them elsewhere." : "",
+    p.note ? `YOUR LAST VERSION: ${p.note}` : ""
+  ].filter(Boolean).join("\n\n");
   const out = await callJson(role, { role: "blocking", system: BLOCKING_SYSTEM, prompt, ctx: { task: "blocking" } });
   const text = String((out.result as { prompt?: unknown })?.prompt ?? "").trim();
   return { ...out, result: text };

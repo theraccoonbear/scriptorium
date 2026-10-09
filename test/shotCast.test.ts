@@ -89,3 +89,30 @@ test("the blocking brief: a head count, each person once and placed, no names; t
   const out = await blockGroupPicture(reply({ prompt: " Four figures: … " }) as never, { prompt: "the company on the road", people: [{ id: "a", look: "a vast monk" }, { id: "b", look: "a ginger halfling" }] });
   assert.equal(out.result, "Four figures: …");
 });
+
+test("the cover's blocking is checked: a lead left out, or the lead not leading, goes back once with the note", async () => {
+  const { blockCover } = await import("../src/engine.ts");
+  const looks = { rantoul: "a vast monk", lemuel: "a ginger halfling", ivana: "a wood elf", oglesby: "a lanky friar" };
+  // Replies in order: blocking, cast check, blocking, cast check.
+  const scripted = (replies: object[]) => {
+    const prompts: string[] = [];
+    const role = { provider: { complete: async (req: { prompt?: string; messages?: { content: string }[] }) => {
+      prompts.push(JSON.stringify(req));
+      return JSON.stringify(replies.shift());
+    } } } as unknown as Role;
+    return { role, prompts };
+  };
+  // First try leaves the monk on the bench behind the halfling: sent back, then right.
+  const a = scripted([{ prompt: "v1" }, { shots: [{ n: 1, characters: ["lemuel", "rantoul", "ivana"] }] }, { prompt: "v2" }, { shots: [{ n: 1, characters: ["rantoul", "lemuel", "ivana"] }] }]);
+  assert.equal(await blockCover(a.role, "the road. STYLE", ["rantoul", "lemuel", "ivana"], looks, "STYLE"), "v2 STYLE");
+  assert.match(a.prompts[2], /LEAD: the first person/);
+  assert.match(a.prompts[2], /YOUR LAST VERSION: the lead \(a vast monk\) isn't the main figure/);
+  // Right first time: one blocking pass, one check.
+  const b = scripted([{ prompt: "v1" }, { shots: [{ n: 1, characters: ["rantoul", "lemuel", "ivana", "oglesby"] }] }]);
+  assert.equal(await blockCover(b.role, "the road", ["rantoul", "lemuel", "ivana"], looks), "v1");
+  assert.equal(b.prompts.length, 2);
+  // Wrong twice: keep the version that missed less.
+  const c = scripted([{ prompt: "v1" }, { shots: [{ n: 1, characters: ["lemuel"] }] }, { prompt: "v2" }, { shots: [{ n: 1, characters: ["rantoul", "lemuel"] }] }]);
+  assert.equal(await blockCover(c.role, "the road", ["rantoul", "lemuel", "ivana"], looks), "v2");
+  assert.match(c.prompts[2], /left out: a vast monk; left out: a wood elf/);
+});
