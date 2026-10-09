@@ -207,6 +207,20 @@ export interface SceneArtData {
   sceneIndex: number;
   prompt: string;          // first shot's prompt; the only prompt on events from before shots existed
   shots?: ArtShotData[];
+  continuity?: ContinuityEntry[];  // the scene's physical facts, stretch by stretch (#140)
+}
+
+// One stretch of a scene's continuity sheet (#140), from `fromParagraph` (0-based)
+// until the next entry: where it is, and what time, light, weather and state
+// every shot in that stretch must show.
+export interface ContinuityEntry {
+  fromParagraph: number;
+  place?: string;          // "a campsite hollow on the open grassland"
+  indoors?: boolean;
+  time?: string;           // "night, an hour after dusk"
+  light?: string;          // "the campfire only; deep blue darkness beyond it"
+  weather?: string;        // "dry, still, cold"
+  state?: string;          // "the fire is lit"; "the fire is out"
 }
 
 // extras_art event: the art director's extras for the story — key art (one

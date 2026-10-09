@@ -4,8 +4,8 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:f
 import { dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
 import { postJson, requireKey } from "./providers.ts";
-import { parseJson } from "./roles.ts";
-import type { ArtistBackendSpec, ArtistConfig, CoverArtData, ExtrasArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
+import { continuityAt, continuityLine, parseJson } from "./roles.ts";
+import type { ArtistBackendSpec, ArtistConfig, ContinuityEntry, CoverArtData, ExtrasArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
 import { readVisualRefs, refKey, storyArtStyle } from "./visualrefs.ts";
 import { replay } from "./bible.ts";
 import { isBudgetError } from "./usage.ts";
@@ -171,7 +171,7 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
       if (!d.shots || d.shots.length === 0) return [{ key: scene, prompt: d.prompt, sceneIndex: i, startParagraph: 0 }];
       return d.shots.map((shot, k) => ({
         key: `${scene}-${String(k + 1).padStart(2, "0")}`,
-        prompt: shot.prompt,
+        prompt: withMoment(shot.prompt, continuityAt(d.continuity, shot.startParagraph)),
         sceneIndex: i,
         startParagraph: shot.startParagraph,
         ...(shot.characters ? { characters: shot.characters } : {}),
@@ -275,6 +275,14 @@ export function formatReshoot(stale: StaleShot[], batch: boolean, perImageUsd = 
   const lines = [...byScene].map(([scene, shots]) => `${scene}: ${shots.map((s) => `${s.key.replace(/^scene-\d+-/, "")}${s.approved ? " (approved — stays)" : ""} ← ${s.refs.join(", ")}`).join("; ")}`);
   const usd = todo.length * perImageUsd * (batch ? 0.5 : 1);
   return [...lines, `${todo.length} shot${todo.length === 1 ? "" : "s"} to reshoot, ~$${usd.toFixed(2)}${batch ? " (batch)" : ""} — run make --only art${stale.length > todo.length ? `; ${stale.length - todo.length} approved stay (revoke to reshoot them)` : ""}`].join("\n");
+}
+
+// A shot's moment from its scene's continuity sheet (#140), stated after its
+// prompt so the time and light win over any in the story's style paragraph.
+// Shots planned before continuity sheets existed are unchanged (no re-render).
+export function withMoment(prompt: string, entry: ContinuityEntry | undefined): string {
+  const line = entry ? continuityLine(entry) : "";
+  return line ? `${prompt}\n\nTHIS MOMENT (overrides any time of day, light or weather in the style): ${line}.` : prompt;
 }
 
 // The author's correction for a shot (shot_note events, newest per shot),

@@ -530,7 +530,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           const { drafts } = await directSceneShots(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events), log, recordRefs);
           for (const d of drafts) if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector", d);
           const out = drafts.at(-1)!;
-          const art: SceneArtData = { sceneIndex: i, prompt: out.result.prompt, shots: out.result.shots };
+          const art: SceneArtData = { sceneIndex: i, prompt: out.result.prompt, shots: out.result.shots, ...(out.result.continuity ? { continuity: out.result.continuity } : {}) };
           await log.append("scene_art", art);
         });
       }
@@ -833,7 +833,7 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
     made.push(...shot.made);
     for (const draft of shot.drafts) if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-redo", draft);
     const out = shot.drafts.at(-1)!;
-    const art: SceneArtData = { sceneIndex: d.index, prompt: out.result.prompt, shots: out.result.shots };
+    const art: SceneArtData = { sceneIndex: d.index, prompt: out.result.prompt, shots: out.result.shots, ...(out.result.continuity ? { continuity: out.result.continuity } : {}) };
     await log.append("scene_art", art);
     prompts.push(...(out.result.shots ?? []).map((s) => s.prompt));
     onScene?.(d.index, out.result.shots?.length ?? 1);
@@ -948,7 +948,7 @@ export async function planShots({ config, log, roles, runDir, replan = [], redir
     const shot = await directSceneShots(artRole, config, bible, d.beat, d.prose, d.index, sceneArtPrompts(log.events), log, recordRefs);
     for (const draft of shot.drafts) if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector", draft);
     const out = shot.drafts.at(-1)!;
-    await log.append("scene_art", { sceneIndex: d.index, prompt: out.result.prompt, shots: out.result.shots } satisfies SceneArtData);
+    await log.append("scene_art", { sceneIndex: d.index, prompt: out.result.prompt, shots: out.result.shots, ...(out.result.continuity ? { continuity: out.result.continuity } : {}) } satisfies SceneArtData);
     planned++;
   }
   const committed = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);

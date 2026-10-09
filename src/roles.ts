@@ -1,6 +1,7 @@
 import { renderBible, emptyBible } from "./bible.ts";
 import { OutputLimitError } from "./providers.ts";
 import { c } from "./colors.ts";
+import type { ContinuityEntry } from "./types.ts";
 import type { RefAppearances } from "./visualrefs.ts";
 import type {
   Beat,
@@ -428,7 +429,9 @@ MODES:
   - Every character must look ORIGINAL: never resemble, evoke, or be described in terms of any real person, actor, or celebrity — EXCEPT the CAST, real people and animals starring in this story by the author's choice. A cast member's portrait is drawn from their real photos: its appearance is their CAST appearance (plus the costume and gear the story gives them), and its prompt is a full-body portrait of exactly that person or animal, recognizably them, in the story's ART STYLE.
 - SCENE: break the committed scene into SHOTS — a sequence of stills that follows the narration. The scene is given as numbered paragraphs, and you are told how many shots to make. Each shot starts at a paragraph and stays on screen until the next shot's paragraph is read aloud.
   Output ONLY JSON:
-  {"shots":[{"start_paragraph":number,"prompt":string,"characters":[characterId],"location":locationId,"props":[propId]}]}
+  {"continuity":[{"from_paragraph":number,"place":string,"indoors":boolean,"time":string,"light":string,"weather":string,"state":string}],"shots":[{"start_paragraph":number,"prompt":string,"characters":[characterId],"location":locationId,"props":[propId]}]}
+  - FIRST, the CONTINUITY SHEET: read the whole scene for its physical facts and write them down, so every shot agrees. One entry from paragraph 1, and a new entry wherever any of these change: the place, indoors or outdoors, the time of day (dusk turning to full dark), the light (the fire lit or put out, lanterns, moon, none), the weather, or a lasting state of things that shows (a fire burning, someone asleep in a tent, a gown changed). state is only such lasting conditions, never what happens in the moment (not "the beetles attack", but "the fire is out; two men asleep in the white tent"). Each field is concrete and short: time "night, an hour after dusk"; light "the campfire only, deep darkness beyond its circle"; state "the fire is out". Infer what the prose implies (a campfire scene after supper is night); never leave time or light vague.
+  - Every shot agrees with the continuity entry its start paragraph falls in: describe its time and light in the prompt in those words. A night shot is never sunlit, golden-hour, or bright; an indoor shot shows no sky.
   - The first shot starts at paragraph 1. start_paragraph values strictly increase.
   - Cut where the action, setting, or focus actually changes, not at even intervals. Spread shots across the WHOLE scene, through to its ending.
   - Each shot depicts a moment that actually happens in its own stretch of paragraphs — never invent events.
@@ -1520,6 +1523,7 @@ export interface ArtReference {
 
 export interface ArtDirection {
   prompt: string;              // cover prompt, the first shot's, or the first reference's
+  continuity?: ContinuityEntry[];  // scene mode: the scene's continuity sheet (#140)
   artStyle?: string;           // references mode, when the story had no style yet
   shots?: ArtShot[];           // scene mode only
   references?: ArtReference[]; // references mode only
@@ -1541,6 +1545,67 @@ export function shotCountFor(paragraphs: string[], wordsPerShot = DEFAULT_WORDS_
 // sorted, one shot per start, and the first shot pinned to the scene's start.
 // A shot's characters, location and props are kept only if they're known ids.
 export const MAX_SHOT_CHARACTERS = 3;
+
+// The art director's continuity sheet (#140): in-range 1-based starts made
+// 0-based, sorted, one entry per start, the first pinned to the scene's start.
+export function normalizeContinuity(raw: unknown, paragraphCount: number): ContinuityEntry[] {
+  const list = Array.isArray((raw as { continuity?: unknown })?.continuity) ? (raw as { continuity: unknown[] }).continuity : [];
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  const byStart = new Map<number, ContinuityEntry>();
+  for (const item of list) {
+    const r = (item ?? {}) as Record<string, unknown>;
+    const start = Number(r.from_paragraph);
+    if (!Number.isInteger(start) || start < 1 || start > paragraphCount || byStart.has(start - 1)) continue;
+    const entry: ContinuityEntry = { fromParagraph: start - 1 };
+    for (const k of ["place", "time", "light", "weather", "state"] as const) { const v = text(r[k]); if (v) entry[k] = v; }
+    if (typeof r.indoors === "boolean") entry.indoors = r.indoors;
+    if (Object.keys(entry).length > 1) byStart.set(start - 1, entry);
+  }
+  const out = [...byStart.values()].sort((a, b) => a.fromParagraph - b.fromParagraph);
+  if (out.length) out[0].fromParagraph = 0;
+  return out;
+}
+
+// The continuity entry a paragraph falls in.
+export function continuityAt(sheet: ContinuityEntry[] | undefined, paragraph: number): ContinuityEntry | undefined {
+  return (sheet ?? []).filter((e) => e.fromParagraph <= paragraph).at(-1);
+}
+
+// The line a shot's prompt carries for its moment (#140).
+export function continuityLine(e: ContinuityEntry): string {
+  return [
+    e.place && `${e.place}${e.indoors === true ? " (indoors)" : e.indoors === false ? " (outdoors)" : ""}`,
+    e.time && `time: ${e.time}`,
+    e.light && `light: ${e.light}`,
+    e.weather && `weather: ${e.weather}`,
+    e.state
+  ].filter(Boolean).join("; ");
+}
+
+const NIGHT = /\b(night|nighttime|midnight|moonlit|moonlight|darkness|after dark|full dark)\b/i;
+const TWILIGHT = /\b(dusk|twilight|sunset|sundown|dawn|daybreak|sunrise|evening)\b/i;
+const DAY = /\b(sunlit|sunlight|sunshine|daylight|midday|noon|afternoon|morning sun|bright day|blue sky|golden hour|golden sun|low golden sun)\b/i;
+
+// Shots whose prompt contradicts their moment on day and night (a cheap check
+// the art step warns about; the moment line still goes with the prompt).
+// The story's style paragraph (every prompt ends with it) is left out: its
+// general light ("low golden sun, firelight") isn't the shot's. Twilight
+// (dusk, dawn) is neither day nor night, so it isn't checked.
+export function continuityConflicts(shots: { startParagraph: number; prompt: string }[], sheet: ContinuityEntry[] | undefined, artStyle?: string): { shot: number; says: string; moment: string }[] {
+  const out: { shot: number; says: string; moment: string }[] = [];
+  shots.forEach((s, k) => {
+    const e = continuityAt(sheet, s.startParagraph);
+    if (!e) return;
+    const moment = `${e.time ?? ""} ${e.light ?? ""}`;
+    if (TWILIGHT.test(e.time ?? "") && !/^\s*(night|full dark|deep night|midnight|after dark)/i.test(e.time ?? "")) return;
+    const prompt = artStyle ? s.prompt.split(artStyle).join(" ") : s.prompt;
+    const night = NIGHT.test(moment) && !DAY.test(moment);
+    const day = DAY.test(moment) && !NIGHT.test(moment);
+    const said = night ? prompt.match(DAY) : day ? prompt.match(NIGHT) : null;
+    if (said) out.push({ shot: k + 1, says: said[0], moment: (e.time ?? e.light)! });
+  });
+  return out;
+}
 
 export function normalizeShots(raw: unknown, paragraphCount: number, known?: KnownRefIds): ArtShot[] {
   const list = Array.isArray((raw as { shots?: unknown })?.shots) ? (raw as { shots: unknown[] }).shots : [];
@@ -1696,7 +1761,9 @@ export async function artDirect(role: Role, params: {
       props: new Set(knownProps)
     });
     if (normalized.length === 0) throw new Error("art director returned no usable shots");
-    return { result: { prompt: normalized[0].prompt, shots: normalized }, prompt, system, raw };
+    const continuity = normalizeContinuity(result, paragraphs.length);
+    for (const x of continuityConflicts(normalized, continuity, artStyle)) console.error(`[scriptorium]   scene ${(sceneIndex ?? 0) + 1} shot ${x.shot}: the prompt says "${x.says}" but its moment is ${x.moment} — the moment line goes with it`);
+    return { result: { prompt: normalized[0].prompt, shots: normalized, ...(continuity.length ? { continuity } : {}) }, prompt, system, raw };
   }
   if (mode === "references") {
     const requestedProps = new Set([...(params.redoProps ?? []), ...objectIds]);
