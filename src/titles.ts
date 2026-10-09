@@ -24,7 +24,9 @@ export interface TitleSettings {
   titleFont?: string;             // for the title and the ending (default Cinzel)
   // The opening (#145): the story so far, scrolling up after the title — for a
   // story that starts partway through. Text, or paragraphs; false/absent = none.
-  crawl?: string | string[] | false;
+  // true: the director drafts it from the author's notes, once, into
+  // video/titles.json for the author to edit (#145).
+  crawl?: string | string[] | boolean;
   logo?: boolean;                 // the extras' title logo over the key art (default on when made)
 }
 
@@ -52,8 +54,8 @@ export const OPENING_LOGO = "art/extra/logo.png";
 export const OPENING_ART = "art/extra/keyart-16x9.jpg";
 
 // The crawl's paragraphs, from the story file's text or list.
-export function crawlParagraphs(crawl: string | string[] | false | undefined): string[] {
-  if (!crawl) return [];
+export function crawlParagraphs(crawl: string | string[] | boolean | undefined): string[] {
+  if (!crawl || crawl === true) return [];
   const list = Array.isArray(crawl) ? crawl : crawl.split(/\n\s*\n/);
   return list.map((p) => p.replace(/\s+/g, " ").trim()).filter(Boolean);
 }
@@ -97,7 +99,9 @@ export function autoSceneTitles(scenes: number[], sources: { list?: string[]; pl
 // <run>/video/titles.json: the scene titles in use, for the author to edit.
 // Each entry keeps the automatic title beside the one in use; an entry the
 // author changed keeps their title, the rest follow the sources.
-export interface TitlesSheet { scenes: Array<{ scene: number; title: string; auto: string }> }
+// crawl: the opening crawl the director drafted (`auto`) and the one in use
+// (`text`, the author's edit when it differs), when the story file asks for a draft (#145).
+export interface TitlesSheet { scenes: Array<{ scene: number; title: string; auto: string }>; crawl?: { text: string[]; auto: string[] } }
 
 export function mergeTitlesSheet(existing: TitlesSheet | undefined, auto: Record<number, string>): TitlesSheet {
   const before = new Map((existing?.scenes ?? []).map((e) => [e.scene, e]));
@@ -114,7 +118,7 @@ export async function syncTitlesSheet(runDir: string, auto: Record<number, strin
   const file = join(runDir, "video", "titles.json");
   let existing: TitlesSheet | undefined;
   try { existing = JSON.parse(await readFile(file, "utf8")); } catch { /* first video */ }
-  const sheet = mergeTitlesSheet(existing, auto);
+  const sheet = { ...mergeTitlesSheet(existing, auto), ...(existing?.crawl ? { crawl: existing.crawl } : {}) };
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify(sheet, null, 2) + "\n", "utf8");
   return { file, titles: Object.fromEntries(sheet.scenes.map((e) => [e.scene - 1, e.title])) };
@@ -125,6 +129,26 @@ export function romanNumeral(n: number): string {
   let out = "";
   for (const [v, s] of table) while (n >= v) { out += s; n -= v; }
   return out;
+}
+
+// ---- the drafted crawl (#145) ----
+
+// The crawl for "crawl": true. The director drafts it once; it's kept in
+// video/titles.json, where the author's edit of `text` wins over the draft.
+// Delete the crawl entry there to draft again.
+export async function draftedCrawl(opts: { runDir: string; draftCrawl?: () => Promise<string[]>; onNote?: (m: string) => void }): Promise<string[]> {
+  const file = join(opts.runDir, "video", "titles.json");
+  let sheet: TitlesSheet = { scenes: [] };
+  try { sheet = JSON.parse(await readFile(file, "utf8")); } catch { /* no sheet yet */ }
+  const kept = sheet.crawl?.text?.length ? sheet.crawl.text : undefined;
+  if (kept) return crawlParagraphs(kept);
+  if (!opts.draftCrawl) { opts.onNote?.('"crawl": true needs a writer to draft it (a config with an editor, writer, director or continuist role) — no crawl'); return []; }
+  const draft = crawlParagraphs(await opts.draftCrawl());
+  if (draft.length === 0) return [];
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify({ ...sheet, crawl: { text: draft, auto: draft } }, null, 2) + "\n", "utf8");
+  opts.onNote?.(`drafted the opening crawl — edit it in ${file}`);
+  return draft;
 }
 
 // ---- credits ----
@@ -253,6 +277,7 @@ export interface PrepareTitlesOptions {
   speak?: Speak;                 // for the narrated title
   base?: string;                 // where relative font paths resolve (the story file's folder)
   onNote?: (message: string) => void;
+  draftCrawl?: () => Promise<string[]>;  // for "crawl": true — the director's draft (#145)
 }
 
 export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOptions): Promise<TitleCards> {
@@ -298,7 +323,7 @@ export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOpt
   const has = async (f: string) => readFile(join(opts.runDir, f)).then(() => true, () => false);
   const logo = title && s.logo !== false && (await has(OPENING_LOGO)) ? OPENING_LOGO : undefined;
   const openingArt = (await has(OPENING_ART)) ? OPENING_ART : undefined;
-  const crawl = crawlParagraphs(s.crawl);
+  const crawl = s.crawl === true ? await draftedCrawl(opts) : crawlParagraphs(s.crawl);
   return {
     title,
     subtitle: title ? opts.subtitle?.trim() || undefined : undefined,

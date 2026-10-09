@@ -243,8 +243,8 @@ function checkVideoTitles(path: string, raw: StoryFile) {
   for (const k of ["font", "titleFont"] as const) {
     if (t[k] !== undefined && typeof t[k] !== "string") throw new Error(`${path}: video titles "${k}" must be a font name or file`);
   }
-  if (t.crawl !== undefined && t.crawl !== false && typeof t.crawl !== "string" && !(Array.isArray(t.crawl) && t.crawl.every((x) => typeof x === "string"))) {
-    throw new Error(`${path}: video titles "crawl" must be text, a list of paragraphs, or false`);
+  if (t.crawl !== undefined && typeof t.crawl !== "boolean" && typeof t.crawl !== "string" && !(Array.isArray(t.crawl) && t.crawl.every((x) => typeof x === "string"))) {
+    throw new Error(`${path}: video titles "crawl" must be text, a list of paragraphs, true (the director drafts one) or false`);
   }
 }
 
@@ -386,7 +386,7 @@ const defaultRunners: StepRunners = {
       ...(s.audiobook.pronunciations ? { pronunciations: s.audiobook.pronunciations } : {}),
       ...s.video,
       title: s.title, subtitle: s.subtitle, series: s.series,
-      contextPaths: s.contextPaths, base: dirname(resolve(s.file)),
+      contextPaths: s.contextPaths, base: dirname(resolve(s.file)), config: s.config,
       gemini: s.audiobook.narration === "gemini" || s.audiobook.dialogue === "gemini" ? true : undefined,
       geminiModel: s.audiobook.geminiModel,
       music: s.music

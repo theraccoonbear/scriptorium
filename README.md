@@ -378,7 +378,7 @@ A scene with no title gets its numeral alone. The titles in use are written to `
       "sceneTitles": true,            // true (auto), false (no scene cards) or a list in scene order
       "credits": true,
       "ending": "The End",            // or false; default by "series"
-      "crawl": "We join the party…",  // the story so far, scrolling up after the title; text, a list of paragraphs, or false
+      "crawl": "We join the party…",  // the story so far, scrolling up after the title: text, a list of paragraphs, true (drafted for you) or false
       "logo": true,                   // the extras' title logo over the key art (default on once the extras made them)
       "font": "EB Garamond",          // a bundled font, a system family or a .ttf/.otf path
       "titleFont": "Cinzel"
@@ -387,7 +387,7 @@ A scene with no title gets its numeral alone. The titles in use are written to `
 }
 ```
 
-**The opening:** once the extras step has made the title logo (`art/extra/logo.png`) and the text-free key art (`art/extra/keyart-16x9.jpg`), the film opens on the logo settling over the key art, with no typeset title. Without them, it's the typeset title over the cover, as before. A `crawl` follows the title for a story that starts partway through. It scrolls up over the dimmed key art at an easy reading pace (about 2.5 words a second, at least 12 seconds), with the theme playing under title and crawl as one stretch.
+**The opening:** once the extras step has made the title logo (`art/extra/logo.png`) and the text-free key art (`art/extra/keyart-16x9.jpg`), the film opens on the logo settling over the key art, with no typeset title. Without them, it's the typeset title over the cover, as before. A `crawl` follows the title for a story that starts partway through. With `"crawl": true`, the story's best writer (the editor, else the writer) drafts it once from your notes. The draft ends just before the film's first line and tells nothing scene 1 shows. It's written to `video/titles.json`, where your edit of `crawl.text` wins. Delete the entry to draft again. It scrolls up over the dimmed key art at an easy reading pace (about 2.5 words a second, at least 12 seconds), with the theme playing under title and crawl as one stretch.
 
 The narrated title needs the audiobook's Gemini narrator, and is cached in `video/title.wav` until the words or the voice change. The opening stretches to fit it.
 
