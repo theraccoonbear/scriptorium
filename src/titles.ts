@@ -47,6 +47,7 @@ export interface TitleCards {
   logo?: string;
   openingArt?: string;
   crawl?: string[];
+  crawlNarration?: string;             // the narrator reading the crawl, relative to the run dir (#145)
   // A rated story's card before the title (#88): the rating, its tagline, why, for whom.
   rating?: { rating: string; tagline: string; reasons?: string; age?: string; note: string };
 }
@@ -253,13 +254,14 @@ export function trimSilence(samples: Float32Array, sampleRate: number, threshold
 }
 
 // video/title.wav, remade only when the words or the voice change.
-export async function narrateTitle(runDir: string, text: string, voice: string, speak: Speak): Promise<{ file: string; made: boolean }> {
-  const rel = "video/title.wav";
-  const indexFile = join(runDir, "video", "title.json");
+export async function narrateTitle(runDir: string, text: string, voice: string, speak: Speak, o: { name?: string; profile?: string } = {}): Promise<{ file: string; made: boolean }> {
+  const name = o.name ?? "title";
+  const rel = `video/${name}.wav`;
+  const indexFile = join(runDir, "video", `${name}.json`);
   const index = await readJson<{ text: string; voice: string }>(indexFile);
   const exists = await readFile(join(runDir, rel)).then(() => true, () => false);
   if (exists && index?.text === text && index.voice === voice) return { file: rel, made: false };
-  const audio = await speak(buildTtsPrompt({ name: "Narrator", profile: "The storyteller of this tale, announcing its title.", line: text }), voice);
+  const audio = await speak(buildTtsPrompt({ name: "Narrator", profile: o.profile ?? "The storyteller of this tale, announcing its title.", line: text }), voice);
   await mkdir(join(runDir, "video"), { recursive: true });
   await writeFile(join(runDir, rel), encodeWav(trimSilence(audio.samples, audio.sampleRate), audio.sampleRate));
   await writeFile(indexFile, JSON.stringify({ text, voice }, null, 2) + "\n", "utf8");
@@ -327,6 +329,17 @@ export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOpt
   const logo = title && s.logo !== false && (await has(OPENING_LOGO)) ? OPENING_LOGO : undefined;
   const openingArt = (await has(OPENING_ART)) ? OPENING_ART : undefined;
   const crawl = s.crawl === true ? await draftedCrawl(opts) : crawlParagraphs(s.crawl);
+  // A narrated story's narrator reads the crawl too (#145), cached like the title.
+  let crawlNarration: string | undefined;
+  if (crawl.length && s.narrate) {
+    const voice = gemini ? voices?.gemini?.narrator : undefined;
+    if (!voice || !opts.speak) note("the narrated crawl needs the audiobook's Gemini narrator — skipped");
+    else {
+      const r = await narrateTitle(opts.runDir, crawl.join("\n\n"), voice, opts.speak, { name: "crawl", profile: "The storyteller of this tale, telling, unhurried, what happened before it began." });
+      if (r.made) note("narrated the crawl");
+      crawlNarration = r.file;
+    }
+  }
   return {
     title,
     subtitle: title ? opts.subtitle?.trim() || undefined : undefined,
@@ -341,6 +354,7 @@ export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOpt
     ...(logo ? { logo } : {}),
     ...(openingArt && (logo || crawl.length) ? { openingArt } : {}),
     ...(crawl.length ? { crawl } : {}),
+    ...(crawlNarration ? { crawlNarration } : {}),
     ...(opts.rating ? { rating: opts.rating } : {})
   };
 }

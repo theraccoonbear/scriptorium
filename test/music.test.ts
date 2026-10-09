@@ -204,6 +204,12 @@ test("the video lays the theme under the opening and the closing, each bed under
   // A narrated title dips the theme under it.
   const narrated = buildTimeline(manifest, timings, { titles: { ...titles, narration: "video/title.wav" }, narrationSec: 3, music: { theme: "t.wav", beds: {}, duck: 19 } });
   assert.ok(audioFilterGraph(narrated).includes("volume=-19dB:enable='between(t,1.5,5.3)'"));
+  // A narrated crawl dips it again, a beat into the crawl, and the theme moves an input along.
+  const read = buildTimeline(manifest, timings, { titles: { ...titles, crawl: ["Once."], narration: "video/title.wav", crawlNarration: "video/crawl.wav" }, narrationSec: 3, crawlNarrationSec: 10, music: { theme: "t.wav", beds: {}, duck: 19 } });
+  const g2 = audioFilterGraph(read);
+  const at = read.introFrames / 30 + 1;
+  assert.ok(g2.includes(`volume=-19dB:enable='between(t,1.5,5.3)',volume=-19dB:enable='between(t,${at - 0.3},${at + 10 + 0.5})'`));
+  assert.ok(g2.includes("[5:a]aformat"), "the theme follows both narrations");
   // No music: exactly the old graph.
   assert.ok(audioFilterGraph(buildTimeline(manifest, timings, { titles })).endsWith("concat=n=7:v=0:a=1[aout]"));
 });

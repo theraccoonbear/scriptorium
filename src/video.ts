@@ -34,13 +34,15 @@ export interface VideoOptions {
   // the plain cut: cover, scenes, black between them.
   titles?: TitleCards;
   narrationSec?: number;  // length of the narrated title (titles.narration)
+  crawlNarrationSec?: number;  // length of the narrated crawl (titles.crawlNarration)
   cardSec?: number;       // a scene card, black included, default 4
   music?: MusicMix;       // the score, prepared under the narration (music.ts)
   holdSec?: number;       // the last shot held after the narration ends, default 2
 }
 
-// When the narrated title starts within the opening.
+// When the narrated title starts within the opening, and the narrated crawl within the crawl.
 const NARRATION_AT = 1.8;
+const CRAWL_NARRATION_AT = 1.0;
 
 export type Move = "zoom_in" | "zoom_out" | "pan_right" | "pan_left" | "zoom_in_left" | "zoom_in_right";
 const MOVES: Move[] = ["zoom_in", "pan_right", "zoom_out", "pan_left", "zoom_in_left", "zoom_in_right"];
@@ -87,6 +89,8 @@ export interface Timeline {
   parts: TimelinePart[];
   narration?: string;      // the narrated title's WAV under the opening, relative to the run dir
   narrationSec?: number;
+  crawlNarration?: string; // the narrated crawl's WAV under the crawl (#145)
+  crawlNarrationSec?: number;
   music?: MusicMix;
   totalFrames: number;
   warnings: string[];
@@ -193,7 +197,9 @@ export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: Vid
   // A rated story opens on its rating card (#88), before anything else.
   if (titles?.rating) parts.push({ kind: "rating", file: "rating.mp4", frames: toFrames(6) });
   if (introFrames > 0) parts.push({ kind: "intro", file: "intro.mp4", frames: introFrames });
-  if (titles?.crawl?.length) parts.push({ kind: "crawl", file: "crawl.mp4", frames: toFrames(crawlSec(titles.crawl)) });
+  // A narrated crawl lasts as long as the reading; the scroll follows.
+  const crawlRead = titles?.crawl?.length && titles.crawlNarration && opts.crawlNarrationSec ? opts.crawlNarrationSec : undefined;
+  if (titles?.crawl?.length) parts.push({ kind: "crawl", file: "crawl.mp4", frames: toFrames(crawlRead ? CRAWL_NARRATION_AT + crawlRead + 2 : crawlSec(titles.crawl)) });
   scenes.forEach((s, k) => {
     const nn = String(s.index + 1).padStart(2, "0");
     if (cardFrames > 0) parts.push({ kind: "card", file: `card-${nn}.mp4`, frames: cardFrames, scene: k });
@@ -217,6 +223,7 @@ export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: Vid
     parts,
     narration: introFrames > 0 && titles?.narration && opts.narrationSec ? titles.narration : undefined,
     ...(introFrames > 0 && titles?.narration && opts.narrationSec ? { narrationSec: opts.narrationSec } : {}),
+    ...(crawlRead ? { crawlNarration: titles!.crawlNarration!, crawlNarrationSec: crawlRead } : {}),
     ...(opts.music ? { music: opts.music } : {}),
     totalFrames: parts.reduce((n, p) => n + p.frames, 0),
     warnings
@@ -424,12 +431,17 @@ export function audioFilterGraph(timeline: Timeline): string {
   const lines: string[] = [];
   const labels: string[] = [];
   const narrated = timeline.narration !== undefined;
+  const crawlInput = timeline.scenes.length + 1 + (narrated ? 1 : 0);
   for (const part of timeline.parts) {
     const d = sec(part.frames);
     let label: string;
     if (part.kind === "scene") {
       label = `a${part.scene}`;
       lines.push(`[${part.scene! + 1}:a]${fmt},apad=whole_dur=${d},atrim=end=${d}[${label}]`);
+    } else if (part.kind === "crawl" && timeline.crawlNarration) {
+      label = "crawl";
+      const ms = Math.round(CRAWL_NARRATION_AT * 1000);
+      lines.push(`[${crawlInput}:a]${fmt},adelay=${ms}|${ms},apad=whole_dur=${d},atrim=end=${d}[${label}]`);
     } else if (part.kind === "intro" && narrated) {
       label = "intro";
       const ms = Math.round(NARRATION_AT * 1000);
@@ -448,7 +460,7 @@ export function audioFilterGraph(timeline: Timeline): string {
   const music = musicInputs(timeline);
   lines.push(`${labels.join("")}concat=n=${labels.length}:v=0:a=1[${music.length ? "voice" : "aout"}]`);
   if (music.length) {
-    lines.push(...musicGraph(timeline, music, timeline.scenes.length + 1 + (narrated ? 1 : 0)));
+    lines.push(...musicGraph(timeline, music, timeline.scenes.length + 1 + (narrated ? 1 : 0) + (timeline.crawlNarration ? 1 : 0)));
     lines.push("[voice][music]amix=inputs=2:normalize=0:duration=first[aout]");
   }
   return lines.join(";\n");
@@ -505,9 +517,14 @@ function musicGraph(timeline: Timeline, inputs: ReturnType<typeof musicInputs>, 
     const input = part.kind === "intro" ? at("intro") : part.kind === "scene" ? at(part.scene!) : undefined;
     if (input === undefined) lines.push(`anullsrc=r=48000:cl=stereo,atrim=end=${d}[${label}]`);
     else if (part.kind === "intro") {
-      const dip = timeline.narration && timeline.narrationSec
-        ? `,volume=-${timeline.music!.duck}dB:enable='between(t,${NARRATION_AT - 0.3},${NARRATION_AT + timeline.narrationSec + 0.5})'`
-        : "";
+      // The theme dips under the narrated title, and under the narrated crawl after it.
+      const windows: Array<[number, number]> = [];
+      if (timeline.narration && timeline.narrationSec) windows.push([NARRATION_AT - 0.3, NARRATION_AT + timeline.narrationSec + 0.5]);
+      if (timeline.crawlNarration && timeline.crawlNarrationSec) {
+        const start = sec(part.frames) + CRAWL_NARRATION_AT;
+        windows.push([start - 0.3, start + timeline.crawlNarrationSec + 0.5]);
+      }
+      const dip = windows.map(([a, b]) => `,volume=-${timeline.music!.duck}dB:enable='between(t,${a},${b})'`).join("");
       lines.push(`[${input}:a]${fmt},apad=whole_dur=${d},atrim=end=${d}${dip},afade=t=in:d=0.5,afade=t=out:st=${Math.max(0, d - 1.5)}:d=1.5[${label}]`);
     } else {
       const fade = Math.min(1.5, d / 4);
@@ -690,7 +707,10 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
     ? await readFile(join(runDir, opts.titles.narration)).then((b) => { const w = decodeWav(b); return w.samples.length / w.sampleRate; }, () => undefined)
     : undefined;
   if (opts.titles?.narration && narrationSec === undefined) emit({ type: "warning", message: `no ${opts.titles.narration} — the opening runs without the narrated title` });
-  const timeline = buildTimeline(manifest, timings, { ...opts, narrationSec });
+  const crawlNarrationSec = opts.titles?.crawlNarration
+    ? await readFile(join(runDir, opts.titles.crawlNarration)).then((b) => { const w = decodeWav(b); return w.samples.length / w.sampleRate; }, () => undefined)
+    : undefined;
+  const timeline = buildTimeline(manifest, timings, { ...opts, narrationSec, ...(crawlNarrationSec ? { crawlNarrationSec } : {}) });
   for (const w of timeline.warnings) emit({ type: "warning", message: w });
   await writeFile(join(outDir, "timeline.json"), JSON.stringify(timeline, null, 2) + "\n", "utf8");
 
@@ -804,6 +824,7 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
     "-f", "concat", "-safe", "0", "-i", join(partsDir, "parts.txt"),
     ...timeline.scenes.flatMap((s) => ["-i", join(runDir, s.audio)]),
     ...(timeline.narration ? ["-i", join(runDir, timeline.narration)] : []),
+    ...(timeline.crawlNarration ? ["-i", join(runDir, timeline.crawlNarration)] : []),
     ...musicInputs(timeline).flatMap((m) => ["-i", join(runDir, m.file)]),
     "-filter_complex", audioFilterGraph(timeline),
     "-map", "0:v", "-map", "[aout]",
