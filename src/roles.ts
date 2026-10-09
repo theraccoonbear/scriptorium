@@ -1388,6 +1388,56 @@ export async function review(role: Role, params: ProseGateParams): Promise<RoleO
   });
 }
 
+// ---- the censor (#88) ----
+
+// Reads a scene against the story's audience rating. Editorial, not prudish:
+// it keeps the beat and asks for a change in how a thing is shown.
+export const CENSOR_SYSTEM = `You are the Rating Editor. You hold a story to the AUDIENCE RATING given with it, and nothing else: not craft, not continuity.
+
+Read the scene. Flag each passage that goes past the rating, or touches anything the author NEVER allows. For each, say how to keep the story's beat within the rating: cut away, move it off page, report it instead of showing it ("he swore"), soften the telling, or change a detail. Never ask to drop a beat, a joke or a turn; change how it's shown. An item the author ALLOWS above the rating is fine.
+
+Output ONLY JSON:
+{"ok":boolean,"issues":[ISSUE],"flags":[string]}
+
+${ISSUE_SCHEMA}
+- type: RATING (past the rating) or FORBIDDEN (something the author never allows; always blocks)
+- detail: what to change, in one sentence, keeping the beat
+
+ok is true when nothing needs changing. Anything past the rating blocks the scene: there is no "close enough". flags: short notes for the author's report on anything within the rating but worth a parent knowing ("a tense chase", "mild rude humor"), whether or not ok.`;
+
+export async function rate(role: Role, params: ProseGateParams & { policy: string }): Promise<RoleOutput<Verdict & { flags: string[] }>> {
+  const prompt = `${params.policy}\n\n${buildGateContext(params)}`;
+  const out = await runGate(role, { label: "censor", system: CENSOR_SYSTEM, prompt, ctx: { prose: params.prose, sceneIndex: params.sceneIndex, attempt: params.attempt } });
+  const raw = out.raw.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? "";
+  let flags: string[] = [];
+  try { const f = (parseJson(raw) as { flags?: unknown }).flags; flags = (Array.isArray(f) ? f : []).map(String).filter(Boolean); } catch { /* none */ }
+  return { ...out, result: { ...out.result, flags } };
+}
+
+// The author's plan against the rating, before writing (#88): anything the
+// plan says happens that the rating can't show at all, even softened.
+export const RATING_PLAN_SYSTEM = `You check a story's premise and the author's plan against the AUDIENCE RATING it must be written to, before any of it is written.
+
+FIRST, can this story be told at this rating at all? If its very nature is past the rating (a gruesome slasher for small children, an erotic thriller rated G), so that softening it would leave a different story, it can't: feasible is false, with one sentence why. Judge the PREMISE as a whole: a single event in the plan that could be changed or dropped while the story stays the same story is a conflict below, never a reason to refuse. Don't refuse what can be told gently (a ghost story at PG, a heist at G with no one hurt, an adventure with one battle that could become a contest).
+
+THEN, if it can, list each event, character trait or element the plan requires that the rating can't allow even when handled gently (cut away, off page, reported). Something that CAN fit when softened is not a conflict: the writer will soften it. Things the author ALLOWS above the rating are fine.
+
+Output ONLY JSON: {"feasible":boolean,"reason":string,"conflicts":[{"item":string,"why":string,"options":string}]}
+- item: quote or name it from the plan
+- why: which limit it breaks
+- options: how the author could resolve it (allow it, raise the rating, or a gentler version of the event)`;
+
+export interface RatingConflict { item: string; why: string; options: string }
+
+export async function checkPlanRating(role: Role, p: { policy: string; plan: string }): Promise<RoleOutput<{ feasible: boolean; reason: string; conflicts: RatingConflict[] }>> {
+  const out = await callJson(role, { role: "censor", system: RATING_PLAN_SYSTEM, prompt: `${p.policy}\n\nTHE STORY (premise, setting and the author's plan):\n${p.plan}`, ctx: { task: "ratingplan" } });
+  const r = (out.result ?? {}) as { feasible?: unknown; reason?: unknown; conflicts?: unknown };
+  const conflicts = (Array.isArray(r.conflicts) ? r.conflicts : []).map((c) => c as Record<string, unknown>)
+    .map((c) => ({ item: String(c.item ?? "").trim(), why: String(c.why ?? "").trim(), options: String(c.options ?? "").trim() }))
+    .filter((c) => c.item);
+  return { ...out, result: { feasible: r.feasible !== false, reason: String(r.reason ?? "").trim(), conflicts } };
+}
+
 export async function archive(role: Role, params: {
   bible: Bible;
   beat: Beat;

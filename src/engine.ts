@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { policyText, writeRatingReport } from "./ratings.ts";
+import { checkPlanRating, rate } from "./roles.ts";
+import type { RatingConflict } from "./roles.ts";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import type { ArtDirection } from "./roles.ts";
@@ -137,6 +142,10 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   }
   const critic = criticMode === "off" ? undefined : roles.critic;
   const advisory = criticMode === "advisory";
+  // A rated story's censor (#88): its own role, else the continuist's model.
+  const rating = config.rating;
+  const censor = rating ? roles.censor ?? roles.continuist : undefined;
+  const policy = rating ? policyText(rating) : "";
 
   if (runDir) {
     await mkdir(runDir, { recursive: true });
@@ -169,6 +178,34 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       throw new Error(`context gate: the author context contradicts itself — fix the files and run again:\n${g.result.issues.map((x) => `  - ${renderIssue(x)}`).join("\n")}`);
     }
     console.error(`[scriptorium] ${c.ok(`context gate: ${config.contextFiles?.length ?? 1} context file${(config.contextFiles?.length ?? 1) === 1 ? "" : "s"} consistent`)}`);
+  }
+
+  // The story against the rating (#88), once, before anything is written.
+  // A story that can't be told at the rating at all (a slasher for small
+  // children) is refused outright: no setting overrides that, only a different
+  // rating or premise. Plan items past the rating stop the run so the author
+  // decides (allow it, raise the rating, soften the plan, or acceptPlan to have
+  // the censor soften them scene by scene). The plan is never quietly rewritten.
+  const storyText = [config.premise && `PREMISE: ${config.premise}`, config.setting && `SETTING: ${config.setting}`, config.context && `AUTHOR'S PLAN:\n${config.context}`].filter(Boolean).join("\n\n");
+  if (rating && censor && storyText && bible.sceneCount === 0) {
+    const source = createHash("sha1").update(JSON.stringify({ policy, story: storyText })).digest("hex");
+    let check = log.events.filter((e) => e.type === "rating_plan_check").map((e) => e.data as { source: string; feasible?: boolean; reason?: string; conflicts: RatingConflict[] }).find((d) => d.source === source);
+    if (!check) {
+      // One call that decides whether the story may be written at all: the best
+      // writer's model (a cheap one refused a gentle story over one changeable event).
+      const out = await checkPlanRating(roles.censor ?? roles.editor ?? roles.writer ?? censor, { policy, plan: storyText });
+      if (runDir) await writeRoleOutput(runDir, ++seq, "censor-plan", out);
+      check = { source, ...out.result };
+      await log.append("rating_plan_check", check);
+      if (runDir) await writeRatingReport(runDir, log.events, rating);
+    }
+    if (check.feasible === false) {
+      throw new Error(`rating ${rating.label}: this story can't be told at that rating — ${check.reason || "its premise is past it"}. Nothing was written. Change the rating or the premise.`);
+    }
+    if (check.conflicts.length && !rating.acceptPlan) {
+      throw new Error(`rating ${rating.label}: the author's plan asks for things the rating can't show — choose for each (add it to rating.allow, raise the rating, soften the plan, or set rating.acceptPlan to let the censor soften it scene by scene):\n${check.conflicts.map((x) => `  - ${x.item}: ${x.why} (${x.options})`).join("\n")}${runDir ? `\n(also in ${join(runDir, "rating.md")})` : ""}`);
+    }
+    console.error(`[scriptorium] ${c.ok(`rating ${rating.label}: ${check.conflicts.length ? `${check.conflicts.length} plan item${check.conflicts.length === 1 ? "" : "s"} past the rating — accepted; the censor softens them` : "the story fits"}`)}`);
   }
 
   // Collect prose from committed scenes for cross-scene continuity checks.
@@ -310,6 +347,8 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       let stage = 1;          // 1 = surgical revisions, 2 = fresh stab
       let surgicalTries = 0;  // consecutive stage-1 failures
       const contHistory: Issue[] = [];   // issues flagged by continuist in previous attempts
+      const censorHistory: Issue[] = []; // the censor's, across this scene's drafts (#88)
+      let ratingFlags: string[] = [];    // the censor's notes on the latest draft, for the report
       const criticHistory: Issue[] = []; // issues flagged by critic in previous attempts
       const rounds: Issue[][] = [];      // every round's issues (both reviewers), for stuck-passage detection
       for (;;) {
@@ -364,11 +403,12 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           previousIssues: dedupIssues([...contHistory, ...criticHistory]),
           context: config.context
         };
-        const [contRaw, criticOut] = await Promise.all([
+        const [contRaw, criticOut, censorOut] = await Promise.all([
           checkContinuity(roles.continuist, gateCtx),
           critic
             ? review(critic, gateCtx)
-            : Promise.resolve(null)
+            : Promise.resolve(null),
+          censor ? rate(censor, { ...gateCtx, policy }) : Promise.resolve(null)
         ]);
         recordTiming("continuist", Date.now() - t0);
         // Craft flags are the critic's lane; drop them from the continuist's verdict.
@@ -384,14 +424,16 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         if (runDir) {
           if (contOut) await writeRoleOutput(runDir, ++seq, `continuist-a${attempt - 1}`, contOut);
           if (criticOut) await writeRoleOutput(runDir, ++seq, `critic-a${attempt - 1}`, criticOut);
+          if (censorOut) await writeRoleOutput(runDir, ++seq, `censor-a${attempt - 1}`, censorOut);
         }
 
         // Snapshot history before recording this round's issues.
-        const history = [...contHistory, ...criticHistory];
+        const history = [...contHistory, ...criticHistory, ...censorHistory];
 
         // Track gate issues for next round's context.
         if (contOut) contHistory.push(...contOut.result.issues);
         if (criticOut) criticHistory.push(...criticOut.result.issues);
+        if (censorOut) { censorHistory.push(...censorOut.result.issues); ratingFlags = censorOut.result.flags; }
 
         // Combined verdict: both must approve to proceed to archivist.
         // A gate that rejects with only already-flagged issues has nothing new to
@@ -405,12 +447,17 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         // An advisory critic never blocks: its notes go to the writer as optional
         // suggestions, and only when the continuist sends the draft back anyway.
         const criticOk = advisory || (criticOut ? (criticOut.result.ok || criticNew.length === 0) : true);
+        // The censor is a hard block (#88): a passage past the rating is never
+        // let through, not even as a repeat the writer has already seen.
+        const censorBlocks = censorOut && !censorOut.result.ok ? censorOut.result.issues : [];
+        const censorOk = censorBlocks.length === 0;
         const combined = [
+          ...censorBlocks,
           ...(contOut ? contOut.result.issues : []),
           ...(criticOut && !advisory ? criticOut.result.issues : [])
         ];
         verdict = {
-          ok: contOk && criticOk,
+          ok: contOk && criticOk && censorOk,
           issues: dedupIssues(combined).slice(0, 8)
         };
         suggestions = advisory && criticOut ? dedupIssues(criticOut.result.issues).slice(0, 5) : [];
@@ -431,6 +478,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         const rejections: string[] = [];
         if (!contOk) rejections.push(`continuist (${contNew.length} new issue${contNew.length === 1 ? "" : "s"})`);
         if (!criticOk) rejections.push(`critic (${criticNew.length} new issue${criticNew.length === 1 ? "" : "s"})`);
+        if (!censorOk) rejections.push(`censor (${censorBlocks.length} past the ${rating!.label} rating)`);
         console.error(`[scriptorium]   ${c.fail(`${rejections.join(" + ")} rejected`)}`);
 
         // Escalation ladder: 3 surgical revisions → fresh stab → regenerate the
@@ -507,6 +555,11 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       };
       if (createdBible) data.bible = createdBible;
       await log.append("scene_committed", data);
+      if (rating) {
+        // What the censor changed on the way (#88), and what a parent should know.
+        await log.append("rating_report", { index: i, changed: dedupIssues(censorHistory).map(renderIssue), flags: ratingFlags });
+        if (runDir) await writeRatingReport(runDir, log.events, rating);
+      }
       bible = applyPatch(bible, archOut.result, i);
       console.error(`[scriptorium] ${c.ok(`scene ${i + 1} committed`)}`);
       previousScenes.push(prose);

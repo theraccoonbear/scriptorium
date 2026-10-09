@@ -65,7 +65,7 @@ export interface TimelineScene {
 
 // One clip of the finished video, in order. Every length is in whole frames,
 // and the picture, the sound and the subtitles are all laid out from this list.
-export type PartKind = "intro" | "crawl" | "gap" | "card" | "scene" | "end" | "credits" | "next";
+export type PartKind = "rating" | "intro" | "crawl" | "gap" | "card" | "scene" | "end" | "credits" | "next";
 export interface TimelinePart {
   kind: PartKind;
   file: string;            // in video/parts/
@@ -190,6 +190,8 @@ export function buildTimeline(manifest: ArtManifest, timings: Timings, opts: Vid
   const cardFrames = titles?.sceneCards ? toFrames(opts.cardSec ?? 4) : 0;
 
   const parts: TimelinePart[] = [];
+  // A rated story opens on its rating card (#88), before anything else.
+  if (titles?.rating) parts.push({ kind: "rating", file: "rating.mp4", frames: toFrames(6) });
   if (introFrames > 0) parts.push({ kind: "intro", file: "intro.mp4", frames: introFrames });
   if (titles?.crawl?.length) parts.push({ kind: "crawl", file: "crawl.mp4", frames: toFrames(crawlSec(titles.crawl)) });
   scenes.forEach((s, k) => {
@@ -280,7 +282,8 @@ export function introFilterGraph(introFrames: number): string {
 export interface CardText { text: string; font: string; size: number; y: number; in: number; out: number }
 // `art`: the image behind the card (default the cover); `logo`: the title logo
 // (alpha) over it; `crawl`: text scrolling up the frame for the card's length.
-export interface CardSpec { cover: boolean; texts: CardText[]; art?: string; logo?: string; crawl?: { text: string; font: string; size: number } }
+// `box`: an outlined panel (the rating card's frame), in 1920×1080 pixels.
+export interface CardSpec { cover: boolean; texts: CardText[]; art?: string; logo?: string; crawl?: { text: string; font: string; size: number }; box?: { x: number; y: number; w: number; h: number } }
 
 // The crawl reads at an easy pace, ~2.5 words a second, with time to settle in.
 export function crawlSec(paragraphs: string[]): number {
@@ -339,6 +342,19 @@ export function cardSpec(part: TimelinePart, timeline: Timeline, titles: TitleCa
       const title = titles.sceneTitles[scene.index];
       return { cover: false, texts: title ? [line(numeral, true, 60, 470, 0.5), line(title, false, 84, 590, 0.9)] : [line(numeral, true, 96, 540, 0.5)] };
     }
+    case "rating": {
+      // Black, the rating in an outlined panel, the tagline under it, then why
+      // and for whom, and a small note that it's the author's own rating.
+      const r = titles.rating!;
+      const texts: CardText[] = [
+        line(r.rating, true, 150, 330, 0.3),
+        line(r.tagline, false, 46, 520, 0.6),
+        ...(r.reasons ? [line(r.reasons, false, 42, 640, 0.9)] : []),
+        ...(r.age ? [line(r.age, false, 42, 720, 1.1)] : []),
+        line(r.note, false, 26, 960, 1.3)
+      ];
+      return { cover: false, texts, box: { x: 760, y: 230, w: 400, h: 200 } };
+    }
     case "crawl":
       return { cover: Boolean(titles.openingArt ?? timeline.cover), texts: [], ...(titles.openingArt ? { art: titles.openingArt } : {}), crawl: { text: wrapCrawl(titles.crawl ?? []), font: titles.font, size: 58 } };
     case "end":
@@ -388,6 +404,7 @@ export function cardFilterGraph(spec: CardSpec, frames: number, textFile: (text:
   if (spec.crawl) {
     base += `,drawtext=fontfile=${quoted(spec.crawl.font)}:textfile=${quoted(textFile(spec.crawl.text))}:expansion=none:fontsize=${spec.crawl.size}:line_spacing=${Math.round(spec.crawl.size * 0.45)}:text_align=C:fontcolor=0xF2E8D5:shadowcolor=black@0.85:shadowx=3:shadowy=3:x=(w-text_w)/2:y='h-(h+text_h)*t/${len}'`;
   }
+  if (spec.box) base += `,drawbox=x=${spec.box.x}:y=${spec.box.y}:w=${spec.box.w}:h=${spec.box.h}:color=0xF2E8D5:t=6`;
   const text = spec.texts.map((t) => `,${drawText(t, textFile(t.text))}`).join("");
   return `${base}${text},fade=t=in:d=${edge},fade=t=out:st=${len - edge}:d=${edge},trim=end_frame=${frames}[out]`;
 }

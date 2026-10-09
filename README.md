@@ -443,6 +443,31 @@ Other config keys:
 | `artWordsPerShot` | 110 | Narration words per art shot. |
 | `artist` | Gemini | `image` and `inspector` backends (`gemini` or `mock`; `"inspector": null` skips review), `maxAttempts`, `maxReferences`, `referenceSize`, `inspectSize`. |
 
+## Audience ratings
+
+Off unless the story file has a `rating`. With one, the story is held to it from the plan to the pictures.
+
+```jsonc
+"rating": "PG",                    // G · PG · PG-13 · R · NC-17, or TV-Y · TV-Y7 · TV-G · TV-PG · TV-14 · TV-MA
+"rating": {
+  "base": "PG",
+  "age": 8,                        // the reader's age: picks a base when there's none, and sets a reading level
+  "forbid": ["death of a parent"], // never, whatever the rating allows
+  "flag": ["mild peril"],          // allowed, but listed in the report and on the rating card
+  "allow": ["slapstick violence"], // allowed above the rating
+  "card": true,                    // a rating card at the start of the film (default)
+  "reasons": "mild peril and rude humor",  // the card's "Rated PG for …" (else the flags)
+  "acceptPlan": false              // see below
+}
+```
+
+- **Told up front:** the worldbuilder, creator, director, writer, editor, art director and voice director all get the rating's limits in eight areas (violence, gore, sex, nudity, language, drugs and alcohol, frightening content, themes), plus the `forbid` and `allow` lists. With an `age`, the writer also gets a reading level. The image model and its inspector get the visual limits.
+- **The censor:** a `censor` role (else the continuist's model) reads every draft alongside the continuist and critic. It's a **hard block**: a scene past the rating, or touching anything forbidden, is rewritten until it isn't, never let through as "close enough". Its notes keep the beat and change how it's shown: cut away, off page, "he swore".
+- **Refusal:** before anything is written, the story's premise, setting and plan are checked against the rating by the best writer's model, since a cheap one refused gentle stories over one changeable event. A story that can't be told at the rating at all (a slasher for 4-year-olds) is refused outright. Nothing is written, and only changing the rating or the premise gets past it.
+- **Plan conflicts:** plan items past the rating, where the story itself fits, stop the run with the list. You choose for each: add it to `allow`, raise the rating, soften your plan, or set `acceptPlan` to let the censor soften them scene by scene. Your plan is never quietly rewritten.
+- **The report:** `rating.md` in the run lists the plan check, what the censor changed in each scene and why, and anything a parent should know.
+- **The card:** the film opens on a rating card with the rating in a frame, its tagline, why ("Rated PG for mild peril"), the age, and a note that it's the author's own rating, not an MPA or broadcaster one.
+
 ## One command per run
 
 `make`, `canon --apply` and `audition` hold a lock on the run (`<run>/.lock`) while they work, because two at once would overwrite each other's art manifest, event log and rounds. A second command on the same run waits for the first and prints what it's waiting for. `--no-wait` makes it stop instead. A lock left by a process that died is taken over. `approve` and the read-only commands (`pitch`, `review`, `show`, `spend`) don't lock, so you can approve images while a render runs.

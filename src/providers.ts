@@ -1,3 +1,5 @@
+import { policyText, RATED_LAYERS } from "./ratings.ts";
+import type { RatingPolicy } from "./ratings.ts";
 import { mulberry32 } from "./rng.ts";
 import { randomUUID } from "node:crypto";
 import https from "node:https";
@@ -70,6 +72,8 @@ export class MockProvider {
         return JSON.stringify(this.critique(ctx));
       case "critic":
         return JSON.stringify({ ok: true, issues: [], review: "Mock review: looks good." });
+      case "censor":
+        return JSON.stringify(ctx.task === "ratingplan" ? { feasible: true, reason: "", conflicts: [] } : { ok: true, issues: [], flags: [] });
       case "editor":
         return ctx.prose ?? "";
       case "voicedirector": {
@@ -652,12 +656,20 @@ export function withDirection(provider: Provider, direction: Record<string, stri
   };
 }
 
+// A rated story (#88): every role that writes, plans or pictures it is told the rating.
+export function withRating(provider: Provider, policy: RatingPolicy): Provider {
+  const text = policyText(policy);
+  return { complete: (req) => provider.complete((RATED_LAYERS as readonly string[]).includes(req.role) ? { ...req, prompt: `${req.prompt}\n\n${text}` } : req) };
+}
+
 export function buildRoleProviders(config: StoryConfig): Roles {
   checkDirection(config.direction);
   const instances: Record<string, Provider> = {};
   for (const [name, spec] of Object.entries(config.providers)) {
-    const provider = makeProvider(spec);
-    instances[name] = config.direction && Object.keys(config.direction).length > 0 ? withDirection(provider, config.direction) : provider;
+    let provider = makeProvider(spec);
+    if (config.direction && Object.keys(config.direction).length > 0) provider = withDirection(provider, config.direction);
+    if (config.rating) provider = withRating(provider, config.rating);
+    instances[name] = provider;
   }
   const roles: Record<string, Role> = {};
   for (const [role, cfg] of Object.entries(config.roles)) {
