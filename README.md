@@ -439,7 +439,8 @@ Other config keys:
 |---|---|---|
 | `scenes` | — | Scenes per story (or `--scenes`). |
 | `maxRevisions` | 2 | Drafts per scene = this + 1 (or `--max-attempts`). |
-| `sceneWords` | `{min:1200,max:1800}` | The writer's word band. The critic blocks more than 2× overshoot. |
+| `length` | — | A running time: `{ "minutes": 12, "scenes"?: 3, "wordsPerMinute"?: 156, "fit"?: "check" \| "compress" \| "off" }`. Sets the scene count (about 10 minutes a scene) and each scene's word budget at the narrator's pace (measured from the run's audiobook once there is one), weighted by the arc. Before writing, a fit check stops a plan that needs far more time, listing what to stretch, cut or split (`<run>/length.md`); `"compress"` goes ahead and tightens it. Drafts more than 15% over their budget are trimmed. |
+| `sceneWords` | `{min:1200,max:1800}` | The writer's word band; overrides `length`'s budgets. The critic blocks more than 2× overshoot. |
 | `overdueAfter` | 3 | Scenes before an open setup must be paid off. |
 | `speakerTags` | false | Have the writer tag paragraphs itself (or `--speaker-tags`). Not needed: the audiobook's voice director labels plain prose. |
 | `artWordsPerShot` | 110 | Narration words per art shot. |

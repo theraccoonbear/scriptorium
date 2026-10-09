@@ -1,4 +1,6 @@
 import { resolveRating } from "./ratings.ts";
+import { measuredPace, midpoint, resolveLength } from "./length.ts";
+import type { LengthSetting } from "./length.ts";
 import type { RatingSetting } from "./ratings.ts";
 import { narratorReads } from "./casting.ts";
 import { runCanonCheck } from "./canon.ts";
@@ -83,6 +85,7 @@ export interface StoryFile {
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
   budget?: { usd: number; count?: CostKind[] };  // stop before spending more than this on the run (counting these kinds of spend)
   rating?: RatingSetting;  // hold the story to an audience rating (#88): "PG", or { base, age, forbid, flag, allow, mode, card }
+  length?: LengthSetting;  // a running time (#170): { "minutes": 12, "scenes": 3 }; sets the scene count and word budgets
   // How art and audio run: "audio-first" (default: voicing is cheap and listening
   // can send a story back for a rewrite before images are paid for),
   // "art-first", or "parallel" (fastest).
@@ -150,6 +153,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...(raw.budget ?? baseConfig.budget ? { budget: raw.budget ?? baseConfig.budget } : {}),
     ...(raw.rating !== undefined ? { rating: resolveRating(raw.rating, `${path}: "rating"`) } : {}),
     ...(typeof raw.title === "string" && raw.title.trim() ? { title: raw.title.trim() } : {}),
+    ...(raw.length ?? baseConfig.length ? { length: raw.length ?? baseConfig.length } : {}),
     ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
     ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {}),
     ...(raw.critic ?? baseConfig.critic ? { critic: raw.critic ?? baseConfig.critic } : {}),
@@ -205,7 +209,8 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     subtitle: raw.subtitle,
     series: raw.series,
     contextPaths: contexts.map(at),
-    scenes: raw.scenes,
+    // A running time sets the scene count when the story file doesn't (#170).
+    scenes: raw.scenes ?? (config.length ? resolveLength(config.length, { scenes: config.scenes }).scenes : undefined),
     maxAttempts: attempts,
     speakerTags: raw.speakerTags,
     audiobook: raw.audiobook?.castingFile ? { ...raw.audiobook, castingFile: at(raw.audiobook.castingFile) } : raw.audiobook ?? {},
@@ -421,6 +426,7 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     ledger: readLedger(story.runDir),
     scenes: story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length,
     wordsPerShot: story.config.artWordsPerShot,
+    ...lengthPitch(story, events),
     art: {
       maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, batch: artist.batch,
       skip: !(steps.includes("art") || steps.includes("refs") || steps.includes("extras")) || !story.config.roles.artdirector,
@@ -444,6 +450,17 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     scenesVoiced: existsSync(join(story.runDir, "audiobook")) ? readdirSync(join(story.runDir, "audiobook")).filter((f) => /^scene-\d+\.wav$/.test(f)).length : 0,
     revoiceShare: changedShare(events)
   });
+}
+
+// The running time for the pitch (#170): each scene's share and the narrator's pace.
+function lengthPitch(story: ResolvedStory, events: StoryEvent[]): { wordsPerScene?: number; wordsPerMinute?: number; askedMinutes?: number } {
+  const measuredWpm = measuredPace(story.runDir, events);
+  const len = story.config.length ? resolveLength(story.config.length, { scenes: story.scenes ?? story.config.scenes, ...(measuredWpm ? { measuredWpm } : {}) }) : undefined;
+  const words = story.config.sceneWords ?? len?.sceneWords;
+  return {
+    ...(words ? { wordsPerScene: midpoint(words) } : {}),
+    ...(len ? { wordsPerMinute: len.wordsPerMinute, askedMinutes: len.minutes } : measuredWpm ? { wordsPerMinute: measuredWpm } : {})
+  };
 }
 
 // References the refs phase would make: portraits and places without one,

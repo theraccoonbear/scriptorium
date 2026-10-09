@@ -3,6 +3,7 @@ import { OutputLimitError } from "./providers.ts";
 import { c } from "./colors.ts";
 import type { ContinuityEntry } from "./types.ts";
 import type { RefAppearances } from "./visualrefs.ts";
+import type { LengthFit } from "./length.ts";
 import type {
   Beat,
   Bible,
@@ -661,6 +662,8 @@ export async function createAndDirect(role: Role, params: {
   world: WorldOutput;
   premise?: string;
   context?: string;
+  sceneWords?: WordBudget;
+  lengthNote?: string;
 } & TurnParams & CreativeFeedback): Promise<CreatorOutput> {
   const { sceneIndex, total, arc, world, premise, context, issues, fresh } = params;
   const charNames = (world.characters || []).map((c) => `${c.name} (${c.archetype})`).join(", ");
@@ -680,6 +683,7 @@ export async function createAndDirect(role: Role, params: {
     locNames ? `USE THESE LOCATION NAMES: ${locNames}` : "",
     `SCENES: ${total} — plan the arc for all of them.`,
     arc?.some((t) => t !== null && t !== undefined) ? `ARC (the author's; keep these values, fill the nulls): ${JSON.stringify(arc)}` : "",
+    lengthLines(params.sceneWords, params.lengthNote),
     turnLines({ ...params, sceneIndex, total, context }),
     fix
   ].filter(Boolean).join("\n\n");
@@ -692,6 +696,18 @@ export async function createAndDirect(role: Role, params: {
   const foundation = result as CreatorFoundation;
   const bible = applyBibleData(foundation);
   return { bible, beat: foundation.beat as Beat, prompt, system, raw };
+}
+
+// A scene's length, for the director (#170): a beat sized to what the scene can
+// carry — about one turn, reveal or full exchange per 300-400 words of narration.
+function lengthLines(sceneWords?: WordBudget, note?: string): string {
+  if (!sceneWords) return "";
+  const mid = Math.round((sceneWords.min + sceneWords.max) / 2);
+  const minutes = Math.round((mid / 156) * 10) / 10;
+  return [
+    `LENGTH: this scene is ${sceneWords.min}-${sceneWords.max} words (about ${minutes} minutes read aloud). Size the beat to it: a scene this long carries about ${Math.max(1, Math.round(mid / 350))} turns, reveals or full exchanges. Plan no more than it can hold; fold small events into one moment rather than giving each its own.`,
+    note ? `THE AUTHOR'S PLAN IS LONGER THAN ITS RUNNING TIME and the author chose to compress it: tighten, merge and summarize these first — ${note}` : ""
+  ].filter(Boolean).join("\n");
 }
 
 // What turns this scene: the author's pinned turn, the author's plan, or the
@@ -721,6 +737,8 @@ export async function direct(role: Role, params: {
   tension: number;
   overdue: Setup[];
   context?: string;
+  sceneWords?: WordBudget;  // this scene's share of the running time (#170)
+  lengthNote?: string;      // the author chose to compress a plan longer than its running time
 } & TurnParams & CreativeFeedback): Promise<RoleOutput<Beat>> {
   const { bible, sceneIndex, total, tension, overdue, context, issues, fresh } = params;
   const fix = feedbackBlock(
@@ -738,6 +756,7 @@ export async function direct(role: Role, params: {
     `SCENE ${sceneIndex + 1} OF ${total}`,
     plan,
     `TENSION TARGET (1-10): ${tension}`,
+    lengthLines(params.sceneWords, params.lengthNote),
     turnLines({ ...params, sceneIndex, total, context }),
     `OVERDUE SETUPS TO PAY OFF: ${overdue.map((s) => s.id).join(", ") || "none"}`,
     fix
@@ -852,14 +871,17 @@ export async function edit(role: Role, params: {
   sceneIndex: number;
   previousScene?: string;
   sceneWords?: WordBudget;
+  trim?: boolean;   // the draft runs past its budget (#170): cut it to fit
 }): Promise<RoleOutput<string>> {
-  const { bible, prose, sceneIndex, previousScene, sceneWords } = params;
+  const { bible, prose, sceneIndex, previousScene, sceneWords, trim } = params;
   const voices = Object.values(bible.characters).filter((ch) => ch.voice).map((ch) => `- ${ch.name}: ${ch.voice}`).join("\n");
   const prompt = [
     bible.tone ? `TONE: ${bible.tone}` : "",
     voices ? `VOICE SHEETS:\n${voices}` : "",
     previousScene ? `END OF THE PREVIOUS SCENE (for repetition only — do not edit it):\n${previousScene.slice(-2500)}` : "",
-    sceneWords ? `LENGTH: the scene should land within ${sceneWords.min}-${sceneWords.max} words after editing.` : "",
+    sceneWords && trim
+      ? `LENGTH — THIS DRAFT IS TOO LONG: it runs ${prose.split(/\s+/).filter(Boolean).length} words and must land within ${sceneWords.min}-${sceneWords.max}. Cut to fit: drop the least needed beats of description, repeated reactions and exchanges that restate; keep every plot event, every line that sets up or pays off, and the ending. Trim, never summarize.`
+      : sceneWords ? `LENGTH: the scene should land within ${sceneWords.min}-${sceneWords.max} words after editing.` : "",
     `SCENE ${sceneIndex + 1} TO EDIT:\n${prose}`
   ].filter(Boolean).join("\n\n");
   const raw = await role.provider.complete({
@@ -1459,6 +1481,30 @@ export async function checkPlanRating(role: Role, p: { policy: string; plan: str
     .map((c) => ({ item: String(c.item ?? "").trim(), why: String(c.why ?? "").trim(), options: String(c.options ?? "").trim() }))
     .filter((c) => c.item);
   return { ...out, result: { feasible: r.feasible !== false, reason: String(r.reason ?? "").trim(), conflicts } };
+}
+
+// Will the plan fit its running time (#170)? Once, before anything is written.
+export const LENGTH_FIT_SYSTEM = `You judge whether a story's plan fits its RUNNING TIME, before any of it is written. The story is read aloud as an audiobook and film at about 156 words a minute.
+
+List what the plan requires to be shown on the page: each event, plot point, reveal and exchange the PREMISE and AUTHOR'S PLAN call for, in order. Give each the minutes it needs told well at an easy pace: a quick moment or a line of plot 0.3-0.5; a scene-setting arrival or a short exchange about 1; a real conversation, a set piece, a fight or a chase 2-4. Count what the plan asks for, not what you'd add.
+
+needMinutes is their sum, plus about 10% for openings, transitions and endings.
+cuts: if needMinutes is over the RUNNING TIME, the items to drop or merge to fit, least needed first (never the main events, the ending, or anything a later event depends on), each with the minutes it saves. Empty if it fits.
+split: if it needs more than about twice the running time, where it would break into parts ("Part 1 ends when …"); else "".
+
+Output ONLY JSON: {"items":[{"item":string,"minutes":number}],"needMinutes":number,"cuts":[{"item":string,"saves":number}],"split":string}`;
+
+export async function checkLengthFit(role: Role, p: { story: string; minutes: number; scenes: number; words: number }): Promise<RoleOutput<LengthFit>> {
+  const prompt = `RUNNING TIME: ${p.minutes} minutes, in ${p.scenes} scene${p.scenes === 1 ? "" : "s"} (about ${p.words} words in all).\n\n${p.story}`;
+  const out = await callJson(role, { role: "lengthfit", system: LENGTH_FIT_SYSTEM, prompt, ctx: { task: "lengthfit", minutes: p.minutes } });
+  const r = (out.result ?? {}) as Record<string, unknown>;
+  const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : 0);
+  const list = (x: unknown) => (Array.isArray(x) ? x : []).map((v) => v as Record<string, unknown>);
+  const items = list(r.items).map((x) => ({ item: String(x.item ?? "").trim(), minutes: num(x.minutes) })).filter((x) => x.item);
+  const cuts = list(r.cuts).map((x) => ({ item: String(x.item ?? "").trim(), saves: num(x.saves) })).filter((x) => x.item);
+  const need = num(r.needMinutes) || items.reduce((a, x) => a + x.minutes, 0) * 1.1;
+  const split = String(r.split ?? "").trim();
+  return { ...out, result: { needMinutes: need, items, cuts, ...(split ? { split } : {}) } };
 }
 
 export async function archive(role: Role, params: {

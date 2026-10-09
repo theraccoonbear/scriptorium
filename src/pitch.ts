@@ -36,6 +36,9 @@ export interface PitchInput {
   ledger?: LedgerEntry[];
   scenes: number;                       // planned scenes
   wordsPerShot?: number;                // artWordsPerShot (default 110)
+  wordsPerScene?: number;               // a scene still to write (the length setting's share, else 1500)
+  wordsPerMinute?: number;              // the narrator's pace, for the running time
+  askedMinutes?: number;                // the running time the author asked for (#170)
   // refsOnly: the refs phase — just references, `refTargets` of them (exact when known).
   // extrasOnly: the extras phase — key art in three shapes and a cast photo.
   art?: { maxAttempts?: number; retakes?: number; concurrency?: number; skip?: boolean; batch?: boolean; refsOnly?: boolean; refTargets?: number; extrasOnly?: boolean };
@@ -56,6 +59,7 @@ export interface Pitch {
   batch: { images: boolean; voice: boolean };
   exact: { story: boolean; shots: boolean; voicing: boolean };
   story: { scenesToWrite: number; usd: number };
+  length: { words: number; minutes: number; asked?: number };  // the running time, read aloud (#170)
   images: { references: number; shots: number; cover: number; generations: number; retakes: number; usd: number; minutes: number };
   audio: { seconds: number; geminiRequests: number; usd: number; minutes: number; days: number };
   music: { cues: number; usd: number; minutes: number };
@@ -74,14 +78,16 @@ export function pitch(input: PitchInput): Pitch {
   const ledger = input.ledger ?? [];
   const committed = input.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);
   const toWrite = Math.max(0, input.scenes - committed.length);
-  const words = committed.reduce((a, d) => a + d.prose.split(/\s+/).filter(Boolean).length, 0) + toWrite * TYPICAL.wordsPerScene;
+  const perScene = input.wordsPerScene ?? TYPICAL.wordsPerScene;
+  const words = committed.reduce((a, d) => a + d.prose.split(/\s+/).filter(Boolean).length, 0) + toWrite * perScene;
+  const wpm = input.wordsPerMinute ?? TYPICAL.wordsPerSecond * 60;
 
   // Images: directed shots where they exist, else one per wordsPerShot.
   const directed = new Map<number, number>();
   for (const e of input.events) if (e.type === "scene_art") { const d = e.data as SceneArtData; directed.set(d.sceneIndex, d.shots?.length ?? 1); }
   const refs = new Set(input.events.filter((e) => e.type === "visual_ref").map((e) => `${(e.data as VisualRefData).kind}:${(e.data as VisualRefData).id}`)).size;
   const undirectedScenes = input.scenes - directed.size;
-  const shots = [...directed.values()].reduce((a, b) => a + b, 0) + Math.max(0, undirectedScenes) * Math.round(TYPICAL.wordsPerScene / (input.wordsPerShot ?? 110));
+  const shots = [...directed.values()].reduce((a, b) => a + b, 0) + Math.max(0, undirectedScenes) * Math.round(perScene / (input.wordsPerShot ?? 110));
   let references = refs + (directed.size === 0 ? 3 + 2 * input.scenes : Math.max(0, undirectedScenes) * 2);
   let shotsToRender = shots;
   let cover = 1;
@@ -92,7 +98,7 @@ export function pitch(input: PitchInput): Pitch {
     const redo = new Set((input.redo ?? []).map((r) => r.replace(":", "-")));
     const pending = buildArtJobs(input.events).filter((j) => redo.has(j.key) || (!approved.has(j.key) && input.artManifest![j.key]?.prompt !== j.prompt));
     references = pending.filter((j) => j.ref).length + Math.max(0, undirectedScenes) * 2;
-    shotsToRender = pending.filter((j) => !j.ref && j.sceneIndex !== undefined).length + Math.max(0, undirectedScenes) * Math.round(TYPICAL.wordsPerScene / (input.wordsPerShot ?? 110));
+    shotsToRender = pending.filter((j) => !j.ref && j.sceneIndex !== undefined).length + Math.max(0, undirectedScenes) * Math.round(perScene / (input.wordsPerShot ?? 110));
     cover = pending.some((j) => j.key === "cover") || input.scenes > committed.length ? 1 : 0;
   }
   const art = input.art ?? {};
@@ -160,7 +166,7 @@ export function pitch(input: PitchInput): Pitch {
   const audioMinutes = (geminiRequests * TYPICAL.ttsSecondsPerRequest) / 60 / Math.max(1, audio.geminiConcurrency ?? 2) + kokoroSeconds / 1.05 / 60;
   const days = Math.ceil(geminiRequests / TYPICAL.ttsPerDay);
 
-  const storyUsd = toWrite * TYPICAL.storyUsdPerScene;
+  const storyUsd = toWrite * TYPICAL.storyUsdPerScene * (perScene / TYPICAL.wordsPerScene);
   // Spent so far toward the budget: dev and experiment spend doesn't count unless the budget says so.
   const counted = input.budgetKinds ?? BUDGET_KINDS;
   const spentUsd = ledger.filter((e) => counted.includes(kindOf(e))).reduce((a, e) => a + (e.usd ?? 0), 0);
@@ -177,6 +183,7 @@ export function pitch(input: PitchInput): Pitch {
     batch: { images: art.batch === true, voice: batchVoice },
     exact: { story: toWrite === 0, shots: undirectedScenes <= 0, voicing: exactVoicing },
     story: { scenesToWrite: toWrite, usd: storyUsd },
+    length: { words, minutes: words / wpm, ...(input.askedMinutes ? { asked: input.askedMinutes } : {}) },
     images: { references: art.skip ? 0 : references, shots: art.skip ? 0 : shotsToRender, cover: art.skip ? 0 : cover, generations, retakes, usd: imagesUsd, minutes: imageMinutes },
     audio: { seconds, geminiRequests, usd: audioUsd, minutes: audioMinutes, days },
     music: { cues: cuesToMake, usd: musicUsd, minutes: musicMinutes },
@@ -195,7 +202,7 @@ export function formatPitch(p: Pitch, budgetUsd?: number): string {
   const m = (min: number) => (min < 1 ? "<1 min" : `${Math.round(min)} min`);
   const est = (exact: boolean) => (exact ? "" : " (estimated)");
   return [
-    `story: ${p.story.scenesToWrite === 0 ? "written" : `${p.story.scenesToWrite} scene${p.story.scenesToWrite === 1 ? "" : "s"} to write, ~${usd(p.story.usd)}`}`,
+    `story: ${p.story.scenesToWrite === 0 ? "written" : `${p.story.scenesToWrite} scene${p.story.scenesToWrite === 1 ? "" : "s"} to write, ~${usd(p.story.usd)}`} · ~${Math.round(p.length.minutes)} min read aloud${p.length.asked ? ` (asked ${p.length.asked})` : ""}`,
     p.images.generations === 0
       ? "images: nothing to render"
       : `images${est(p.exact.shots)}: ${p.images.references} references + ${p.images.shots} shots${p.images.cover ? " + cover" : ""}, ${p.images.retakes} retakes = ${p.images.generations} generations, ~${usd(p.images.usd)}, ~${m(p.images.minutes)}`,

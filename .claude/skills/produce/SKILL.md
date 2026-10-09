@@ -52,6 +52,22 @@ Ask the author who the story is for **before anything is written**. A rating cha
   - **A list of plan conflicts:** go through it item by item with the author. For each, add it to `allow`, raise the rating, soften the plan, or set `acceptPlan` so the censor softens it scene by scene.
 - **After writing,** show the author `<run>/rating.md`: what the censor changed in each scene and what a parent should know. The censor is a hard block, so a scene that keeps failing stops the run. Read its notes with the author rather than retrying blindly.
 
+## Before phase 0: how long?
+
+A story can be given a running time: `"length": { "minutes": 12 }`, with `"scenes": 3` inside it to fix the scene count. It becomes each scene's word budget at the narrator's pace: 156 words a minute, or this run's measured pace once there's an audiobook. The climax gets a bigger share and a quiet scene a smaller one. An explicit `sceneWords` overrides it. Without `length`, scenes are 1,200–1,800 words.
+
+- **The fit check comes first:** the first `--only story` run checks the premise and the author's plan against the running time. If the plan needs more than 25% over, the run stops with nothing written and the options listed in `<run>/length.md`. Go through it with the author:
+  - **stretch:** raise `minutes` to what the plan needs;
+  - **cut:** remove or merge plan items, least needed first;
+  - **split:** make it a series, at the break point the check suggests;
+  - **compress:** `"fit": "compress"` keeps the plan, and the director tightens it to fit.
+
+  A plan that needs well under the time is only a warning: the scenes get room to breathe, or ask for fewer minutes.
+- **While writing:** the director sizes each beat to its scene's budget. A draft more than 15% over its budget is trimmed once by the editor.
+- **After writing:** the story step prints each scene's words and minutes against its budget, flagging any as long or short. Re-running `--only story` on a finished story is free and prints the same readout. Show it to the author with `story.md`.
+- **The pitch** gives the running time ("~12 min read aloud (asked 12)").
+- `"fit": "off"` skips the check.
+
 ## Before every paid phase: the pitch
 
 Run `npm run pitch -- <story.json> --only <phase>` and tell the author, in a line or two, what it will make and cost, and the budget left (`story.budget.usd` in the story file). Wait for a yes. If the estimate exceeds the budget, say so and offer to raise it — never raise it yourself.

@@ -76,6 +76,8 @@ export class MockProvider {
         return JSON.stringify(ctx.task === "ratingplan" ? { feasible: true, reason: "", conflicts: [] } : { ok: true, issues: [], flags: [] });
       case "editor":
         return ctx.prose ?? "";
+      case "lengthfit":
+        return JSON.stringify({ items: [{ item: "Mock: the whole plan", minutes: ctx.minutes ?? 1 }], needMinutes: ctx.minutes ?? 1, cuts: [], split: "" });
       case "voicedirector": {
         if (ctx.task === "cast") {
           // Each character takes the next unused library voice, in order.
