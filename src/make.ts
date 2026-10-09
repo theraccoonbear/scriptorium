@@ -10,7 +10,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders, checkDirection } from "./providers.ts";
-import { formatSummary, readLedger, summarize, usd } from "./usage.ts";
+import { COST_KINDS, formatSummary, getCostKey, parseCostKind, readLedger, setCostKey, summarize, usd } from "./usage.ts";
+import type { CostKind } from "./usage.ts";
 import { pitch } from "./pitch.ts";
 import type { Pitch } from "./pitch.ts";
 import { accounted, artStep, audiobookStep, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
@@ -75,7 +76,7 @@ export interface StoryFile {
     titles?: TitleSettings | false;    // the cards: opening title, scene cards, ending, credits (default on)
   };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
-  budget?: { usd: number };            // stop before spending more than this on the run
+  budget?: { usd: number; count?: CostKind[] };  // stop before spending more than this on the run (counting these kinds of spend)
   // How art and audio run: "audio-first" (default: voicing is cheap and listening
   // can send a story back for a rewrite before images are paid for),
   // "art-first", or "parallel" (fastest).
@@ -150,6 +151,9 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
   };
   if (config.budget !== undefined && !(typeof config.budget.usd === "number" && config.budget.usd > 0)) {
     throw new Error(`${path}: "budget" must look like { "usd": 5 }`);
+  }
+  if (config.budget?.count !== undefined && !(Array.isArray(config.budget.count) && config.budget.count.length > 0 && config.budget.count.every((k) => (COST_KINDS as readonly string[]).includes(k)))) {
+    throw new Error(`${path}: budget "count" must be a list of ${COST_KINDS.join(", ")}`);
   }
   if (config.critic !== undefined && !(CRITIC_MODES as readonly string[]).includes(config.critic)) {
     throw new Error(`${path}: "critic" must be one of ${CRITIC_MODES.join(", ")}`);
@@ -304,6 +308,10 @@ export interface MakeOptions {
   edit?: string[];  // images to edit in place with the note (#141): scene-03-10, cover
   source?: string;  // the take to edit, run-relative (art/previous/…); default the current image
   with?: string[];  // an edit's likeness references: art keys (character-rantoul, scene-06-07)
+  // What this run's spend is for (#148). Default: what the command line or the
+  // environment says, else rework for a --redo or --edit, else production.
+  costKind?: CostKind;
+  costTag?: string;
   steps?: Partial<StepRunners>;  // injectable for tests
 }
 
@@ -411,7 +419,7 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
       skip: !(steps.includes("audiobook") || steps.includes("voices")),
       ...(steps.includes("voices") && !steps.includes("audiobook") ? { samplesOnly: true, speakers: lineCounts(events).size - narratorReads(events, { min: story.audiobook.castMin, pinned: story.audiobook.geminiVoices }).length } : {})
     },
-    ...(story.config.budget ? { budgetUsd: story.config.budget.usd } : {}),
+    ...(story.config.budget ? { budgetUsd: story.config.budget.usd, ...(story.config.budget.count ? { budgetKinds: story.config.budget.count } : {}) } : {}),
     ...readJson<Record<string, { prompt: string }>>(join(story.runDir, "art", "art.json"), (m) => ({ artManifest: m })),
     approved: [...approvedArt(story.runDir)],
     ...(redo.length ? { redo } : {}),
@@ -475,7 +483,22 @@ async function withImageRound(runDir: string, before: ArtSnapshot, fn: () => Pro
   if (round) console.error(`[scriptorium] ${c.ok(`review round: ${join(round.dir, "changed.jpg")}`)} ${c.dim(`(${keys.length} image${keys.length === 1 ? "" : "s"})`)}`);
 }
 
+// The run's spend is keyed (#148): the kind asked for (option, command line,
+// environment), else rework for a redo or an edit, else production (or
+// experiment, for a run under runs/_scratch/).
 export async function make(storyPath: string, opts: MakeOptions = {}): Promise<Step[]> {
+  const previous = getCostKey();
+  const kind = opts.costKind ?? previous.kind ?? parseCostKind(process.env.SCRIPTORIUM_COST_KIND, "SCRIPTORIUM_COST_KIND") ?? (opts.redo?.length || opts.edit?.length ? "rework" : undefined);
+  const tag = opts.costTag ?? previous.tag;
+  setCostKey({ ...(kind ? { kind } : {}), ...(tag ? { tag } : {}) });
+  try {
+    return await makeRun(storyPath, opts);
+  } finally {
+    setCostKey(previous);
+  }
+}
+
+async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {
   const story = await loadStoryFile(storyPath);
   const steps = planSteps(opts.only, opts.from);
   const run = { ...defaultRunners, ...opts.steps };
@@ -579,6 +602,6 @@ export async function make(storyPath: string, opts: MakeOptions = {}): Promise<S
   }
   console.error(`[scriptorium] ${c.ok(`done: ${steps.join(", ")}`)}`);
   const ledger = readLedger(story.runDir);
-  if (ledger.length > 0) console.error(`[scriptorium] ${c.dim(`spend for ${story.runDir}:\n${formatSummary(summarize(ledger), story.config.budget?.usd)}`)}`);
+  if (ledger.length > 0) console.error(`[scriptorium] ${c.dim(`spend for ${story.runDir}:\n${formatSummary(summarize(ledger), story.config.budget?.usd, story.config.budget?.count)}`)}`);
   return steps;
 }

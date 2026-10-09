@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { findLedgers, filterEntries, ledgerFor, retag, spendAcross, spendForRun } from "./spend.ts";
 import { join } from "node:path";
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
@@ -9,7 +10,7 @@ import { renderStory, redirectArt } from "./engine.ts";
 import { replay } from "./bible.ts";
 import { parseVoiceGenders } from "./audiobook.ts";
 import { accounted, artStep, castPreviewStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
-import { formatSummary, readLedger, summarize } from "./usage.ts";
+import { formatSummary, parseCostKind, readLedger, setCostKey, summarize } from "./usage.ts";
 import { loadStoryFile, make, planSteps, STEP_ORDERS, storyPitch } from "./make.ts";
 import { readApprovals, setApproval } from "./approvals.ts";
 import { buildReview, REVIEW_KINDS } from "./reviewSheets.ts";
@@ -78,6 +79,15 @@ const USAGE = `scriptorium <command> [options]
                                                          vocal line; remakes their sample and the reel
   canon <story.json> [--apply [--skip N,…]]           show the latest canon check (make --only canon), or
                                                          apply its fixes to the prose and shot prompts
+  spend <story.json> [--since <date>] [--cost-kind k] [--cost-tag t]
+                                                         a run's spend, by kind (production, rework, dev,
+                                                         experiment), tag, step, role and model
+  spend --all [--root runs]                             every run's spend under runs/, scratch runs included
+  spend <story.json> --retag --cost-kind dev [--cost-tag t] [--after <ts>] [--before <ts>] [--step s]
+                                                         mark past spend as dev (or any kind), ledger backed up
+  Any paid command takes --cost-kind and --cost-tag (or SCRIPTORIUM_COST_KIND / _TAG): what its
+  spend is for. Default: rework for --redo/--edit, experiment under runs/_scratch/, else production.
+  The budget counts production + rework unless the story's budget says "count": [...].
   doctor [<story.json>]                                 what your API keys and tools can make (free);
                                                          with a story file, whether it can run
   pitch <story.json> [--only …] [--redo …]             what the story will need and cost, before spending
@@ -225,9 +235,42 @@ async function main() {
       pick: { type: "string" },
       round: { type: "string" },
       apply: { type: "boolean" },
-      skip: { type: "string" }
+      skip: { type: "string" },
+      "cost-kind": { type: "string" },
+      "cost-tag": { type: "string" },
+      all: { type: "boolean" },
+      root: { type: "string" },
+      since: { type: "string" },
+      retag: { type: "boolean" },
+      after: { type: "string" },
+      before: { type: "string" },
+      step: { type: "string" }
     }
   });
+
+  // What this command's spend is for (#148): --cost-kind production|rework|dev|experiment, --cost-tag <label>.
+  const costKind = parseCostKind(values["cost-kind"], "--cost-kind");
+  if (command !== "spend" && (costKind || values["cost-tag"])) setCostKey({ ...(costKind ? { kind: costKind } : {}), ...(values["cost-tag"] ? { tag: values["cost-tag"] } : {}) });
+
+  if (command === "spend") {
+    const filter = { ...(values.since ? { since: values.since } : {}), ...(costKind ? { kind: costKind } : {}), ...(values["cost-tag"] ? { tag: values["cost-tag"] } : {}) };
+    if (values.all) {
+      const root = values.root ?? "runs";
+      const runs = (await findLedgers(root)).map((runDir) => ({ runDir, entries: filterEntries(ledgerFor(runDir), filter) }));
+      console.log(runs.length ? spendAcross(runs, root) : `no ledgers under ${root}`);
+      return;
+    }
+    const storyFile = positionals[0];
+    if (!storyFile) throw new Error("usage: spend <story.json> [--since <date>] [--cost-kind k] [--cost-tag t] | spend --all [--root runs] | spend <story.json> --retag --cost-kind dev [--cost-tag t] [--after <ts>] [--before <ts>] [--step s]");
+    const story = await loadStoryFile(storyFile);
+    if (values.retag) {
+      if (!costKind) throw new Error("--retag needs --cost-kind (production, rework, dev or experiment)");
+      const r = await retag(story.runDir, { kind: costKind, ...(values["cost-tag"] ? { tag: values["cost-tag"] } : {}), ...(values.after ? { after: values.after } : {}), ...(values.before ? { before: values.before } : {}), ...(values.step ? { step: values.step } : {}) });
+      console.error(`[scriptorium] ${c.ok(`${r.changed} ledger entr${r.changed === 1 ? "y" : "ies"} marked ${costKind}`)} ${c.dim(`(ledger backed up: ${r.backup})`)}`);
+    }
+    console.log(spendForRun(filterEntries(ledgerFor(story.runDir), filter), story.config.budget?.usd, story.config.budget?.count));
+    return;
+  }
 
   if (command === "models") {
     const config = JSON.parse(await readFile(values.config, "utf8"));

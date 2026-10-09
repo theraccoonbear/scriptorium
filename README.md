@@ -453,6 +453,23 @@ Every paid API call is logged to `<run>/usage.jsonl`. That covers the text roles
 
 The budget covers the whole run, including earlier sessions, since the log lives in the run folder. It's checked before every paid call. When it runs out, the run stops with a message; raise the budget and re-run the same command to continue. A stuck scene is never committed as-is: the run stops so you can adjust direction and resume.
 
+**What the spend was for.** Every entry carries a `kind`, plus an optional `tag`:
+- `production`: making the story.
+- `rework`: redos, edits and retakes.
+- `dev`: testing the pipeline on a real run.
+- `experiment`: scratch runs.
+
+So a story's real cost stays apart from development. A paid command takes `--cost-kind` and `--cost-tag` (or `SCRIPTORIUM_COST_KIND` / `SCRIPTORIUM_COST_TAG` for a whole session). By default, `--redo` and `--edit` are rework, anything under `runs/_scratch/` is an experiment, and the rest is production. The budget counts production and rework. `"budget": { "usd": 35, "count": ["production", "rework", "dev"] }` counts more.
+
+```bash
+npm run spend -- stories/x.json                    # by kind, tag, step, role and model
+npm run spend -- --all                             # every run under runs/, scratch included
+npm run spend -- --all --since 2026-10-08 --cost-kind dev
+npm run spend -- stories/x.json --retag --cost-kind dev --cost-tag pipeline-tests --after 2026-10-07T18:00 --before 2026-10-07T19:00
+```
+
+`--retag` marks past spend (by time range and/or `--step`) after backing the ledger up to `backups/`. Older entries without a kind count as production, or as experiment in a scratch run.
+
 Costs are estimates: token counts multiplied by a price table. The defaults are in `src/usage.ts`, dated 2026-10, and `pricing` overrides them. Models without a price are still logged by token count. The log keeps raw token counts, so costs can be recalculated when prices change.
 
 ## Story structure

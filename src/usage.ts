@@ -96,6 +96,44 @@ export interface LedgerEntry extends Usage {
   model: string;
   usd: number | null;  // null: no price for this model
   batch?: boolean;     // a batch-mode call, priced at half
+  kind?: CostKind;     // what the spend was for (#148); absent = production (older entries)
+  tag?: string;        // a free label: "canon-133", "haiku-ab"
+}
+
+// What a cost was for (#148): making the story, redoing part of it, testing
+// the pipeline on it, or an experiment in a scratch run. The story's budget
+// counts production and rework unless it says otherwise.
+export type CostKind = "production" | "rework" | "dev" | "experiment";
+export const COST_KINDS: readonly CostKind[] = ["production", "rework", "dev", "experiment"];
+export const BUDGET_KINDS: readonly CostKind[] = ["production", "rework"];
+export interface CostKey { kind?: CostKind; tag?: string }
+export const kindOf = (e: Pick<LedgerEntry, "kind">): CostKind => e.kind ?? "production";
+
+export function parseCostKind(value: string | undefined, where = "cost kind"): CostKind | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (!(COST_KINDS as readonly string[]).includes(value)) throw new Error(`${where} must be one of ${COST_KINDS.join(", ")} (got "${value}")`);
+  return value as CostKind;
+}
+
+// The key in effect for this process: what the command set (setCostKey), else
+// SCRIPTORIUM_COST_KIND / SCRIPTORIUM_COST_TAG, else experiment for a run under
+// runs/_scratch/ and production for any other.
+let costKey: CostKey = {};
+export function getCostKey(): CostKey {
+  return costKey;
+}
+export function setCostKey(k: CostKey): CostKey {
+  const previous = costKey;
+  costKey = k;
+  return previous;
+}
+export function isScratchRun(runDir: string): boolean {
+  return runDir.split(/[\\/]+/).includes("_scratch");
+}
+export function resolveCostKey(runDir: string, env: Record<string, string | undefined> = process.env): { kind: CostKind; tag?: string } {
+  const kind = costKey.kind ?? parseCostKind(env.SCRIPTORIUM_COST_KIND, "SCRIPTORIUM_COST_KIND") ?? (isScratchRun(runDir) ? "experiment" : "production");
+  const tag = costKey.tag ?? (env.SCRIPTORIUM_COST_TAG || undefined);
+  return { kind, ...(tag ? { tag } : {}) };
 }
 
 export class BudgetExceededError extends Error {
@@ -121,19 +159,26 @@ export function readLedger(runDir: string): LedgerEntry[] {
 
 export class Accountant {
   readonly file: string;
+  readonly runDir: string;
   readonly prices: Readonly<Record<string, Price>>;
   readonly budgetUsd?: number;
+  readonly budgetKinds: readonly CostKind[];
   step = "run";
-  spent: number;       // whole run, including earlier sessions
+  spent: number;       // whole run, including earlier sessions: what counts toward the budget
+  spentAll: number;    // everything, whatever it was for
   stepSpent = 0;
   private byStep = new Map<string, number>();  // this session, per step label
   private unpriced = new Set<string>();
 
-  constructor(runDir: string, opts: { pricing?: Record<string, Price>; budgetUsd?: number } = {}) {
+  constructor(runDir: string, opts: { pricing?: Record<string, Price>; budgetUsd?: number; budgetKinds?: readonly CostKind[] } = {}) {
     this.file = join(runDir, LEDGER_FILE);
+    this.runDir = runDir;
     this.prices = { ...DEFAULT_PRICES, ...opts.pricing };
     this.budgetUsd = opts.budgetUsd;
-    this.spent = readLedger(runDir).reduce((s, e) => s + (e.usd ?? 0), 0);
+    this.budgetKinds = opts.budgetKinds ?? BUDGET_KINDS;
+    const ledger = readLedger(runDir);
+    this.spent = ledger.filter((e) => this.budgetKinds.includes(kindOf(e))).reduce((s, e) => s + (e.usd ?? 0), 0);
+    this.spentAll = ledger.reduce((s, e) => s + (e.usd ?? 0), 0);
   }
 
   setStep(step: string): void {
@@ -160,9 +205,11 @@ export class Accountant {
     const usd = price ? (flat ?? costOf(usage, price)) * (opts.priceFactor ?? 1) : null;
     // Steps can run at once (art and audio): the step is the caller's, not the last one set.
     const step = context.getStore()?.step ?? this.step;
-    const entry: LedgerEntry = { ts: new Date().toISOString(), step, role, model, ...usage, usd, ...(opts.priceFactor !== undefined && opts.priceFactor !== 1 ? { batch: true } : {}) };
+    const key = resolveCostKey(this.runDir);
+    const entry: LedgerEntry = { ts: new Date().toISOString(), step, role, model, ...usage, usd, ...(opts.priceFactor !== undefined && opts.priceFactor !== 1 ? { batch: true } : {}), ...key };
     appendFileSync(this.file, JSON.stringify(entry) + "\n");
-    this.spent += usd ?? 0;
+    if (this.budgetKinds.includes(key.kind)) this.spent += usd ?? 0;
+    this.spentAll += usd ?? 0;
     this.stepSpent += usd ?? 0;
     this.byStep.set(step, (this.byStep.get(step) ?? 0) + (usd ?? 0));
     return entry;
@@ -185,7 +232,7 @@ export function runAccounted<T>(acc: Accountant, step: string, fn: () => Promise
 // One accountant per run, shared by every step of it — so steps running at
 // once see each other's spend against the budget.
 const byFile = new Map<string, Accountant>();
-export function accountantFor(runDir: string, opts: { pricing?: Record<string, Price>; budgetUsd?: number } = {}): Accountant {
+export function accountantFor(runDir: string, opts: { pricing?: Record<string, Price>; budgetUsd?: number; budgetKinds?: readonly CostKind[] } = {}): Accountant {
   const file = join(runDir, LEDGER_FILE);
   let acc = byFile.get(file);
   if (!acc) { acc = new Accountant(runDir, opts); byFile.set(file, acc); }
@@ -210,10 +257,12 @@ export interface SpendSummary {
   byStep: Record<string, number>;
   byRole: Record<string, number>;
   byModel: Record<string, { usd: number; calls: number; input: number; output: number }>;
+  byKind: Partial<Record<CostKind, number>>;
+  byTag: Record<string, number>;
 }
 
 export function summarize(entries: LedgerEntry[]): SpendSummary {
-  const s: SpendSummary = { total: 0, calls: 0, unpricedCalls: 0, byStep: {}, byRole: {}, byModel: {} };
+  const s: SpendSummary = { total: 0, calls: 0, unpricedCalls: 0, byStep: {}, byRole: {}, byModel: {}, byKind: {}, byTag: {} };
   for (const e of entries) {
     const usd = e.usd ?? 0;
     s.total += usd;
@@ -221,6 +270,8 @@ export function summarize(entries: LedgerEntry[]): SpendSummary {
     if (e.usd === null) s.unpricedCalls++;
     s.byStep[e.step] = (s.byStep[e.step] ?? 0) + usd;
     s.byRole[e.role] = (s.byRole[e.role] ?? 0) + usd;
+    s.byKind[kindOf(e)] = (s.byKind[kindOf(e)] ?? 0) + usd;
+    if (e.tag) s.byTag[e.tag] = (s.byTag[e.tag] ?? 0) + usd;
     const m = (s.byModel[e.model] ??= { usd: 0, calls: 0, input: 0, output: 0 });
     m.usd += usd;
     m.calls++;
@@ -232,12 +283,19 @@ export function summarize(entries: LedgerEntry[]): SpendSummary {
 
 export const usd = (n: number) => `$${n < 0.1 && n > 0 ? n.toFixed(3) : n.toFixed(2)}`;
 
-export function formatSummary(s: SpendSummary, budgetUsd?: number): string {
+export function formatSummary(s: SpendSummary, budgetUsd?: number, budgetKinds: readonly CostKind[] = BUDGET_KINDS): string {
   const line = (rec: Record<string, number>) => Object.entries(rec).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${usd(v)}`).join(" · ");
   const models = Object.entries(s.byModel).sort((a, b) => b[1].usd - a[1].usd)
     .map(([m, v]) => `  ${m}: ${usd(v.usd)} (${v.calls} calls, ${v.input.toLocaleString()} in / ${v.output.toLocaleString()} out tokens)`);
+  // Spend that isn't production shows apart, and doesn't count toward the budget unless counted.
+  const counted = budgetKinds.reduce((n, k) => n + (s.byKind[k] ?? 0), 0);
+  const kinds = Object.keys(s.byKind).filter((k) => k !== "production");
   return [
-    `total ${usd(s.total)}${budgetUsd !== undefined ? ` of ${usd(budgetUsd)} budget` : ""} over ${s.calls} calls${s.unpricedCalls ? ` (${s.unpricedCalls} unpriced)` : ""}`,
+    budgetUsd !== undefined && Math.abs(counted - s.total) > 1e-9
+      ? `total ${usd(s.total)} over ${s.calls} calls, ${usd(counted)} of it toward the ${usd(budgetUsd)} budget (${budgetKinds.join(" + ")})${s.unpricedCalls ? ` (${s.unpricedCalls} unpriced)` : ""}`
+      : `total ${usd(s.total)}${budgetUsd !== undefined ? ` of ${usd(budgetUsd)} budget` : ""} over ${s.calls} calls${s.unpricedCalls ? ` (${s.unpricedCalls} unpriced)` : ""}`,
+    ...(kinds.length ? [`by kind: ${line(s.byKind as Record<string, number>)}`] : []),
+    ...(Object.keys(s.byTag).length ? [`by tag: ${line(s.byTag)}`] : []),
     `by step: ${line(s.byStep) || "—"}`,
     `by role: ${line(s.byRole) || "—"}`,
     "by model:",

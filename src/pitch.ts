@@ -3,7 +3,8 @@ import { planBatches } from "./geminiBatch.ts";
 import { readsVerbatim } from "./geminiTts.ts";
 import { buildArtJobs } from "./artist.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
-import { readLedger, usd } from "./usage.ts";
+import { BUDGET_KINDS, kindOf, readLedger, usd } from "./usage.ts";
+import type { CostKind } from "./usage.ts";
 import type { LedgerEntry } from "./usage.ts";
 import type { SceneArtData, SceneCommittedData, StoryEvent, VisualRefData } from "./types.ts";
 
@@ -41,6 +42,7 @@ export interface PitchInput {
   // samplesOnly: the voices phase — one short sample per speaker (`speakers` of them).
   audio?: { narration?: "kokoro" | "gemini"; dialogue?: "kokoro" | "gemini"; geminiMode?: GeminiMode; geminiConcurrency?: number; skip?: boolean; geminiModel?: string; geminiBatch?: boolean; samplesOnly?: boolean; speakers?: number };
   budgetUsd?: number;
+  budgetKinds?: readonly CostKind[];    // the spend that counts toward it (default production + rework)
   artManifest?: Record<string, { prompt: string }>;  // art/art.json: images already rendered
   approved?: string[];                               // approved images: never redrawn, so never counted (#136)
   redo?: string[];                                   // --redo keys (scene-01-02, character:nell): redrawn whatever their prompt
@@ -155,7 +157,9 @@ export function pitch(input: PitchInput): Pitch {
   const days = Math.ceil(geminiRequests / TYPICAL.ttsPerDay);
 
   const storyUsd = toWrite * TYPICAL.storyUsdPerScene;
-  const spentUsd = ledger.reduce((a, e) => a + (e.usd ?? 0), 0);
+  // Spent so far toward the budget: dev and experiment spend doesn't count unless the budget says so.
+  const counted = input.budgetKinds ?? BUDGET_KINDS;
+  const spentUsd = ledger.filter((e) => counted.includes(kindOf(e))).reduce((a, e) => a + (e.usd ?? 0), 0);
   const music = input.music ?? { skip: true };
   const cuesToMake = music.skip ? 0 : Math.max(0, (music.cues ?? input.scenes + 1) - (music.made ?? 0));
   const musicUsd = cuesToMake * TYPICAL.musicTakesPerCue * (TYPICAL.musicUsdPerCue + TYPICAL.musicCheckUsd);

@@ -340,7 +340,8 @@ export interface StoryConfig {
   // Spend accounting: USD per million tokens per model (overrides the defaults
   // in src/usage.ts), and a cap that stops the run before it's exceeded.
   pricing?: Record<string, { input: number; output: number; cacheRead?: number; cacheWrite?: number; perRequest?: number }>;
-  budget?: { usd: number };
+  // The cap, and which kinds of spend count toward it (#148; default production + rework).
+  budget?: { usd: number; count?: Array<"production" | "rework" | "dev" | "experiment"> };
   // Hard stop for a scene that won't settle, even with unlimited attempts. Default 20.
   maxDraftsPerScene?: number;
   // Image rendering for the `art` command; omitted = DEFAULT_ARTIST_CONFIG in src/artist.ts.
