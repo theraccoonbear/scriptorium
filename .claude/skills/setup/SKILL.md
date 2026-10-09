@@ -25,16 +25,25 @@ Scriptorium turns a premise, or the author's own notes, into a finished story. I
 
 The `produce` skill runs these phases with the author once setup is done.
 
-## 2. Check what's there
+## 2. Local tools, or Docker
 
-Run `npm run doctor` (free: it only lists each service's models). Show the user the checklist as it prints:
+Scriptorium needs Node 24+, ffmpeg and ImageMagick 7. Docker (or Podman) packs all of them into one image, so **Docker is the only thing to install**. Check what's there: `node --version; ffmpeg -version; magick -version; docker --version; podman --version`.
+- **Node, ffmpeg and magick all present:** run locally. Commands are `npm run <command> -- <args>`; run `npm install` first if `node_modules/` is missing.
+- **Otherwise, use Docker,** and don't install the rest one by one. If it's missing too, they install Docker Desktop (macOS, Windows) or `docker`/`podman` (Linux). Then build the image once: `docker compose build`, about 1 GB and a few minutes. From then on, **every command in these skills runs through Docker**: `npm run <command> -- <args>` becomes `docker compose run --rm scriptorium <command> <args>`. For example:
+  - `npm run make -- stories/x.json --only story` → `docker compose run --rm scriptorium make stories/x.json --only story`;
+  - with rootless Podman, `podman-compose -f docker-compose.yml -f compose.podman.yml run --rm scriptorium …`.
+- **Files are shared:** stories, contexts, runs and `.env` stay in this folder; the container mounts it. If their user ID isn't 1000 (`id -u`), they `export SCRIPTORIUM_UID=$(id -u) SCRIPTORIUM_GID=$(id -g)` first, so the files are theirs.
+
+Say which way it'll run, and use it consistently from here on.
+
+## 3. Check what's there
+
+Run `npm run doctor`, or its Docker form (free: it only lists each service's models). Show the user the checklist as it prints:
 - ✓ ready
 - ✗ broken or missing
 - ○ not set up, or optional
 
-If `node_modules/` is missing, run `npm install` first.
-
-## 3. Keys
+## 4. Keys
 
 Ask only for the keys their goal needs:
 
@@ -57,9 +66,9 @@ Ask only for the keys their goal needs:
 
 After each key, re-run `npm run doctor` and show the changed rows.
 
-## 4. Tools
+## 5. Tools
 
-`doctor` also checks local tools. Give the install command for their OS when one is ✗:
+With Docker, the image has every tool, so skip this step. Run locally, `doctor` checks them. Give the install command for their OS when one is ✗:
 - **ffmpeg / ffprobe:** required for audio mixing, video and reference images.
   - Fedora: `sudo dnf install ffmpeg`
   - Debian/Ubuntu: `sudo apt install ffmpeg`
@@ -70,11 +79,10 @@ After each key, re-run `npm run doctor` and show the changed rows.
 
 For commands needing sudo, suggest they type `! <command>` themselves.
 
-## 5. A first run
+## 6. A first run
 
 1. **Free mock run:** `npm run make -- stories/mock.json` runs the whole pipeline with mock models and placeholder art, and writes `runs/mock-story/video/story.mp4` in about a minute. It needs no keys; Kokoro downloads its voice model the first time. It proves the install works.
-2. **Their own story:** if they want to go further, write `stories/<name>.json` with them (see the README's story file section) and run `npm run doctor -- stories/<name>.json`. That says whether this story can run with their keys and names anything missing.
-3. **Produce it:** hand over to the `produce` skill.
+2. **Their own story:** hand over to the **new-story** skill, the production wizard. It shapes their idea and audience into a story file, checks it with `npm run doctor -- stories/<name>.json`, and walks them through making it.
 
 ## Later
 
