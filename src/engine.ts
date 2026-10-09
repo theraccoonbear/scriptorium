@@ -604,9 +604,9 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   if (roles.artdirector && committed.length > 0 && lastCover?.sceneCount !== committed.length) {
     const artRole = roles.artdirector;
     await nonFatal("cover art prompt", async () => {
-      const out = await directCoverArt(artRole, bible, committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
+      const { out, characters } = await directCoverArt(artRole, bible, committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
       if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
-      const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
+      const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt, ...(characters ? { characters } : {}) };
       await log.append("cover_art", cover);
     });
   }
@@ -825,11 +825,26 @@ async function castCheck(role: Role, bible: Bible, log: EventLog, out: RoleOutpu
   }
 }
 
+// The cover's prompt, and who it shows: the cast check (#143) reads the prompt
+// against every character's look, so each one it describes gets their
+// portrait. Picking the most-shown characters instead gave the cover three
+// portraits for a company of ten, and strangers for the rest.
 async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[], appearances: RefAppearances, artStyle?: string) {
   const t0 = Date.now();
   const out = await artDirect(role, { bible, mode: "cover", beats: committed.map((d) => d.beat), appearances, artStyle, previousPrompts });
   recordTiming("artdirector", Date.now() - t0);
-  return out;
+  const cast = Object.entries(appearances.characters).filter(([id, look]) => bible.characters[id] && look).map(([id, look]) => ({ id, look }));
+  if (cast.length === 0) return { out, characters: undefined };
+  try {
+    const checked = await checkShotCast(role, { cast, shots: [{ n: 1, prompt: out.result.prompt }] });
+    const characters = mergeShotCast([], checked.result[1]);
+    if (characters.length) console.error(`[scriptorium]   ${c.dim(`cover cast check: ${characters.join(", ")}`)}`);
+    return { out, characters: characters.length ? characters : undefined };
+  } catch (err) {
+    if (isBudgetError(err)) throw err;
+    console.error(`[scriptorium]   ${c.retry(`cover cast check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
+    return { out, characters: undefined };
+  }
 }
 
 // Re-runs the Art Director over an existing run: references for any character
@@ -893,9 +908,9 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
   }
   onReferences?.(made.map((r) => `${r.kind}:${r.id}`));
   if (committed.length > 0) {
-    const out = await directCoverArt(artRole, replay(events), committed, prompts, refAppearances(log.events), storyArtStyle(log.events));
+    const { out, characters } = await directCoverArt(artRole, replay(events), committed, prompts, refAppearances(log.events), storyArtStyle(log.events));
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover-redo", out);
-    const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt };
+    const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt, ...(characters ? { characters } : {}) };
     await log.append("cover_art", cover);
   }
   return committed.length;
@@ -1007,9 +1022,9 @@ export async function planShots({ config, log, roles, runDir, replan = [], redir
   const committed = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);
   const lastCover = log.events.filter((e) => e.type === "cover_art").at(-1)?.data as CoverArtData | undefined;
   if (committed.length > 0 && (planned > 0 || redirectCover || lastCover?.sceneCount !== committed.length)) {
-    const out = await directCoverArt(artRole, replay(log.events), committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
+    const { out, characters } = await directCoverArt(artRole, replay(log.events), committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
-    await log.append("cover_art", { sceneCount: committed.length, prompt: out.result.prompt } satisfies CoverArtData);
+    await log.append("cover_art", { sceneCount: committed.length, prompt: out.result.prompt, ...(characters ? { characters } : {}) } satisfies CoverArtData);
   }
   return planned;
 }

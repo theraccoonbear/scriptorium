@@ -236,6 +236,9 @@ export interface CoverArtData {
   // Number of committed scenes the cover summarizes; a run extended past this gets a fresh cover.
   sceneCount: number;
   prompt: string;
+  // Who the cover's prompt describes, most prominent first (the cast check):
+  // their portraits go with it, on one contact sheet past three.
+  characters?: string[];
 }
 
 // ---- provider / role plumbing ----
