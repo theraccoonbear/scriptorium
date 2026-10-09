@@ -11,6 +11,8 @@ import { currentAccountant } from "./usage.ts";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 export const BATCH_PRICE_FACTOR = 0.5;
+// Status checks that may fail in a row (network errors) before a run gives up on waiting.
+const MAX_DROPPED_POLLS = 6;
 
 export interface BatchItem { response?: any; error?: string }
 export interface BatchJobs {
@@ -78,9 +80,23 @@ export function geminiBatchJobs(opts: {
       }
       const started = Date.now();
       let wait = opts.pollMs ?? 10000;
+      let dropped = 0;
       for (;;) {
-        const res = await get(`${BASE}/${name}`, { headers: { "x-goog-api-key": key() } });
-        const d = await res.json();
+        // A dropped status check ("fetch failed": a reset socket after a big
+        // upload, a network blip) isn't the job failing — Google keeps working
+        // on it, and bills it. Wait and check again; after several in a row,
+        // stop and leave the job to be resumed by the next run.
+        let res: Awaited<ReturnType<Fetch>>, d: any;
+        try {
+          res = await get(`${BASE}/${name}`, { headers: { "x-goog-api-key": key() } });
+          d = await res.json();
+          dropped = 0;
+        } catch (err) {
+          if (++dropped >= MAX_DROPPED_POLLS) throw new Error(`batch job ${name}: status check failed ${dropped} times (${err instanceof Error ? err.message : String(err)}) — re-run later to resume it`);
+          log(`batch job ${name}: status check failed (${err instanceof Error ? err.message : String(err)}) — checking again`);
+          await sleep(wait);
+          continue;
+        }
         if (!res.ok) throw new Error(`batch status: HTTP ${res.status} ${JSON.stringify(d.error ?? d).slice(0, 200)}`);
         const jobState = String(d.metadata?.state ?? "");
         if (/SUCCEEDED/.test(jobState)) {
