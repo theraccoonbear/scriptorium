@@ -130,3 +130,25 @@ test("a batch too big for one inline job is split into several, results back in 
   // The fake fails each job's second request (key "1"): requests 1 and 3 overall.
   assert.deepEqual(items.map((i) => i.response?.echo.n ?? "error"), [0, "error", 2, "error", 4], "every result in its original place");
 });
+
+test("a dropped status check is retried, not taken as the job failing", async () => {
+  const runDir = await tmp();
+  const api = fakeApi();
+  let drops = 2;
+  const flaky = async (url: string, init?: { method?: string; body?: string }) => {
+    if (init?.method !== "POST" && drops-- > 0) throw new TypeError("fetch failed");
+    return api.fetch(url, init);
+  };
+  const jobs = geminiBatchJobs({ apiKey: "k", stateFile: join(runDir, "jobs.json"), fetch: flaky, sleep: noSleep });
+  const items = await jobs.run("m", "artist", [{ n: 0 }]);
+  assert.equal(api.submitted.length, 1, "submitted once");
+  assert.ok(items[0].response, "the result still arrives");
+  // A network that stays down: the run stops waiting, and the job stays on file to resume.
+  const down = async (url: string, init?: { method?: string; body?: string }) => {
+    if (init?.method !== "POST") throw new TypeError("fetch failed");
+    return api.fetch(url, init);
+  };
+  const stateFile = join(runDir, "jobs2.json");
+  await assert.rejects(geminiBatchJobs({ apiKey: "k", stateFile, fetch: down, sleep: noSleep }).run("m", "artist", [{ n: 9 }]), /re-run later to resume/);
+  assert.equal(Object.keys(JSON.parse(await readFile(stateFile, "utf8"))).length, 1, "kept, to resume");
+});
