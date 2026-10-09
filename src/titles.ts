@@ -171,7 +171,7 @@ export function voiceCredit(id: string, opts: { gemini: boolean; designed?: bool
 
 // Everyone who speaks, in order of first appearance, with their voice; the
 // narrator first and Scriptorium last. Pages hold `perPage` lines.
-export function creditPages(events: StoryEvent[], voices: VoiceMap | undefined, opts: { gemini: boolean; designed?: ReadonlySet<string>; displayNames?: Record<string, string>; perPage?: number }): string[][] {
+export function creditPages(events: StoryEvent[], voices: VoiceMap | undefined, opts: { gemini: boolean; designed?: ReadonlySet<string>; displayNames?: Record<string, string>; perPage?: number; music?: string[] }): string[][] {
   const bible = voicedBible(events);
   const speakers: string[] = [];
   for (const scene of buildScenes(events)) {
@@ -189,6 +189,8 @@ export function creditPages(events: StoryEvent[], voices: VoiceMap | undefined, 
   const perPage = opts.perPage ?? 6;
   const pages: string[][] = [];
   for (let k = 0; k < lines.length; k += perPage) pages.push(lines.slice(k, k + perPage));
+  // The author's music, credited as they wrote it (#174).
+  for (let k = 0; k < (opts.music ?? []).length; k += perPage - 1) pages.push(["Music", ...opts.music!.slice(k, k + perPage - 1)]);
   pages.push(["Written, illustrated and narrated", "with Scriptorium"]);
   return pages;
 }
@@ -283,6 +285,7 @@ export interface PrepareTitlesOptions {
   onNote?: (message: string) => void;
   draftCrawl?: () => Promise<string[]>;  // for "crawl": true — the director's draft (#145)
   rating?: TitleCards["rating"];          // a rated story's card (#88)
+  musicCredits?: string[];                // the author's tracks' credit lines (#174)
 }
 
 export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOptions): Promise<TitleCards> {
@@ -308,7 +311,7 @@ export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOpt
   if (s.credits !== false) {
     const casting = await readJson<{ characters?: Record<string, { designed?: boolean }> }>(join(opts.runDir, "audiobook", "casting.json"));
     const designed = new Set(Object.entries(casting?.characters ?? {}).filter(([, c]) => c.designed).map(([id]) => id));
-    credits = creditPages(events, voices, { gemini, designed, displayNames: gemini ? await libraryDisplayNames() : {} });
+    credits = creditPages(events, voices, { gemini, designed, displayNames: gemini ? await libraryDisplayNames() : {}, ...(opts.musicCredits?.length ? { music: opts.musicCredits } : {}) });
   }
 
   const title = s.opening === false ? undefined : opts.title?.trim() || undefined;

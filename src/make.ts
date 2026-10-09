@@ -33,6 +33,7 @@ import type { StoryConfig, StoryEvent } from "./types.ts";
 import type { CastMember } from "./cast.ts";
 import type { TitleSettings } from "./titles.ts";
 import type { MusicSettings } from "./music.ts";
+import { cuesToMake, sceneCueId, trackSpans } from "./music.ts";
 import { GEMINI_MODES } from "./geminiBatch.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
 
@@ -215,7 +216,8 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     speakerTags: raw.speakerTags,
     audiobook: raw.audiobook?.castingFile ? { ...raw.audiobook, castingFile: at(raw.audiobook.castingFile) } : raw.audiobook ?? {},
     video: raw.video ?? {},
-    ...(raw.music ? { music: raw.music } : {})
+    // The author's tracks' files resolve against the story file (#174).
+    ...(raw.music ? { music: raw.music.tracks ? { ...raw.music, tracks: raw.music.tracks.map((t) => ({ ...t, file: at(t.file) })) } : raw.music } : {})
   };
 }
 
@@ -230,6 +232,18 @@ function checkMusic(path: string, raw: StoryFile) {
   if (m.maxTakes !== undefined && !(Number.isInteger(m.maxTakes) && m.maxTakes > 0)) throw new Error(`${path}: music "maxTakes" must be a positive integer`);
   for (const k of ["style", "model"] as const) {
     if (m[k] !== undefined && typeof m[k] !== "string") throw new Error(`${path}: music "${k}" must be text`);
+  }
+  if (m.generate !== undefined && typeof m.generate !== "boolean") throw new Error(`${path}: music "generate" must be true or false`);
+  if (m.tracks !== undefined) {
+    if (!Array.isArray(m.tracks)) throw new Error(`${path}: music "tracks" must be a list of { file, from, to?, loop?, start?, volume?, credit? }`);
+    m.tracks.forEach((t, i) => {
+      const where = `${path}: music track ${i + 1}`;
+      if (typeof t?.file !== "string" || typeof t.from !== "string") throw new Error(`${where} needs "file" and "from"`);
+      if (!existsSync(resolve(dirname(path), t.file))) throw new Error(`${where}: no file at ${t.file}`);
+      for (const k of ["start", "volume"] as const) if (t[k] !== undefined && typeof t[k] !== "number") throw new Error(`${where}: "${k}" must be a number`);
+      if (t.start !== undefined && t.start < 0) throw new Error(`${where}: "start" can't be negative`);
+    });
+    try { trackSpans(m.tracks); } catch (err) { throw new Error(`${path}: ${(err as Error).message}`); }
   }
 }
 
@@ -389,6 +403,7 @@ const defaultRunners: StepRunners = {
   // Off unless the story file has a "music" block.
   music: async (s) => {
     if (!s.music) { console.error(`[scriptorium] ${c.dim("no music in the story file — skipping")}`); return; }
+    if (s.music.generate === false) { console.error(`[scriptorium] ${c.dim("music: the author's own tracks only — nothing to generate")}`); return; }
     await musicStep(s.runDir, s.config, s.music);
   },
   video: async (s, events) => {
@@ -444,12 +459,21 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     ...(redo.length ? { redo } : {}),
     music: {
       skip: !steps.includes("music") || !story.music,
-      cues: (story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length) + 1,
-      ...readJson<Record<string, { clean?: boolean }>>(join(story.runDir, "music", "cues.json"), (m) => ({ made: Object.values(m).filter((c) => c.clean).length }))
+      // The theme and a cue a scene, less what the author's own tracks cover (#174).
+      ...musicCues(story, events)
     },
     scenesVoiced: existsSync(join(story.runDir, "audiobook")) ? readdirSync(join(story.runDir, "audiobook")).filter((f) => /^scene-\d+\.wav$/.test(f)).length : 0,
     revoiceShare: changedShare(events)
   });
+}
+
+// The cues the music step would make, and how many of those are already made.
+function musicCues(story: ResolvedStory, events: StoryEvent[]): { cues: number; made?: number } {
+  const scenes = story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length;
+  const all = [{ id: "theme" }, ...Array.from({ length: scenes }, (_, i) => ({ id: sceneCueId(i) }))];
+  const wanted = story.music ? cuesToMake(all, story.music) : all;
+  const made = readJson<Record<string, { clean?: boolean }>>(join(story.runDir, "music", "cues.json"), (m) => ({ made: wanted.filter((q) => m[q.id]?.clean).length }));
+  return { cues: wanted.length, ...made };
 }
 
 // The running time for the pitch (#170): each scene's share and the narrator's pace.

@@ -118,6 +118,13 @@ The audiobook and video need no review loop; send a scene MP3 or the video path 
 
 Music is off unless the story file has a `music` block. Pitch it like any paid phase, then send the music reel (`review … music`). Cues with a voice in them are retaken automatically; any cue that never came out clean is listed in the run's output and left out of the mix. The author sets how far the music sits under the narrator with `music.duck` (dB, default 19); changing it only re-mixes, free.
 
+**The author's own music:** ask whether they have any pieces of their own (a friend's, a licensed track) and where each should play. Copy the files into `music/` beside the story file and add them to `music.tracks`, each with `from` and `to`:
+- the part names are `rating`, `opening`, `crawl`, `card N`, `scene N`, `end`, `credits`, `next`;
+- a piece spans every part between `from` and `to`, and loops if it's short;
+- ask how they'd like it credited (`credit`).
+
+Covered parts get no generated cue, and `"generate": false` means no score at all. Laying the tracks happens in the video step and is free, so after adding one, re-run `--only video` and send the film or a clip.
+
 Before the video, check the story file has a `title` (and `subtitle`, and `series` for a chapter); without one, the opening has no text. After it, show the author the scene titles the run printed (from `<run>/video/titles.json`). To change one, edit its `title` there and re-run `--only video`: only that card and the join are redone. `video.titles.narrate` makes a paid TTS call, so pitch it before turning it on.
 
 ## House rules
