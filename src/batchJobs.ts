@@ -46,7 +46,13 @@ export function geminiBatchJobs(opts: {
   };
   // Requests carrying images (an image job's references) quickly pass the inline
   // limit: split into jobs under maxJobBytes, run together, results in order.
-  const run = async (model: string, role: string, requests: unknown[]): Promise<BatchItem[]> => {
+  // Requests go out in a fixed order (by content), not the order they were
+  // gathered in: a re-run that gathers the same requests in another order
+  // resumes the job already running instead of paying for it again.
+  const run = async (model: string, role: string, gathered: unknown[]): Promise<BatchItem[]> => {
+    const hashes = gathered.map((r) => createHash("sha1").update(JSON.stringify(r)).digest("hex"));
+    const order = gathered.map((_, i) => i).sort((a, b) => (hashes[a] < hashes[b] ? -1 : hashes[a] > hashes[b] ? 1 : a - b));
+    const requests = order.map((i) => gathered[i]);
     const limit = opts.maxJobBytes ?? 15 * 1024 * 1024;
     const chunks: unknown[][] = [];
     let size = 0;
@@ -57,7 +63,10 @@ export function geminiBatchJobs(opts: {
       size += bytes;
     }
     if (chunks.length > 1) log(`${requests.length} ${role} requests split into ${chunks.length} batch jobs (inline jobs are capped at 20MB)`);
-    return (await Promise.all(chunks.map((c) => one.run(model, role, c)))).flat();
+    const sorted = (await Promise.all(chunks.map((c) => one.run(model, role, c)))).flat();
+    const out: BatchItem[] = new Array(gathered.length);
+    order.forEach((i, k) => { out[i] = sorted[k]; });
+    return out;
   };
   const one: BatchJobs = {
     async run(model, role, requests) {

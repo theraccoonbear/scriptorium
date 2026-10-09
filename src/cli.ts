@@ -334,22 +334,27 @@ async function main() {
     const [storyFile] = positionals;
     if (!storyFile) throw new Error("usage: cleanup <story.json> [--apply] [--only rounds,previous,samples,sheets,logs] [--keep-last] | cleanup <story.json> --purge");
     const story = await loadStoryFile(storyFile);
+    // Moving or purging files waits for any make, render or edit on the run to finish.
     if (values.purge) {
-      const bytes = await purgeTrash(story.runDir);
+      const bytes = await withRunLock(story.runDir, runLockOptions("cleanup --purge", values["no-wait"]), () => purgeTrash(story.runDir));
       console.error(`[scriptorium] ${c.ok(`emptied ${trashDir(story.runDir)}`)} ${c.dim(`(${(bytes / 1e6).toFixed(1)} MB)`)}`);
       return;
     }
     const only = (values.only ?? "").split(",").map((k) => k.trim()).filter(Boolean);
     const bad = only.filter((k) => !(ALL_KINDS as readonly string[]).includes(k));
     if (bad.length) throw new Error(`--only ${bad.join(",")}: cleanup kinds are ${ALL_KINDS.join(", ")}`);
-    const items = await findRemovable(story.runDir, { ...(only.length ? { kinds: only as CleanupKind[] } : {}), keepLast: values["keep-last"] === true });
-    if (values.apply && items.length) {
-      const dest = await moveToTrash(story.runDir, items);
-      console.log(formatRemovable(items, story.runDir, true));
-      console.error(`[scriptorium] ${c.dim(`in ${dest} — npm run cleanup -- ${storyFile} --purge empties the trash`)}`);
+    const find = () => findRemovable(story.runDir, { ...(only.length ? { kinds: only as CleanupKind[] } : {}), keepLast: values["keep-last"] === true });
+    if (values.apply) {
+      // Found again under the lock: what a run in progress was using may have changed.
+      const moved = await withRunLock(story.runDir, runLockOptions("cleanup --apply", values["no-wait"]), async () => {
+        const items = await find();
+        return { items, dest: items.length ? await moveToTrash(story.runDir, items) : undefined };
+      });
+      console.log(formatRemovable(moved.items, story.runDir, true));
+      if (moved.dest) console.error(`[scriptorium] ${c.dim(`in ${moved.dest} — npm run cleanup -- ${storyFile} --purge empties the trash`)}`);
       return;
     }
-    console.log(formatRemovable(items, story.runDir, false));
+    console.log(formatRemovable(await find(), story.runDir, false));
     return;
   }
 
