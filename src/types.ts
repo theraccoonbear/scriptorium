@@ -356,6 +356,8 @@ export interface StoryConfig {
   pricing?: Record<string, { input: number; output: number; cacheRead?: number; cacheWrite?: number; perRequest?: number }>;
   // The cap, and which kinds of spend count toward it (#148; default production + rework).
   budget?: { usd: number; count?: Array<"production" | "rework" | "dev" | "experiment"> };
+  // The audience rating the story is held to (#88), resolved from the story file's "rating".
+  rating?: import("./ratings.ts").RatingPolicy;
   // Hard stop for a scene that won't settle, even with unlimited attempts. Default 20.
   maxDraftsPerScene?: number;
   // Image rendering for the `art` command; omitted = DEFAULT_ARTIST_CONFIG in src/artist.ts.

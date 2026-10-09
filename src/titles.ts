@@ -47,6 +47,8 @@ export interface TitleCards {
   logo?: string;
   openingArt?: string;
   crawl?: string[];
+  // A rated story's card before the title (#88): the rating, its tagline, why, for whom.
+  rating?: { rating: string; tagline: string; reasons?: string; age?: string; note: string };
 }
 
 // The extras' title logo and text-free 16:9 key art, when the extras step made them.
@@ -278,6 +280,7 @@ export interface PrepareTitlesOptions {
   base?: string;                 // where relative font paths resolve (the story file's folder)
   onNote?: (message: string) => void;
   draftCrawl?: () => Promise<string[]>;  // for "crawl": true — the director's draft (#145)
+  rating?: TitleCards["rating"];          // a rated story's card (#88)
 }
 
 export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOptions): Promise<TitleCards> {
@@ -337,6 +340,7 @@ export async function prepareTitles(events: StoryEvent[], opts: PrepareTitlesOpt
     narration,
     ...(logo ? { logo } : {}),
     ...(openingArt && (logo || crawl.length) ? { openingArt } : {}),
-    ...(crawl.length ? { crawl } : {})
+    ...(crawl.length ? { crawl } : {}),
+    ...(opts.rating ? { rating: opts.rating } : {})
   };
 }

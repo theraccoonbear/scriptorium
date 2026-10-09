@@ -1,3 +1,4 @@
+import { ratingCard, visualLimits } from "./ratings.ts";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { boxArt, drawLogo, exists, renderLogo, SHELF, shelfCover, suppliedLogo, TREATMENTS } from "./titleArt.ts";
 import type { BoxCopy, LogoSettings } from "./titleArt.ts";
@@ -152,7 +153,7 @@ async function castPreviewInner(opts: CastPreviewOptions) {
   const inspector = opts.inspector === undefined ? (artist.inspector ? makeInspector(artist.inspector) : undefined) : opts.inspector ?? undefined;
   const shrink = opts.shrink ?? ffmpegShrink;
   const style = config.artStyle ?? storyArtStyle(log.events);
-  const direction = config.direction?.artist?.trim() || undefined;
+  const direction = artistDirection(config);
   const outDir = join(runDir, "cast", "preview");
   await mkdir(outDir, { recursive: true });
   const results = [];
@@ -223,6 +224,13 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
     const edit = phase.edit?.keys.length ? { keys: phase.edit.keys, edits: Object.fromEntries(phase.edit.keys.map((k) => [k, { note: phase.edit!.note, ...(phase.edit!.source ? { source: phase.edit!.source } : {}), ...(phase.edit!.with?.length ? { with: phase.edit!.with } : {}) }])) } : {};
     return artStepInner(runDir, config, events, force, { approved, ...(phase.only ? { only: phase.only } : {}), ...(phase.shotRedo?.length ? { redoKeys: phase.shotRedo } : {}), ...edit });
   });
+}
+
+// What the image model (and its inspector) is told beyond the art style: the
+// author's art direction, and a rated story's visual limits (#88). A story
+// without either is unchanged, so its images aren't redrawn.
+export function artistDirection(config: StoryConfig): string | undefined {
+  return [config.direction?.artist?.trim(), config.rating ? visualLimits(config.rating) : ""].filter(Boolean).join("\n") || undefined;
 }
 
 // The extras phase (#49): key art (2:3, 16:9, 1:1) and a cast photo, in the
@@ -380,7 +388,7 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
     ...(artist.retakes !== undefined ? { retakes: artist.retakes, retakeAbove: artist.retakeAbove, ...triageCap(runDir, config, events) } : {}),
     referenceSize: artist.referenceSize,
     inspectSize: artist.inspectSize,
-    direction: config.direction?.artist,
+    direction: artistDirection(config),
     force,
     ...lock,
     onProgress: (event) => {
@@ -640,7 +648,7 @@ export interface VideoStepOptions {
   gemini?: boolean;                 // the audiobook spoke with Gemini voices
   geminiModel?: string;             // for the narrated title
   music?: MusicSettings;            // lay the score under the narration
-  config?: StoryConfig;             // for "crawl": true — the director drafts the crawl (#145)
+  config?: StoryConfig;             // for "crawl": true — the director drafts the crawl (#145); a rating's card (#88)
 }
 
 // A draft of the opening crawl (#145), from the author's notes, ending just
@@ -674,7 +682,8 @@ export async function videoStep(runDir: string, events: StoryEvent[], force: boo
     base: opts.base,
     speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}) }),
     onNote: (m) => console.error(`[scriptorium] ${c.dim(m)}`),
-    ...(opts.titles && opts.titles.crawl === true ? { draftCrawl: crawlDrafter(runDir, events, opts) } : {})
+    ...(opts.titles && opts.titles.crawl === true ? { draftCrawl: crawlDrafter(runDir, events, opts) } : {}),
+    ...(opts.config?.rating?.card ? { rating: ratingCard(opts.config.rating) } : {})
   });
   if (titles?.sceneCards) console.error(`[scriptorium] ${c.dim(`scene titles: ${Object.values(titles.sceneTitles).map((t) => t || "—").join(" · ")} (edit ${join(runDir, "video", "titles.json")})`)}`);
   let music;

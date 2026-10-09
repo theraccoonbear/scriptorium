@@ -1,3 +1,5 @@
+import { resolveRating } from "./ratings.ts";
+import type { RatingSetting } from "./ratings.ts";
 import { narratorReads } from "./casting.ts";
 import { runCanonCheck } from "./canon.ts";
 import type { Pronunciations } from "./geminiTts.ts";
@@ -80,6 +82,7 @@ export interface StoryFile {
   };
   direction?: Record<string, string>;  // author direction per creative layer (see DIRECTION_LAYERS)
   budget?: { usd: number; count?: CostKind[] };  // stop before spending more than this on the run (counting these kinds of spend)
+  rating?: RatingSetting;  // hold the story to an audience rating (#88): "PG", or { base, age, forbid, flag, allow, mode, card }
   // How art and audio run: "audio-first" (default: voicing is cheap and listening
   // can send a story back for a rewrite before images are paid for),
   // "art-first", or "parallel" (fastest).
@@ -145,6 +148,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...(raw.artStyle ?? baseConfig.artStyle ? { artStyle: raw.artStyle ?? baseConfig.artStyle } : {}),
     ...(raw.extras ?? baseConfig.extras ? { extras: { ...baseConfig.extras, ...raw.extras } } : {}),
     ...(raw.budget ?? baseConfig.budget ? { budget: raw.budget ?? baseConfig.budget } : {}),
+    ...(raw.rating !== undefined ? { rating: resolveRating(raw.rating, `${path}: "rating"`) } : {}),
     ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
     ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {}),
     ...(raw.critic ?? baseConfig.critic ? { critic: raw.critic ?? baseConfig.critic } : {}),
