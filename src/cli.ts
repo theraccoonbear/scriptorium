@@ -11,7 +11,8 @@ import { replay } from "./bible.ts";
 import { parseVoiceGenders } from "./audiobook.ts";
 import { accounted, artStep, castPreviewStep, audiobookStep, storyStep, videoStep } from "./steps.ts";
 import { formatSummary, parseCostKind, readLedger, setCostKey, summarize } from "./usage.ts";
-import { loadStoryFile, make, planSteps, STEP_ORDERS, storyPitch } from "./make.ts";
+import { loadStoryFile, make, planSteps, runLockOptions, STEP_ORDERS, storyPitch } from "./make.ts";
+import { acquireRunLock, withRunLock } from "./runLock.ts";
 import { readApprovals, setApproval } from "./approvals.ts";
 import { buildReview, REVIEW_KINDS } from "./reviewSheets.ts";
 import { formatReshoot, staleShots } from "./artist.ts";
@@ -244,7 +245,8 @@ async function main() {
       retag: { type: "boolean" },
       after: { type: "string" },
       before: { type: "string" },
-      step: { type: "string" }
+      step: { type: "string" },
+      "no-wait": { type: "boolean" }
     }
   });
 
@@ -364,7 +366,7 @@ async function main() {
       return;
     }
     const skip = (values.skip ?? "").split(",").map((x) => Number(x.trim())).filter((n) => n > 0);
-    const r = await applyCanonFixes({ runDir: story.runDir, ...(values.round ? { round: Number(values.round) } : {}), skip });
+    const r = await withRunLock(story.runDir, runLockOptions("canon --apply", values["no-wait"]), () => applyCanonFixes({ runDir: story.runDir, ...(values.round ? { round: Number(values.round) } : {}), skip }));
     console.error(`[scriptorium] ${c.ok(`${r.applied.length} fix${r.applied.length === 1 ? "" : "es"} applied`)} ${c.dim(`(event log backed up: ${r.backup})`)}`);
     if (r.missing.length) console.error(`[scriptorium] ${c.retry(`${r.missing.length} not applied — the text had already changed: ${r.missing.map((f) => f.n).join(", ")}`)}`);
     if (r.approvedShots.length) console.error(`[scriptorium] ${c.retry(`approved shots whose prompts changed — revoke and redo them: npm run approve -- ${storyFile} ${r.approvedShots.join(" ")} --revoke`)}`);
@@ -376,31 +378,36 @@ async function main() {
     const [storyFile, id] = positionals;
     if (!storyFile || !id) throw new Error('usage: audition <story.json> <speaker id> [--direction "..."] [--voices a,b,c] [--count N] | --pick N [--round NN]');
     const story = await loadStoryFile(storyFile);
-    if ((await readApprovals(story.runDir)).voices.includes(id)) throw new Error(`voice:${id} is approved — revoke it before auditioning (npm run approve -- ${storyFile} voice:${id} --revoke)`);
-    if (values.pick) {
-      const picked = await pickAudition({ storyFile, runDir: story.runDir, id, pick: Number(values.pick), ...(values.round ? { round: Number(values.round) } : {}) });
-      console.error(`[scriptorium] ${c.ok(`${id}: ${picked.voice} (round ${picked.round.name}), pinned in ${storyFile}`)}${picked.vocal ? c.dim(`\n[scriptorium] vocal line on the sheet: ${picked.vocal}`) : ""}`);
-      // Their reel sample in the new voice, and the reel.
-      await make(storyFile, { only: "voices" });
-      const out = await buildReview(story.runDir, "voices");
-      for (const f of out.files) console.log(f);
+    const releaseLock = await acquireRunLock(story.runDir, runLockOptions(`audition ${id}`, values["no-wait"]));
+    try {
+      if ((await readApprovals(story.runDir)).voices.includes(id)) throw new Error(`voice:${id} is approved — revoke it before auditioning (npm run approve -- ${storyFile} voice:${id} --revoke)`);
+      if (values.pick) {
+        const picked = await pickAudition({ storyFile, runDir: story.runDir, id, pick: Number(values.pick), ...(values.round ? { round: Number(values.round) } : {}) });
+        console.error(`[scriptorium] ${c.ok(`${id}: ${picked.voice} (round ${picked.round.name}), pinned in ${storyFile}`)}${picked.vocal ? c.dim(`\n[scriptorium] vocal line on the sheet: ${picked.vocal}`) : ""}`);
+        // Their reel sample in the new voice, and the reel.
+        await make(storyFile, { only: "voices" });
+        const out = await buildReview(story.runDir, "voices");
+        for (const f of out.files) console.log(f);
+        return;
+      }
+      const events = await new EventLog(story.runDir).load();
+      const roles = buildRoleProviders(story.config);
+      const voices = (values.voices ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+      const { round, info } = await accounted(story.runDir, story.config, "voices", () => runAudition({
+        runDir: story.runDir, events, id,
+        speak: geminiSpeaker({ ...(story.audiobook.geminiModel ? { model: story.audiobook.geminiModel } : {}), ...(story.audiobook.pronunciations ? { pronunciations: story.audiobook.pronunciations } : {}) }),
+        ...(values.direction ? { direction: values.direction } : {}),
+        ...(voices.length ? { voices } : {}),
+        ...(values.count ? { count: Number(values.count) } : {}),
+        ...(roles.voicedirector ?? roles.continuist ? { role: (roles.voicedirector ?? roles.continuist)! } : {}),
+        library: () => fetchLibrary(story.audiobook.language ?? "en")
+      }));
+      console.log(join(round.dir, "all.mp3"));
+      console.log(`\n${formatAudition(info, round.number)}`);
       return;
+    } finally {
+      await releaseLock();
     }
-    const events = await new EventLog(story.runDir).load();
-    const roles = buildRoleProviders(story.config);
-    const voices = (values.voices ?? "").split(",").map((v) => v.trim()).filter(Boolean);
-    const { round, info } = await accounted(story.runDir, story.config, "voices", () => runAudition({
-      runDir: story.runDir, events, id,
-      speak: geminiSpeaker({ ...(story.audiobook.geminiModel ? { model: story.audiobook.geminiModel } : {}), ...(story.audiobook.pronunciations ? { pronunciations: story.audiobook.pronunciations } : {}) }),
-      ...(values.direction ? { direction: values.direction } : {}),
-      ...(voices.length ? { voices } : {}),
-      ...(values.count ? { count: Number(values.count) } : {}),
-      ...(roles.voicedirector ?? roles.continuist ? { role: (roles.voicedirector ?? roles.continuist)! } : {}),
-      library: () => fetchLibrary(story.audiobook.language ?? "en")
-    }));
-    console.log(join(round.dir, "all.mp3"));
-    console.log(`\n${formatAudition(info, round.number)}`);
-    return;
   }
 
   if (command === "make") {
@@ -410,7 +417,7 @@ async function main() {
     if (order !== undefined && !(STEP_ORDERS as readonly string[]).includes(order)) throw new Error(`--step-order must be one of ${STEP_ORDERS.join(", ")}`);
     const redo = (values.redo ?? "").split(",").map((r) => r.trim()).filter(Boolean);
     const edit = (values.edit ?? "").split(",").map((r) => r.trim()).filter(Boolean);
-    await make(storyFile, { only: values.only, from: values.from, force: values.force, ...(order ? { stepOrder: order as StepOrder } : {}), ...(redo.length ? { redo } : {}), ...(edit.length ? { edit } : {}), ...(values.source ? { source: values.source } : {}), ...(values.with ? { with: values.with.split(",").map((k) => k.trim()).filter(Boolean) } : {}), ...(values.note ? { notes: values.note } : {}) });
+    await make(storyFile, { ...(values["no-wait"] ? { noWait: true } : {}), only: values.only, from: values.from, force: values.force, ...(order ? { stepOrder: order as StepOrder } : {}), ...(redo.length ? { redo } : {}), ...(edit.length ? { edit } : {}), ...(values.source ? { source: values.source } : {}), ...(values.with ? { with: values.with.split(",").map((k) => k.trim()).filter(Boolean) } : {}), ...(values.note ? { notes: values.note } : {}) });
     return;
   }
 
