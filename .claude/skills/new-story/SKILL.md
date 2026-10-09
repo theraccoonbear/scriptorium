@@ -77,7 +77,7 @@ Write `stories/<slug>.json` for them, show it, and explain each line in one sent
 }
 ```
 
-Leave out what they don't want: no `music` means no score; for a story only, no `audiobook`, `artist` or `video`.
+If they have music of their own (a friend's piece, a licensed track), it goes in `music.tracks`, each over a stretch of the film (the opening, a scene, the credits): see the produce skill. Leave out what they don't want: no `music` means no score; for a story only, no `audiobook`, `artist` or `video`.
 
 **Budget:**
 - Run `npm run pitch -- stories/<slug>.json` and give the total in one line.

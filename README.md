@@ -417,6 +417,28 @@ The video lays the score under the narration. The theme plays under the opening 
 }
 ```
 
+### The author's own music
+
+Bring your own pieces (a friend's, a licensed track, your own recording) and put each over any stretch of the film. A stretch runs `from` one part `to` another: `rating`, `opening`, `crawl`, `card N` (scene N's title card), `scene N`, `end`, `credits`, `next`. A piece carries straight through the parts in its stretch, cards included, without restarting. One shorter than its stretch loops, crossfaded. It's mixed like the score: level-matched to the narrator, ducked under speech, dipped under a narrated title or crawl, and faded in and out.
+
+```jsonc
+"music": {
+  "tracks": [
+    { "file": "../music/fanfare.mp3", "from": "rating", "to": "opening" },
+    { "file": "../music/overture.mp3", "from": "crawl", "credit": "\"Overture\" by a friend" },
+    { "file": "../music/tavern.mp3", "from": "scene 2", "start": 4, "volume": -2 }
+  ],
+  "generate": false   // optional: only your tracks, no generated score
+}
+```
+
+- `to` defaults to `from`.
+- `loop: false` plays a piece once and fades it where it runs out.
+- `start` skips into the file (seconds), and `volume` sets it up or down (dB).
+- `credit` adds a line to a Music page in the credits.
+
+Parts your tracks cover get no generated cue, and the pitch counts only the cues still needed. With `"generate": false`, uncovered parts are silent. Paths resolve beside the story file. A missing file, an unknown part, or two tracks over the same part is caught when the story file is read. Laying the tracks is free and cached in `video/music/`.
+
 `npm run review -- <story.json> music` builds `review/music.mp3`, every cue a second apart, with a legend in `music.txt`. The music director is the config's `musicdirector` role if there is one, else the continuist's model, and it takes author direction (`direction.musicdirector`).
 
 ## Configure

@@ -26,6 +26,140 @@ export interface MusicSettings {
   volume?: number;     // dB up or down for all the music, cards included (default 0)
   model?: string;      // default lyria-3.5
   maxTakes?: number;   // takes before falling back to the 30-second model (default 3)
+  tracks?: AuthorTrack[];  // the author's own music, each over a stretch of the film (#174)
+  generate?: boolean;      // false: only the author's tracks, no generated score
+}
+
+// ---- the author's own tracks (#174) ----
+
+// A piece of the author's, over a stretch of the film: `from` and `to` name
+// parts — "rating", "opening", "crawl", "card N", "scene N", "end",
+// "credits", "next" — and the stretch covers every part between them.
+export interface AuthorTrack {
+  file: string;        // absolute once the story file is read (relative to the story file in it)
+  from: string;
+  to?: string;         // default: from
+  loop?: boolean;      // default true: a short piece repeats to fill its stretch; false: once, then it fades
+  start?: number;      // seconds into the file to begin
+  volume?: number;     // dB up or down, on top of the music's volume
+  credit?: string;     // a line in the credits
+}
+
+// Where a part sits in the film's order, so a stretch is a range of keys.
+const PART_KEYS: Record<string, number> = { rating: 0, opening: 1, crawl: 2, end: 1e6, credits: 1e6 + 1, next: 1e6 + 2 };
+export function partKey(name: string): number {
+  const n = name.trim().toLowerCase();
+  if (n in PART_KEYS) return PART_KEYS[n];
+  const m = /^(card|scene)\s*(\d+)$/.exec(n);
+  if (m && Number(m[2]) >= 1) return 10 + 2 * (Number(m[2]) - 1) + (m[1] === "scene" ? 1 : 0);
+  throw new Error(`unknown part "${name}" — use rating, opening, crawl, card N, scene N, end, credits or next`);
+}
+
+export interface TrackSpan { track: AuthorTrack; index: number; from: number; to: number }
+export function trackSpans(tracks: AuthorTrack[] | undefined): TrackSpan[] {
+  const spans = (tracks ?? []).map((track, index) => {
+    const where = `music track ${index + 1} (${track.file})`;
+    if (!track.file || !track.from) throw new Error(`${where}: needs "file" and "from"`);
+    let from: number, to: number;
+    try { from = partKey(track.from); to = partKey(track.to ?? track.from); } catch (err) { throw new Error(`${where}: ${(err as Error).message}`); }
+    if (to < from) throw new Error(`${where}: "${track.to}" comes before "${track.from}"`);
+    return { track, index, from, to };
+  });
+  for (const a of spans) for (const b of spans) {
+    if (a.index < b.index && a.from <= b.to && b.from <= a.to) throw new Error(`music tracks ${a.index + 1} and ${b.index + 1} both cover the same part`);
+  }
+  return spans;
+}
+
+// What the author's tracks leave the score to make: no bed for a scene they
+// cover, and no theme once they cover both the opening and the ending.
+export function coveredBy(spans: TrackSpan[], key: number): boolean {
+  return spans.some((s) => s.from <= key && key <= s.to);
+}
+export const sceneCovered = (spans: TrackSpan[], index: number) => coveredBy(spans, partKey(`scene ${index + 1}`));
+export const themeCovered = (spans: TrackSpan[]) => coveredBy(spans, PART_KEYS.opening) && coveredBy(spans, PART_KEYS.end);
+export function cuesToMake<T extends { id: string }>(cues: T[], settings: MusicSettings): T[] {
+  if (settings.generate === false) return [];
+  const spans = trackSpans(settings.tracks);
+  return cues.filter((q) => (q.id === "theme" ? !themeCovered(spans) : !/^scene-(\d+)$/.test(q.id) || !sceneCovered(spans, Number(q.id.slice(6)) - 1)));
+}
+
+// One stretch of the film under an author's track: its parts' lengths, and
+// where the voice is in each (a scene's narration, a narrated title's window).
+export interface StretchPart { seconds: number; speech?: string; windows?: Array<[number, number]> }
+export interface LaidStretch { file: string; from: number; to: number }  // parts from..to (timeline indices)
+
+// Lays each author's track over its stretch as one WAV the length of the
+// stretch: looped (crossfaded) or played once, level-matched to the narrator,
+// ducked under every line of speech in it, faded in and out. Cached.
+export async function layStretches(
+  runDir: string,
+  stretches: Array<{ track: AuthorTrack; index: number; from: number; to: number; parts: StretchPart[] }>,
+  opts: { duck: number; volume: number; voiceLufs: number },
+  tools: MusicTools = defaultMusicTools
+): Promise<LaidStretch[]> {
+  const outDir = join(runDir, "video", "music");
+  await mkdir(outDir, { recursive: true });
+  const cacheFile = join(outDir, "tracks.json");
+  let cache: Record<string, string> = {};
+  try { cache = JSON.parse(await readFile(cacheFile, "utf8")); } catch { /* first mix */ }
+  const laid: LaidStretch[] = [];
+  for (const st of stretches) {
+    const seconds = st.parts.reduce((a, p) => a + p.seconds, 0);
+    const rel = `video/music/track-${st.index + 1}-${st.from}.wav`;
+    // Where the voice is, across the stretch.
+    const spans: Array<[number, number]> = [];
+    let at = 0;
+    const speechFiles: string[] = [];
+    for (const p of st.parts) {
+      for (const [a, b] of p.windows ?? []) spans.push([at + a, at + b]);
+      if (p.speech) {
+        speechFiles.push(p.speech);
+        const small = join(outDir, `speech-${createHash("sha1").update(p.speech).digest("hex").slice(0, 10)}.wav`);
+        await tools.ffmpeg(["-y", "-i", join(runDir, p.speech), "-ac", "1", "-ar", "8000", "-c:a", "pcm_s16le", small]);
+        const n = decodeWav(await readFile(small));
+        for (const [a, b] of speechSpans(n.samples, n.sampleRate)) spans.push([at + a, at + b]);
+      }
+      at += p.seconds;
+    }
+    const h = createHash("sha1").update(JSON.stringify({ v: 1, t: st.track, seconds, spans, ...opts }));
+    for (const f of [st.track.file, ...speechFiles.map((x) => join(runDir, x))]) { const s = await stat(f); h.update(`${f}:${s.size}:${s.mtimeMs}`); }
+    const key = h.digest("hex");
+    laid.push({ file: rel, from: st.from, to: st.to });
+    if (cache[rel] === key && await stat(join(runDir, rel)).then(() => true, () => false)) continue;
+    const music = await loudness(tools, st.track.file);
+    const fileSec = Math.max(0.5, (await tools.duration(st.track.file)) - (st.track.start ?? 0));
+    const loop = st.track.loop !== false;
+    const fade = Math.min(2, fileSec / 4);
+    const loops = loop && fileSec < seconds ? Math.ceil((seconds - fade) / Math.max(0.5, fileSec - fade)) : 1;
+    const envFile = join(outDir, `duck-track-${st.index + 1}-${st.from}.wav`);
+    await writeFile(envFile, encodeWav(duckEnvelope(spans, seconds, opts.duck), 1000));
+    const gain = opts.voiceLufs + opts.volume + (st.track.volume ?? 0) - music;
+    const inputs = Array.from({ length: loops }, (_, k) => [...(k === 0 && st.track.start ? ["-ss", String(st.track.start)] : []), "-i", st.track.file]).flat();
+    await tools.ffmpeg(["-y", ...inputs, "-i", envFile, "-filter_complex", trackFilterGraph(loops, seconds, gain, fade, loop ? undefined : fileSec), "-map", "[out]", "-c:a", "pcm_s16le", join(runDir, rel)]);
+    cache[rel] = key;
+    await writeFile(cacheFile, JSON.stringify(cache, null, 2) + "\n", "utf8");
+  }
+  return laid;
+}
+
+// The track's graph: copies crossfaded end to start, cut to the stretch, the
+// level set, a fade in, a fade out at the end (or where a played-once piece
+// runs out), then multiplied by the duck envelope (the last input).
+export function trackFilterGraph(loops: number, seconds: number, gainDb: number, crossfade: number, once?: number): string {
+  const fmt = "aformat=sample_rates=48000:channel_layouts=stereo";
+  const lines: string[] = [];
+  let last = "0:a";
+  for (let k = 1; k < loops; k++) {
+    lines.push(`[${last}][${k}:a]acrossfade=d=${crossfade}[x${k}]`);
+    last = `x${k}`;
+  }
+  const end = once !== undefined ? Math.min(seconds, once) : seconds;
+  const out = Math.min(3, end / 3);
+  lines.push(`[${last}]${fmt},apad=whole_dur=${seconds},atrim=0:${seconds},volume=${gainDb.toFixed(2)}dB,afade=t=in:d=${Math.min(1, seconds / 4)},afade=t=out:st=${Math.max(0, end - out)}:d=${out}[m]`);
+  lines.push(`[${loops}:a]aresample=48000,${fmt}[e]`);
+  lines.push(`[m][e]amultiply,atrim=0:${seconds}[out]`);
+  return lines.join(";");
 }
 
 export const MUSIC_DEFAULTS = { duck: 19, volume: 0, model: "lyria-3.5", fallbackModel: "lyria-3-clip-preview", maxTakes: 3 } as const;
@@ -288,6 +422,10 @@ export interface MusicMix {
   theme?: string;                 // relative to the run dir
   beds: Record<number, string>;   // scene index -> bed WAV
   duck: number;
+  volume?: number;
+  voiceLufs?: number;             // the narrator's average loudness, for the author's tracks
+  tracks?: AuthorTrack[];         // the author's own, laid over their stretches by the video step (#174)
+  stretches?: LaidStretch[];      // ...once laid: one WAV per stretch, by timeline part
 }
 
 // Builds what the video lays under the narration (in video/music/), measured
@@ -312,10 +450,11 @@ export async function prepareMusic(runDir: string, scenes: Array<{ index: number
 
   const voiceLevels: number[] = [];
   const beds: Record<number, string> = {};
+  const spans = trackSpans(settings.tracks);
   for (const s of scenes) {
     const voice = await loudness(tools, join(runDir, s.audio));
     voiceLevels.push(voice);
-    const cue = index[sceneCueId(s.index)];
+    const cue = settings.generate === false || sceneCovered(spans, s.index) ? undefined : index[sceneCueId(s.index)];
     if (!cue?.clean) continue;
     const rel = `video/music/bed-${String(s.index + 1).padStart(2, "0")}.wav`;
     const seconds = Math.ceil(s.seconds + 3);
@@ -341,9 +480,9 @@ export async function prepareMusic(runDir: string, scenes: Array<{ index: number
   }
 
   let theme: string | undefined;
-  const t = index.theme;
-  if (t?.clean && voiceLevels.length) {
-    const avg = voiceLevels.reduce((a, b) => a + b, 0) / voiceLevels.length;
+  const t = settings.generate === false || themeCovered(spans) ? undefined : index.theme;
+  const avg = voiceLevels.length ? voiceLevels.reduce((a, b) => a + b, 0) / voiceLevels.length : undefined;
+  if (t?.clean && avg !== undefined) {
     theme = "video/music/theme.wav";
     const key = await keyOf([t.file], { volume, avg: avg.toFixed(1) });
     if (!(await fresh(theme, key))) {
@@ -353,8 +492,9 @@ export async function prepareMusic(runDir: string, scenes: Array<{ index: number
       await writeFile(cacheFile, JSON.stringify(cache, null, 2) + "\n", "utf8");
     }
   }
-  if (!theme && Object.keys(beds).length === 0) return undefined;
-  return { theme, beds, duck };
+  const tracks = settings.tracks?.length && avg !== undefined ? settings.tracks : undefined;
+  if (!theme && Object.keys(beds).length === 0 && !tracks) return undefined;
+  return { theme, beds, duck, ...(tracks ? { tracks, volume, voiceLufs: avg } : {}) };
 }
 
 // Seconds of each scene's narration, from the audiobook's timings (if made yet).

@@ -8,7 +8,8 @@ import type { SceneTiming } from "./audiobook.ts";
 import type { ArtManifest } from "./artist.ts";
 import { decodeWav } from "./geminiTts.ts";
 import { romanNumeral } from "./titles.ts";
-import type { MusicMix } from "./music.ts";
+import { layStretches, partKey, trackSpans } from "./music.ts";
+import type { MusicMix, StretchPart } from "./music.ts";
 import type { TitleCards } from "./titles.ts";
 import type { SceneCommittedData, StoryEvent } from "./types.ts";
 
@@ -466,16 +467,53 @@ export function audioFilterGraph(timeline: Timeline): string {
   return lines.join(";\n");
 }
 
+// Where each part sits in the film's order (music.ts partKey): a gap stands
+// where the next scene's card would.
+export function timelinePartKey(timeline: Timeline, part: TimelinePart): number {
+  const n = (k: number | undefined) => (timeline.scenes[k ?? 0]?.index ?? 0) + 1;
+  switch (part.kind) {
+    case "rating": return partKey("rating");
+    case "intro": return partKey("opening");
+    case "crawl": return partKey("crawl");
+    case "card": case "gap": return partKey(`card ${n(part.scene)}`);
+    case "scene": return partKey(`scene ${n(part.scene)}`);
+    default: return partKey(part.kind);
+  }
+}
+
+// The author's tracks against this timeline: the parts each one covers, with
+// where the voice is in each (a scene's narration, the narrated title and crawl).
+export function stretchPlan(timeline: Timeline): { stretches: Array<{ track: NonNullable<MusicMix["tracks"]>[number]; index: number; from: number; to: number; parts: StretchPart[] }>; unused: string[] } {
+  const keys = timeline.parts.map((p) => timelinePartKey(timeline, p));
+  const stretches = [];
+  const unused: string[] = [];
+  for (const span of trackSpans(timeline.music?.tracks)) {
+    const idx = keys.map((k, i) => (span.from <= k && k <= span.to ? i : -1)).filter((i) => i >= 0);
+    if (idx.length === 0) { unused.push(`music track ${span.index + 1} (${span.track.from}${span.track.to ? `–${span.track.to}` : ""}) covers no part of this film — left out`); continue; }
+    const parts: StretchPart[] = idx.map((i) => {
+      const part = timeline.parts[i];
+      const seconds = sec(part.frames);
+      if (part.kind === "scene") return { seconds, speech: timeline.scenes[part.scene!].audio };
+      if (part.kind === "intro" && timeline.narration && timeline.narrationSec) return { seconds, windows: [[NARRATION_AT, NARRATION_AT + timeline.narrationSec]] };
+      if (part.kind === "crawl" && timeline.crawlNarration && timeline.crawlNarrationSec) return { seconds, windows: [[CRAWL_NARRATION_AT, CRAWL_NARRATION_AT + timeline.crawlNarrationSec]] };
+      return { seconds };
+    });
+    stretches.push({ track: span.track, index: span.index, from: idx[0], to: idx.at(-1)!, parts });
+  }
+  return { stretches, unused };
+}
+
 // The score's input files, after the scenes' WAVs and the narrated title: the
 // theme under the opening, the theme again under the closing cards, then each
 // scene's bed in order.
-export function musicInputs(timeline: Timeline): Array<{ file: string; use: "intro" | "closing" | number }> {
+export function musicInputs(timeline: Timeline): Array<{ file: string; use: "intro" | "closing" | number | `stretch${number}` }> {
   const m = timeline.music;
   if (!m) return [];
-  const out: Array<{ file: string; use: "intro" | "closing" | number }> = [];
+  const out: Array<{ file: string; use: "intro" | "closing" | number | `stretch${number}` }> = [];
   if (m.theme && timeline.parts.some((p) => p.kind === "intro")) out.push({ file: m.theme, use: "intro" });
   if (m.theme && timeline.parts.some((p) => CLOSING.has(p.kind))) out.push({ file: m.theme, use: "closing" });
   timeline.scenes.forEach((s, k) => { if (m.beds[s.index]) out.push({ file: m.beds[s.index], use: k }); });
+  (m.stretches ?? []).forEach((st, k) => out.push({ file: st.file, use: `stretch${k}` }));
   return out;
 }
 
@@ -487,7 +525,7 @@ const CLOSING = new Set<PartKind>(["end", "credits", "next"]);
 // cards, and the theme again under the ending and credits.
 function musicGraph(timeline: Timeline, inputs: ReturnType<typeof musicInputs>, first: number): string[] {
   const fmt = "aformat=sample_rates=48000:channel_layouts=stereo";
-  const at = (use: "intro" | "closing" | number) => {
+  const at = (use: "intro" | "closing" | number | `stretch${number}`) => {
     const k = inputs.findIndex((i) => i.use === use);
     return k === -1 ? undefined : first + k;
   };
@@ -495,13 +533,23 @@ function musicGraph(timeline: Timeline, inputs: ReturnType<typeof musicInputs>, 
   const labels: string[] = [];
   let k = 0;
   const parts = timeline.parts;
+  const stretches = timeline.music?.stretches ?? [];
   while (k < parts.length) {
     const part = parts[k];
     const label = `m${k}`;
+    // An author's track (#174): laid over its whole stretch already.
+    const st = stretches.findIndex((x) => x.from === k);
+    if (st !== -1) {
+      const d = sec(parts.slice(k, stretches[st].to + 1).reduce((a, p) => a + p.frames, 0));
+      lines.push(`[${at(`stretch${st}`)}:a]aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur=${d},atrim=end=${d}[${label}]`);
+      labels.push(`[${label}]`);
+      k = stretches[st].to + 1;
+      continue;
+    }
     // Consecutive closing cards share one stretch of the theme.
     if (CLOSING.has(part.kind)) {
       let frames = 0;
-      while (k < parts.length && CLOSING.has(parts[k].kind)) frames += parts[k++].frames;
+      while (k < parts.length && CLOSING.has(parts[k].kind) && (frames === 0 || !stretches.some((x) => x.from === k))) frames += parts[k++].frames;
       const d = sec(frames);
       const input = at("closing");
       lines.push(input === undefined
@@ -512,7 +560,7 @@ function musicGraph(timeline: Timeline, inputs: ReturnType<typeof musicInputs>, 
     }
     // The opening's crawl shares the theme with the title: one stretch of it.
     let frames = part.frames;
-    if (part.kind === "intro") while (parts[k + 1]?.kind === "crawl") frames += parts[++k].frames;
+    if (part.kind === "intro") while (parts[k + 1]?.kind === "crawl" && !stretches.some((x) => x.from === k + 1)) frames += parts[++k].frames;
     const d = sec(frames);
     const input = part.kind === "intro" ? at("intro") : part.kind === "scene" ? at(part.scene!) : undefined;
     if (input === undefined) lines.push(`anullsrc=r=48000:cl=stereo,atrim=end=${d}[${label}]`);
@@ -711,6 +759,12 @@ export async function renderVideo(events: StoryEvent[], opts: RenderOptions): Pr
     ? await readFile(join(runDir, opts.titles.crawlNarration)).then((b) => { const w = decodeWav(b); return w.samples.length / w.sampleRate; }, () => undefined)
     : undefined;
   const timeline = buildTimeline(manifest, timings, { ...opts, narrationSec, ...(crawlNarrationSec ? { crawlNarrationSec } : {}) });
+  // The author's own tracks (#174), each laid over its stretch of the film.
+  if (timeline.music?.tracks?.length && timeline.music.voiceLufs !== undefined) {
+    const plan = stretchPlan(timeline);
+    for (const w of plan.unused) timeline.warnings.push(w);
+    timeline.music = { ...timeline.music, stretches: await layStretches(runDir, plan.stretches, { duck: timeline.music.duck, volume: timeline.music.volume ?? 0, voiceLufs: timeline.music.voiceLufs }) };
+  }
   for (const w of timeline.warnings) emit({ type: "warning", message: w });
   await writeFile(join(outDir, "timeline.json"), JSON.stringify(timeline, null, 2) + "\n", "utf8");
 

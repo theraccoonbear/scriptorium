@@ -18,7 +18,7 @@ import { lineCounts, needAuditions, renderVoiceSamples } from "./voiceSamples.ts
 import { generateAudiobook, voicedBible, writeVoiceMap } from "./audiobook.ts";
 import { renderVideo } from "./video.ts";
 import { prepareTitles } from "./titles.ts";
-import { cueSheetFor, cuesFromSheet, generateCues, geminiVoiceCheck, lyriaComposer, MUSIC_DEFAULTS, prepareMusic, sceneSeconds } from "./music.ts";
+import { cueSheetFor, cuesFromSheet, cuesToMake, generateCues, geminiVoiceCheck, lyriaComposer, MUSIC_DEFAULTS, prepareMusic, sceneSeconds } from "./music.ts";
 import type { Compose, MusicSettings, VoiceCheck } from "./music.ts";
 import type { TitleSettings } from "./titles.ts";
 import type { EncoderChoice } from "./video.ts";
@@ -638,7 +638,8 @@ export async function musicStep(runDir: string, config: StoryConfig, settings: M
     const lengths = await sceneSeconds(runDir);
     const { sheet, made } = await cueSheetFor(log, roles.musicdirector ?? roles.continuist, settings, lengths);
     console.error(`[scriptorium] ${c.dim(`${made ? "cue sheet written" : "cue sheet unchanged"} — sound: ${sheet.style}`)}`);
-    const cues = cuesFromSheet(sheet, lengths);
+    // The author's own tracks (#174) stand in for the cues they cover.
+    const cues = cuesToMake(cuesFromSheet(sheet, lengths), settings);
     const index = await generateCues(runDir, cues, {
       compose: opts.compose ?? lyriaComposer(),
       check: opts.check ?? geminiVoiceCheck(),
@@ -703,7 +704,8 @@ export async function videoStep(runDir: string, events: StoryEvent[], force: boo
     speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}) }),
     onNote: (m) => console.error(`[scriptorium] ${c.dim(m)}`),
     ...(opts.titles && opts.titles.crawl === true ? { draftCrawl: crawlDrafter(runDir, events, opts) } : {}),
-    ...(opts.config?.rating?.card ? { rating: ratingCard(opts.config.rating) } : {})
+    ...(opts.config?.rating?.card ? { rating: ratingCard(opts.config.rating) } : {}),
+    ...(opts.music?.tracks?.some((t) => t.credit) ? { musicCredits: opts.music.tracks.map((t) => t.credit?.trim()).filter((x): x is string => Boolean(x)) } : {})
   });
   if (titles?.sceneCards) console.error(`[scriptorium] ${c.dim(`scene titles: ${Object.values(titles.sceneTitles).map((t) => t || "—").join(" · ")} (edit ${join(runDir, "video", "titles.json")})`)}`);
   let music;
