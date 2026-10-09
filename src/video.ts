@@ -283,7 +283,11 @@ export interface CardText { text: string; font: string; size: number; y: number;
 // `art`: the image behind the card (default the cover); `logo`: the title logo
 // (alpha) over it; `crawl`: text scrolling up the frame for the card's length.
 // `box`: an outlined panel (the rating card's frame), in 1920×1080 pixels.
-export interface CardSpec { cover: boolean; texts: CardText[]; art?: string; logo?: string; crawl?: { text: string; font: string; size: number }; box?: { x: number; y: number; w: number; h: number } }
+// `background`: a colour other than black (the rating card's green).
+export interface CardSpec { cover: boolean; texts: CardText[]; art?: string; logo?: string; crawl?: { text: string; font: string; size: number }; box?: { x: number; y: number; w: number; h: number }; background?: string }
+
+// The rating card's green: the familiar look of a film's rating screen, its own design.
+export const RATING_GREEN = "0x1B5E33";
 
 // The crawl reads at an easy pace, ~2.5 words a second, with time to settle in.
 export function crawlSec(paragraphs: string[]): number {
@@ -353,7 +357,7 @@ export function cardSpec(part: TimelinePart, timeline: Timeline, titles: TitleCa
         ...(r.age ? [line(r.age, false, 42, 720, 1.1)] : []),
         line(r.note, false, 26, 960, 1.3)
       ];
-      return { cover: false, texts, box: { x: 760, y: 230, w: 400, h: 200 } };
+      return { cover: false, texts, box: { x: 760, y: 230, w: 400, h: 200 }, background: RATING_GREEN };
     }
     case "crawl":
       return { cover: Boolean(titles.openingArt ?? timeline.cover), texts: [], ...(titles.openingArt ? { art: titles.openingArt } : {}), crawl: { text: wrapCrawl(titles.crawl ?? []), font: titles.font, size: 58 } };
@@ -394,7 +398,7 @@ export function cardFilterGraph(spec: CardSpec, frames: number, textFile: (text:
   const dim = spec.crawl ? 0.62 : spec.logo ? 0.2 : spec.texts.length ? 0.4 : 0;
   let base = spec.cover
     ? `[0:v]${kenBurnsFilter("zoom_in", frames)}${dim ? `,drawbox=x=0:y=0:w=iw:h=ih:color=black@${dim}:t=fill` : ""}`
-    : `color=black:s=${WIDTH}x${HEIGHT}:r=${FPS}:d=${len},format=yuv420p`;
+    : `color=${spec.background ?? "black"}:s=${WIDTH}x${HEIGHT}:r=${FPS}:d=${len},format=yuv420p`;
   // The logo fades in and settles, then fades before the card does.
   if (spec.logo) {
     const logoIn = spec.cover ? 1 : 0;

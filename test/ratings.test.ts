@@ -97,7 +97,9 @@ test("the rating card opens the film: the rating in a frame, its tagline, why, f
   assert.deepEqual(tl.parts.slice(0, 2).map((p) => p.kind), ["rating", "intro"]);
   const spec = cardSpec(tl.parts[0], tl, titles);
   assert.deepEqual(spec.texts.map((t) => t.text), ["PG", "Parental guidance suggested", "Rated PG for mild peril, rude humor", "Written for ages 8 and up", "Rated by the author: not an MPA or broadcaster rating"]);
-  assert.match(cardFilterGraph(spec, tl.parts[0].frames, (t) => `/${t.length}`), /drawbox=x=760:y=230:w=400:h=200:color=0xF2E8D5:t=6/);
+  const graph = cardFilterGraph(spec, tl.parts[0].frames, (t) => `/${t.length}`);
+  assert.match(graph, /drawbox=x=760:y=230:w=400:h=200:color=0xF2E8D5:t=6/);
+  assert.match(graph, /^color=0x1B5E33:/, "on the rating screen's familiar green");
 });
 
 test("the report lists the plan check and each scene", () => {

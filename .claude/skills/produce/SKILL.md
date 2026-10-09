@@ -36,6 +36,20 @@ You are the interface to Scriptorium's pipeline. The author reviews and signs of
 
 Send the author only files from `review/` or the newest round, always with the legend. They're often on their phone, so don't just paste paths. **Never improvise review files**: no hand-made montages, preview folders, scratch scripts or share lists. If something the author needs to see isn't covered, say so and propose adding it to the pipeline.
 
+## Before phase 0: who is it for?
+
+Ask the author who the story is for **before anything is written**. A rating changes how every scene is written, so it can't be bolted on afterwards.
+- **For an audience** (a child's age, or a rating: G, PG, PG-13, R, NC-17, or TV-Y … TV-MA), add a `rating` to the story file:
+  - `"rating": "PG"`, or
+  - `{ "base": "PG", "age": 8, "forbid": […], "flag": […], "allow": […] }`.
+
+  Ask what to **forbid** outright (fears, topics the family avoids), what to **flag** for parents, and what to **allow** above the rating.
+- **The film opens on a rating card** (green, "rated by the author") unless `"card": false`.
+- **The story check comes first:** the first `--only story` run checks the premise and plan against the rating before writing a word.
+  - **Refused** ("can't be told at that rating"): the premise itself is past the rating. Say so plainly and offer a different rating or a gentler premise. Never look for a way around it.
+  - **A list of plan conflicts:** go through it item by item with the author. For each, add it to `allow`, raise the rating, soften the plan, or set `acceptPlan` so the censor softens it scene by scene.
+- **After writing,** show the author `<run>/rating.md`: what the censor changed in each scene and what a parent should know. The censor is a hard block, so a scene that keeps failing stops the run. Read its notes with the author rather than retrying blindly.
+
 ## Before every paid phase: the pitch
 
 Run `npm run pitch -- <story.json> --only <phase>` and tell the author, in a line or two, what it will make and cost, and the budget left (`story.budget.usd` in the story file). Wait for a yes. If the estimate exceeds the budget, say so and offer to raise it — never raise it yourself.
