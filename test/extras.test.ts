@@ -94,6 +94,12 @@ test("the extras get their own contact sheet, and the pitch counts four images u
   const before = pitch({ events: events.filter((e) => e.type !== "extras_art"), scenes: 1, art: { extrasOnly: true } });
   assert.equal(before.images.shots, 4);
   assert.equal(before.images.references, 0);
+  // Rendered for their prompts: nothing to do, unless some are redone.
+  const done = buildArtJobs(events).filter((j) => j.key.startsWith("extra-"));
+  const artManifest = Object.fromEntries(done.map((j) => [j.key, { prompt: j.prompt }]));
+  assert.equal(pitch({ events, scenes: 1, art: { extrasOnly: true }, artManifest }).images.shots, 0);
+  assert.equal(pitch({ events, scenes: 1, art: { extrasOnly: true }, artManifest, redo: ["extra-keyart-2x3", "extra-keyart-16x9"] }).images.shots, 2, "a redo of two key-art shapes pitches two");
+  assert.equal(pitch({ events, scenes: 1, art: { extrasOnly: true }, artManifest, redo: ["extras"] }).images.shots, 4);
 });
 
 test("the extras render only in their phase, and can override the story's look", async () => {
