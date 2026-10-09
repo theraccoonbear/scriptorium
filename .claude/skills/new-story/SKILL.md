@@ -27,7 +27,13 @@ Then ask: **story only, an illustrated audiobook, or the full film?** That decid
 
 ## 1. Setup
 
-Run `npm run doctor`. If keys or tools are missing, follow the **setup** skill: it explains which keys to get and checks them. Come back here when doctor is green for what they want to make.
+Follow the **setup** skill, which decides **how it runs**:
+- **Locally,** if Node, ffmpeg and ImageMagick are installed.
+- **Through Docker,** which is the only thing they need to install otherwise.
+
+It then gets their API keys and checks them with `doctor`. Come back here when doctor is green for what they want to make.
+
+**With Docker, translate every command below:** `npm run <command> -- <args>` → `docker compose run --rm scriptorium <command> <args>`. Long jobs run the same way in the background.
 
 ## 2. The idea
 
@@ -132,5 +138,6 @@ When a phase is fully approved, `npm run cleanup -- <story>` shows what can be c
 - **Their notes are canon.** Report where the story drifts from them; never quietly change their plan.
 - **Approved work is locked.** To change it, revoke first, and tell them you're doing so.
 - **Long jobs run in the background.** Tell them what's running and roughly how long ("a few minutes in the image queue"), and stay available to talk.
-- **Everything goes in the run folder**, `runs/_scratch/` or `notes/`. Never write to `/tmp`.
+- **Everything goes in the run folder**, `runs/_scratch/` or `notes/`. Never write to `/tmp`; with Docker, only this folder is shared with the container.
+- **One way of running.** Docker or local, decided at setup, and every command uses it.
 - **A refusal is final** (a story that can't be told at its rating). Explain it, and offer a different rating or premise.

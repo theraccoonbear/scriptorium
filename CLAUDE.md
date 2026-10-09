@@ -7,6 +7,8 @@ Scriptorium turns an idea into a story, an illustrated audiobook and a film. Mos
 - **A story already under way** ("what's next?", reviewing pictures or voices): the **produce** skill.
 - **Changing Scriptorium's code:** read `AGENTS.md` first.
 
+**Docker is all a newcomer needs to install** (Node, ffmpeg and ImageMagick are in the image). With Docker, `npm run <command> -- <args>` becomes `docker compose run --rm scriptorium <command> <args>`; the setup skill decides which way to run.
+
 Two things always hold, whoever you're helping:
 - **Never spend money without a pitch and a yes.** Run `npm run pitch -- <story.json>` and say the cost.
 - **The author's notes and approvals are canon.** Report drift; don't quietly change them.
