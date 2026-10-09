@@ -8,7 +8,8 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { combineContexts, contextFile } from "./context.ts";
 import { EventLog } from "./eventlog.ts";
 import { buildRoleProviders, postJson, requireKey } from "./providers.ts";
-import { planExtras, planReferences, planShots, runStory } from "./engine.ts";
+import { planExtras, planReferences, planShots, planArc, runStory } from "./engine.ts";
+import { WORDS_PER_MINUTE, lengthReport, measuredPace, resolveLength, sceneBudgets } from "./length.ts";
 import { RenderStatus } from "./renderStatus.ts";
 import { readApprovals } from "./approvals.ts";
 import { syncCharacterSheet } from "./characterSheet.ts";
@@ -111,7 +112,26 @@ async function storyStepInner(opts: StoryStepOptions): Promise<{ log: EventLog; 
       console.log(`${c.ok(`scene ${s.index + 1} committed`)} ${c.dim(`(tension ${s.tension}, attempts ${s.attempts})`)}`);
     }
   });
+  for (const line of lengthLines(config, log.events, bible, opts.scenes ?? config.scenes, runDir)) console.log(line);
   return { log, bible };
+}
+
+// Scene by scene, how long the story runs against its budget (#170).
+export function lengthLines(config: StoryConfig, events: StoryEvent[], bible: Bible, scenes: number | undefined, runDir?: string): string[] {
+  const total = scenes ?? events.filter((e) => e.type === "scene_committed").length;
+  if (total === 0) return [];
+  const measuredWpm = runDir ? measuredPace(runDir, events) : undefined;
+  const len = config.length ? resolveLength(config.length, { scenes: total, ...(measuredWpm ? { measuredWpm } : {}) }) : undefined;
+  const wpm = len?.wordsPerMinute ?? measuredWpm ?? WORDS_PER_MINUTE;
+  const budgets = config.sceneWords ? Array.from({ length: total }, () => config.sceneWords!) : len ? sceneBudgets(len.totalWords, planArc(total, config.tension, bible.arc)) : undefined;
+  const report = lengthReport(events, budgets, wpm);
+  if (report.length === 0) return [];
+  const n = (x: number) => x.toLocaleString("en-US");
+  const minutes = report.reduce((a, r) => a + r.minutes, 0);
+  return [
+    ...report.map((r) => `  scene ${r.scene}: ${n(r.words)} words, ~${r.minutes.toFixed(1)} min${r.budget ? ` (budget ${n(r.budget.min)}-${n(r.budget.max)})` : ""}${r.off ? ` ${c.retry(r.off === "long" ? "— long" : "— short")}` : ""}`),
+    `length: ~${Math.round(minutes)} min read aloud${len ? ` (asked ${len.minutes})` : ""}`
+  ];
 }
 
 // Describes the cast from their photos (once; again only when a member's

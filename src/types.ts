@@ -327,6 +327,7 @@ export interface StoryConfig {
   maxRevisions?: number;
   overdueAfter?: number;
   sceneWords?: WordBudget;
+  length?: import("./length.ts").LengthSetting;  // a running time (#170): { minutes, scenes?, wordsPerMinute?, fit? }
   providers: Record<string, ProviderSpec>;
   roles: Record<string, RoleSpec>;
   premise?: string;

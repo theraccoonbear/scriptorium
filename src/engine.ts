@@ -6,7 +6,7 @@ import type { RatingConflict } from "./roles.ts";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import type { ArtDirection } from "./roles.ts";
-import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect, checkShotCast, mergeShotCast, blockGroupPicture } from "./roles.ts";
+import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect, checkShotCast, mergeShotCast, blockGroupPicture, checkLengthFit } from "./roles.ts";
 import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
@@ -35,6 +35,8 @@ import type {
   WorldOutput
 } from "./types.ts";
 import { CRITIC_MODES } from "./types.ts";
+import { fitMessage, measuredPace, overBudget, resolveLength, sceneBudgets, tooLong, tooThin, underBudget, wordCount } from "./length.ts";
+import type { LengthFit } from "./length.ts";
 import { castCharacters } from "./cast.ts";
 
 // The fallback arc, used only where neither the author nor the creator set a
@@ -131,7 +133,12 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   if (total === undefined) throw new Error("scenes must be set via config or --scenes");
   const overdueAfter = config.overdueAfter ?? 3;
   // Scene word band: writer stays inside it; critic flags >2x as blocking PACE.
-  const sceneWords = config.sceneWords ?? { min: 1200, max: 1800 };
+  // A running time (#170) sets it instead, each scene's share weighted by the
+  // arc; an explicit sceneWords still wins.
+  const length = config.length ? resolveLength(config.length, { scenes: total, ...(runDir ? { measuredWpm: measuredPace(runDir, log.events) } : {}) }) : undefined;
+  const wordsFor = (i: number, arc?: ReadonlyArray<number | null>) =>
+    config.sceneWords ?? (length ? sceneBudgets(length.totalWords, planArc(total, config.tension, arc ?? bible.arc))[i] : { min: 1200, max: 1800 });
+  let sceneWords = wordsFor(bible.sceneCount);
   // maxAttempts = total drafts allowed. Infinity = unbounded until both reviewers approve.
   const defaultAttempts = (config.maxRevisions ?? 2) + 1;
   const maxAttempts = maxAttemptsOverride ?? defaultAttempts;
@@ -208,6 +215,30 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
     console.error(`[scriptorium] ${c.ok(`rating ${rating.label}: ${check.conflicts.length ? `${check.conflicts.length} plan item${check.conflicts.length === 1 ? "" : "s"} past the rating — accepted; the censor softens them` : "the story fits"}`)}`);
   }
 
+  // The plan against its running time (#170), once, before anything is written:
+  // a plan that needs far more time than it's given stops here with the
+  // options (stretch, cut, split, or compress), never quietly crammed in.
+  let lengthNote: string | undefined;
+  if (length && length.fit !== "off" && storyText && bible.sceneCount === 0) {
+    const source = createHash("sha1").update(JSON.stringify({ story: storyText, minutes: length.minutes, scenes: length.scenes })).digest("hex");
+    let fit = log.events.filter((e) => e.type === "length_check").map((e) => e.data as LengthFit & { source: string }).find((d) => d.source === source);
+    if (!fit) {
+      const out = await checkLengthFit(roles.editor ?? roles.writer ?? roles.director, { story: storyText, minutes: length.minutes, scenes: length.scenes, words: length.totalWords });
+      if (runDir) await writeRoleOutput(runDir, ++seq, "lengthfit", out);
+      fit = { source, ...out.result };
+      await log.append("length_check", fit);
+    }
+    if (runDir) await writeFile(join(runDir, "length.md"), lengthMarkdown(fit, length));
+    if (tooLong(fit, length.minutes)) {
+      if (length.fit === "check") throw new Error(`${fitMessage(fit, length)}${runDir ? `\n(also in ${join(runDir, "length.md")})` : ""}`);
+      lengthNote = (fit.cuts.length ? fit.cuts : fit.items).map((x) => x.item).join("; ");
+      console.error(`[scriptorium] ${c.retry(`length: the plan wants ~${Math.round(fit.needMinutes)} min for ${length.minutes} — compressing, as the author chose`)}`);
+    } else {
+      if (tooThin(fit, length.minutes)) console.error(`[scriptorium] ${c.retry(`length: the plan needs only ~${Math.round(fit.needMinutes)} of ${length.minutes} minutes — the scenes will have room to breathe, or ask for less`)}`);
+      else console.error(`[scriptorium] ${c.ok(`length: the plan fits ${length.minutes} minutes (~${Math.round(fit.needMinutes)} needed)`)}`);
+    }
+  }
+
   // Collect prose from committed scenes for cross-scene continuity checks.
   const previousScenes = log.events
     .filter((e) => e.type === "scene_committed")
@@ -219,6 +250,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
     // Scene 1's tension comes from the arc the creator is about to plan (unless the author pinned it).
     const creating = i === 0 && bible.sceneCount === 0;
     let tension = planArc(total, config.tension, bible.arc)[i];
+    sceneWords = wordsFor(i);
     const turn = config.turns?.[i]?.trim() || undefined;
     const earlierTurns = storyTurns(log.events);
     // With an author's plan, setups are paid where the plan pays them: an
@@ -291,17 +323,18 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         gen: async (issues, fresh, generation) => {
           t0 = Date.now();
           if (i === 0 && bible.sceneCount === 0) {
-            const out = await createAndDirect(roles.director, { sceneIndex: i, total, arc: config.tension, turn, world, premise: config.premise || undefined, context: config.context, issues, fresh });
+            const out = await createAndDirect(roles.director, { sceneIndex: i, total, arc: config.tension, turn, world, premise: config.premise || undefined, context: config.context, issues, fresh, ...(length ? { sceneWords: length.sceneWords } : {}), ...(lengthNote ? { lengthNote } : {}) });
             createdBible = out.bible;
             bible = { ...baseBible, ...createdBible };
             const arc = planArc(total, config.tension, createdBible.arc);
             tension = arc[0];
+            sceneWords = wordsFor(0, createdBible.arc);
             console.error(`[scriptorium]   ${c.dim(`arc: ${arc.join(" ")}`)}`);
             beat = { result: out.beat, prompt: out.prompt, system: out.system, raw: out.raw };
             recordTiming("director", Date.now() - t0);
             if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "creator" : `creator-g${generation}`, beat);
           } else {
-            beat = await direct(roles.director, { bible, sceneIndex: i, total, tension, turn, earlierTurns, overdue, context: config.context, issues, fresh });
+            beat = await direct(roles.director, { bible, sceneIndex: i, total, tension, turn, earlierTurns, overdue, context: config.context, issues, fresh, ...(length ? { sceneWords } : {}), ...(lengthNote ? { lengthNote } : {}) });
             recordTiming("director", Date.now() - t0);
             if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "director" : `director-g${generation}`, beat);
           }
@@ -383,7 +416,20 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
             if (problem) console.error(`[scriptorium]   ${c.retry(`editor: ${problem} — keeping the unedited draft`)}`);
             else prose = edited.result;
           }
+          // Held to its budget (#170): a draft well past it is trimmed once.
+          const words = wordCount(prose);
+          if (overBudget(words, sceneWords)) {
+            console.error(`[scriptorium]   ${c.retry(`scene ${i + 1} runs ${words} words, over its ${sceneWords.min}-${sceneWords.max} — trimming`)}`);
+            const trimmed = await nonFatalValue(`scene ${i + 1} trim`, () => edit(editor, { bible, prose, sceneIndex: i, previousScene: previousScenes.at(-1), sceneWords, trim: true }));
+            if (trimmed) {
+              if (runDir) await writeRoleOutput(runDir, ++seq, `editor-trim-a${attempt - 1}`, trimmed);
+              const problem = editProblem(prose, trimmed.result, config.speakerTags ? new Set(Object.keys(bible.characters)) : undefined, sceneWords.min * 0.85);
+              if (problem) console.error(`[scriptorium]   ${c.retry(`trim: ${problem} — keeping the longer draft`)}`);
+              else prose = trimmed.result;
+            }
+          }
         }
+        if (underBudget(wordCount(prose), sceneWords)) console.error(`[scriptorium]   ${c.retry(`scene ${i + 1} runs ${wordCount(prose)} words, short of its ${sceneWords.min}-${sceneWords.max}`)}`);
 
         // Non-blocking compliance check: parseScene already falls back an
         // untagged paragraph to narrator, so this can't break the run — it's
@@ -617,12 +663,28 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
 
 // Why a line edit can't be used, or undefined when it's fine: the editor
 // trims, it doesn't gut or pad a scene, and it keeps the speaker tags.
-export function editProblem(original: string, edited: string, tagIds?: ReadonlySet<string>): string | undefined {
+// The fit check, for the author to read (length.md).
+function lengthMarkdown(fit: LengthFit, len: { minutes: number; scenes: number; totalWords: number; wordsPerMinute: number }): string {
+  return [
+    `# Length`,
+    ``,
+    `Asked: **${len.minutes} minutes** in ${len.scenes} scene${len.scenes === 1 ? "" : "s"} (~${len.totalWords} words at ${len.wordsPerMinute} a minute). The plan needs **about ${Math.round(fit.needMinutes * 10) / 10} minutes**.`,
+    ``,
+    `## What the plan asks for`,
+    ...fit.items.map((x) => `- ${x.item} (${x.minutes} min)`),
+    ...(fit.cuts.length ? [``, `## To fit, cut first`, ...fit.cuts.map((x) => `- ${x.item} (saves ${x.saves} min)`)] : []),
+    ...(fit.split ? [``, `## To split it`, fit.split] : []),
+    ``
+  ].join("\n");
+}
+
+// `floor`: a trim to budget may cut more than an edit, down to this many words.
+export function editProblem(original: string, edited: string, tagIds?: ReadonlySet<string>, floor?: number): string | undefined {
   const words = (t: string) => t.split(/\s+/).filter(Boolean).length;
   const before = words(original);
   const after = words(edited);
   if (after === 0) return "empty edit";
-  if (after < before * 0.75) return `edit cut ${Math.round(100 - (after / before) * 100)}% of the scene`;
+  if (floor !== undefined ? after < floor : after < before * 0.75) return `edit cut ${Math.round(100 - (after / before) * 100)}% of the scene`;
   if (after > before * 1.1) return `edit grew the scene by ${Math.round((after / before) * 100 - 100)}%`;
   if (tagIds && findUntaggedParagraphs(edited, tagIds).length > findUntaggedParagraphs(original, tagIds).length) return "edit lost speaker tags";
   return undefined;

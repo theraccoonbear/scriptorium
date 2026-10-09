@@ -40,7 +40,8 @@ It then gets their API keys and checks them with `doctor`. Come back here when d
 Ask, one or two questions at a time. Offer examples; accept "you pick".
 - **What's it about?** One or two sentences: who wants what, and what's in the way. This is the *premise*.
 - **Where and when?** The *setting*: a fantasy town, a space station, a school.
-- **How long?** In *scenes*. Each scene is about 1,500 words: roughly 10 minutes of audiobook or film. 3 scenes make a short; 6–8 make an evening.
+- **How long?** In *minutes*: the running time, read aloud (titles and cards add a minute or two). About 10 minutes a scene unless they say how many scenes: 10–15 minutes makes a bedtime story, 30 a short, an hour or more an evening. It goes in the story file as `"length": { "minutes": 12 }`, or `{ "minutes": 12, "scenes": 3 }` to fix the scene count too.
+  - **If they have a plan, say how much it holds.** Roughly: a quick moment or a line of plot is half a minute; an arrival or a short exchange, a minute; a real conversation, a fight or a chase, two to four. Fifteen plot points and four long exchanges won't fit in three minutes, so say so now rather than after the writing.
 - **What does it feel like?** Funny, cosy, spooky, an adventure, a mystery.
 - **Is it based on something?** Their own notes, a tabletop campaign, a bedtime story they tell. If so, write those notes into `contexts/<slug>.md` in their words. If they know what happens in each scene, add a scene-by-scene plan ("Scene 1 — Title: what happens"). The writers then keep every beat, name and joke from the notes. Without notes, the story is invented from the premise.
 - **Characters they want?** Name, look, voice. These go on the character sheet in phase 1. They can skip this, and the story will invent its cast.
@@ -66,7 +67,7 @@ Write `stories/<slug>.json` for them, show it, and explain each line in one sent
   "premise": "…",
   "setting": "…",
   "context": ["../contexts/<slug>.md"],          // only with notes
-  "scenes": 3,
+  "length": { "minutes": 30 },                   // the running time; "scenes": N inside it fixes the scene count
   "rating": { "base": "G", "age": 6, "forbid": ["…"], "flag": ["…"] },  // only for an audience
   "budget": { "usd": 15 },                       // a hard stop: nothing is spent past it
   "audiobook": { "narration": "gemini", "dialogue": "gemini", "geminiMode": "palette" },
@@ -93,6 +94,7 @@ Show them their run folder once the first phase has made it (`runs/<slug>/`):
 - `audiobook/scene-NN.mp3` and `video/story.mp4`: the finished audio and film.
 - `review/`: what's been made for them to look at; `review/rounds/` holds one folder per look.
 - `rating.md` (rated stories): what the audience reviewer changed and why.
+- `length.md` (stories with a `length`): what the plan asks for, minute by minute, and what to cut if it doesn't fit.
 - `events.jsonl`: the story's master record. Never edit it by hand; ask, and changes are made safely with a backup.
 - `notes/` and `backups/`: theirs, never cleaned up.
 
@@ -112,7 +114,15 @@ Hand over to the **produce** skill for each phase. The order is:
 9. the extras (poster, key art, cast photo, logo);
 10. the film.
 
-Before every paid phase, run the pitch and get a yes.
+Before every paid phase, run the pitch and get a yes. The pitch also says how long the story will run ("~30 min read aloud (asked 30)").
+
+**The first writing run checks the plan against the running time** before writing a word. If it needs far more time than they asked for, nothing is written and `runs/<slug>/length.md` lists what the plan asks for. Go through it with them and let them choose:
+- **stretch:** ask for more minutes;
+- **cut:** drop or merge items from their notes, least needed first, as the list suggests (edit `contexts/<slug>.md` together);
+- **split:** make it a series (Part 1, Part 2), where the list says it breaks;
+- **compress:** keep the plan, add `"fit": "compress"` to `length`, and the writers tighten it to fit (small events folded together, exchanges shortened).
+
+After writing, the run prints each scene's words and minutes against its budget. Show them, and point out any scene marked long or short.
 
 At each review, `npm run review -- stories/<slug>.json pending` lists what's waiting on them, with the exact files to look at. Send them those files.
 
