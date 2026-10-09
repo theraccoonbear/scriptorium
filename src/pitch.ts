@@ -103,10 +103,12 @@ export function pitch(input: PitchInput): Pitch {
     cover = 0;
   }
   if (art.extrasOnly) {
-    // Before they're directed: all four. After: the ones not yet rendered for their prompt.
+    // Before they're directed: all four. After: the ones not yet rendered for
+    // their prompt, plus any redone (--redo extra-…; "extras" re-plans them all).
     const extras = buildArtJobs(input.events).filter((j) => j.key.startsWith("extra-"));
+    const redo = new Set(input.redo ?? []);
     references = 0;
-    shotsToRender = extras.length ? extras.filter((j) => input.artManifest?.[j.key]?.prompt !== j.prompt).length : 4;
+    shotsToRender = extras.length ? extras.filter((j) => redo.has("extras") || redo.has(j.key) || input.artManifest?.[j.key]?.prompt !== j.prompt).length : 4;
     cover = 0;
   }
   // Retakes: triage spends exactly its share; inspection-and-retry averages ~0.4 per image.
