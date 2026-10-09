@@ -201,6 +201,23 @@ export function mergeShotCast(tagged: string[], described: string[] | undefined,
   return [...new Set([...(described ?? []), ...tagged])].slice(0, Math.max(max, tagged.length));
 }
 
+// The opening crawl (#145): the story so far, for a story that starts partway through.
+export const CRAWL_SYSTEM = `You write the opening crawl of a film: the words that scroll up the screen after the title, telling the audience what happened before the first scene.
+
+The film begins with the FIRST LINE given below. The crawl ends at the instant just before that line: from the AUTHOR'S NOTES, say only who these people are, what they were doing, and what had happened to them up to that instant. Everything listed under SCENE 1 SHOWS happens on screen, after the crawl: tell none of it, not even in passing (if they wake in a ditch, the crawl may say they were beaten and left there, but not what they find or do once awake). Never invent: use only what the notes say.
+- Two to four short paragraphs, 40 to 90 words in all. Plain, warm, a little wry if the story is a comedy; no exclamation marks, no rhetorical questions.
+- If the story starts partway through an adventure, the first paragraph is one short line saying so (e.g. "We join the party in medias res.").
+- Use the characters' names only as the notes give them.
+
+Output ONLY JSON: {"paragraphs":[string]}`;
+
+export async function draftCrawl(role: Role, p: { notes: string; firstLine: string; sceneOne: string; title?: string }): Promise<RoleOutput<string[]>> {
+  const prompt = [p.title ? `TITLE: ${p.title}` : "", `AUTHOR'S NOTES:\n${p.notes}`, `SCENE 1 SHOWS (on screen after the crawl — tell none of it):\n${p.sceneOne}`, `FIRST LINE (the film begins here; the crawl ends just before it):\n${p.firstLine}`].filter(Boolean).join("\n\n");
+  const out = await callJson(role, { role: "director", system: CRAWL_SYSTEM, prompt, ctx: { task: "crawl" } });
+  const raw = (out.result as { paragraphs?: unknown })?.paragraphs;
+  return { ...out, result: (Array.isArray(raw) ? raw : []).map(String).map((x) => x.trim()).filter(Boolean) };
+}
+
 export const CANON_SYSTEM = `You check a finished scene of a story against its CANON, which may have been written after the scene. Find every place the PROSE or the SHOT PROMPTS contradict the canon.
 
 Output ONLY JSON:

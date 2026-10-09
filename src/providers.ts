@@ -129,6 +129,9 @@ export class MockProvider {
         if (ctx.task === "shotcast") {
           return JSON.stringify({ shots: [] });
         }
+        if (ctx.task === "crawl") {
+          return JSON.stringify({ paragraphs: ["We join the story partway through.", "Mock crawl paragraph."] });
+        }
         if (ctx.task === "canon") {
           return JSON.stringify({ issues: [] });
         }

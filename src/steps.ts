@@ -26,7 +26,7 @@ import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
 import { designRun, needsTagging, proseHash, sceneTags, tagRun } from "./tagging.ts";
-import { briefLogoArt, designLogo, writeAuditions, writeBoxCopy } from "./roles.ts";
+import { briefLogoArt, designLogo, draftCrawl, writeAuditions, writeBoxCopy } from "./roles.ts";
 import { castVoiceRun, narratorReads } from "./casting.ts";
 import { speechCheckRound } from "./rounds.ts";
 import type { CheckReport } from "./speechCheck.ts";
@@ -640,6 +640,26 @@ export interface VideoStepOptions {
   gemini?: boolean;                 // the audiobook spoke with Gemini voices
   geminiModel?: string;             // for the narrated title
   music?: MusicSettings;            // lay the score under the narration
+  config?: StoryConfig;             // for "crawl": true — the director drafts the crawl (#145)
+}
+
+// A draft of the opening crawl (#145), from the author's notes, ending just
+// before the film's first line. One short call to the story's best writer (a
+// cheap model retells the first scene however it's told not to); paid, so
+// accounted to the video step.
+function crawlDrafter(runDir: string, events: StoryEvent[], opts: VideoStepOptions): (() => Promise<string[]>) | undefined {
+  const roles = opts.config ? buildRoleProviders(opts.config) : undefined;
+  const role = roles?.editor ?? roles?.writer ?? roles?.director ?? roles?.continuist;
+  if (!role) return undefined;
+  return () => accounted(runDir, opts.config, "video", async () => {
+    const notes = (await Promise.all((opts.contextPaths ?? []).map((p) => readFile(p, "utf8").catch(() => "")))).filter(Boolean).join("\n\n");
+    const first = events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData).sort((a, b) => a.index - b.index)[0];
+    // What scene 1 shows: its beat when the run has one, else its whole prose.
+    const b = first?.beat;
+    const sceneOne = b ? [b.goal, b.conflict, b.mustReveal, b.turn, ...(b.constraints ?? [])].filter(Boolean).join("\n") : first?.prose ?? "";
+    const firstLine = (first?.prose ?? "").split(/\n\s*\n/)[0] ?? "";
+    return (await draftCrawl(role, { notes, firstLine, sceneOne, ...(opts.title ? { title: opts.title } : {}) })).result;
+  });
 }
 
 export async function videoStep(runDir: string, events: StoryEvent[], force: boolean | undefined, opts: VideoStepOptions = {}) {
@@ -653,7 +673,8 @@ export async function videoStep(runDir: string, events: StoryEvent[], force: boo
     gemini: opts.gemini,
     base: opts.base,
     speak: geminiSpeaker({ ...(opts.geminiModel ? { model: opts.geminiModel } : {}), ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}) }),
-    onNote: (m) => console.error(`[scriptorium] ${c.dim(m)}`)
+    onNote: (m) => console.error(`[scriptorium] ${c.dim(m)}`),
+    ...(opts.titles && opts.titles.crawl === true ? { draftCrawl: crawlDrafter(runDir, events, opts) } : {})
   });
   if (titles?.sceneCards) console.error(`[scriptorium] ${c.dim(`scene titles: ${Object.values(titles.sceneTitles).map((t) => t || "—").join(" · ")} (edit ${join(runDir, "video", "titles.json")})`)}`);
   let music;
