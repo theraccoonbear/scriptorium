@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { replay } from "./bible.ts";
-import { designPalettes, sameSpeaker, tagSpeakers } from "./roles.ts";
+import { designPalettes, directVocals, sameSpeaker, tagSpeakers } from "./roles.ts";
 import type { EventLog } from "./eventlog.ts";
 import type { Character, Role, SceneCommittedData, StoryEvent } from "./types.ts";
 
@@ -422,4 +422,118 @@ export function paletteToneFor(events: StoryEvent[], palette: TonePaletteData): 
     if (tagged !== speaker || i === null || i === undefined) return speaker === "narrator" ? palette.speakers.narrator?.tones[0] : undefined;
     return palette.speakers[speaker]?.tones[i];
   };
+}
+
+// ---- performance tags (#71) ----
+
+// The sounds the voice director may ask for: Gemini TTS's momentary human
+// vocalizations, performed rather than read. Manner tags (whispering, shouting)
+// colour a whole line and belong in its delivery note, not here.
+export const VOCAL_TAGS = ["laugh", "chuckle", "giggle", "snicker", "sigh", "gasp", "sob", "whimper", "groan", "grunt", "cough", "throat-clearing", "sniff", "snort", "tsk", "phew", "yawn", "breath", "exhales", "short pause", "long pause"] as const;
+const NARRATOR_TAGS = new Set(["short pause", "long pause", "breath"]);
+export const MAX_VOCALS_PER_PARAGRAPH = 2;
+
+export interface VocalTag { tag: string; before?: string; after?: string }
+export interface VocalTagsData {
+  index: number;
+  source: string;                   // hash of the prose and its speakers these were made for
+  tags: string[];                   // the allowed list they were chosen from
+  vocal: (VocalTag[] | null)[];     // per paragraph
+  dropped?: string[];               // marks that failed the checks, and why
+}
+
+// Spans of a paragraph inside quotation marks: a character's own words.
+function quoteSpans(p: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const re = /["“]([^"“”]*)["”]/g;
+  for (let m = re.exec(p); m; m = re.exec(p)) spans.push([m.index + 1, m.index + 1 + m[1].length]);
+  return spans;
+}
+
+// Keeps only marks that can be placed exactly as asked: an allowed tag, words
+// found in the paragraph, inside the speaker's own words (quotes) for a
+// character, pauses and breaths only for the narrator, two at most a paragraph.
+export function checkVocals(paragraphs: string[], speakers: string[], marks: { n: number; tag: string; before?: string; after?: string }[], allowed: readonly string[]): { vocal: (VocalTag[] | null)[]; dropped: string[] } {
+  const vocal: (VocalTag[] | null)[] = paragraphs.map(() => null);
+  const dropped: string[] = [];
+  const ok = new Set(allowed);
+  for (const m of marks) {
+    const i = m.n - 1;
+    const p = paragraphs[i];
+    const why = (r: string) => dropped.push(`¶${m.n} <${m.tag}>: ${r}`);
+    if (p === undefined) { why("no such paragraph"); continue; }
+    if (!ok.has(m.tag)) { why("not an allowed tag"); continue; }
+    const words = (m.before ?? m.after)!;
+    const at = p.indexOf(words);
+    if (at < 0) { why(`"${words}" isn't in the paragraph`); continue; }
+    const speaker = speakers[i] ?? "narrator";
+    if (speaker === "narrator") {
+      if (!NARRATOR_TAGS.has(m.tag)) { why("the narrator only pauses or breathes"); continue; }
+    } else {
+      const spans = quoteSpans(p);
+      const pos = m.before !== undefined ? at : at + words.length;
+      if (spans.length && !spans.some(([a, b]) => pos >= a && pos <= b)) { why("outside the character's own words"); continue; }
+    }
+    if ((vocal[i]?.length ?? 0) >= MAX_VOCALS_PER_PARAGRAPH) { why("more than two in a paragraph"); continue; }
+    (vocal[i] ??= []).push(m.before !== undefined ? { tag: m.tag, before: m.before } : { tag: m.tag, after: m.after });
+  }
+  return { vocal, dropped };
+}
+
+// A piece's text as performed: each tag placed at its words, if they're in
+// this piece. Used only for what the voice model reads; captions, timings,
+// the speech check and the story keep the plain text.
+export function performed(text: string, tags: VocalTag[] | null | undefined): string {
+  let out = text;
+  for (const t of tags ?? []) {
+    const words = (t.before ?? t.after)!;
+    const at = out.indexOf(words);
+    if (at < 0) continue;
+    out = t.before !== undefined
+      ? `${out.slice(0, at)}<${t.tag}> ${out.slice(at)}`
+      : `${out.slice(0, at + words.length)} <${t.tag}>${out.slice(at + words.length)}`;
+  }
+  return out;
+}
+
+const vocalSource = (prose: string, speakers: string[], allowed: readonly string[]) => createHash("sha1").update(JSON.stringify({ prose, speakers, allowed })).digest("hex");
+
+// The performance tags for each scene, where still current: made for this
+// prose, these speakers and this list of tags.
+export function vocalTags(events: StoryEvent[], allowed: readonly string[] = VOCAL_TAGS): Map<number, VocalTagsData> {
+  const prose = new Map<number, string>();
+  for (const e of events) if (e.type === "scene_committed") prose.set((e.data as SceneCommittedData).index, (e.data as SceneCommittedData).prose);
+  const tags = sceneTags(events);
+  const aliases = speakerAliases(events);
+  const out = new Map<number, VocalTagsData>();
+  for (const e of events) {
+    if (e.type !== "vocal_tags") continue;
+    const d = e.data as VocalTagsData;
+    const p = prose.get(d.index);
+    if (p === undefined) continue;
+    const speakers = (tags.get(d.index)?.tags ?? []).map((t) => aliases.get(t) ?? t);
+    if (vocalSource(p, speakers, allowed) === d.source) out.set(d.index, d);
+  }
+  return out;
+}
+
+// The voice director marks each scene's sounds, once per version of the scene
+// (after its speakers are known). Cheap: one call a scene.
+export async function vocalRun(log: EventLog, role: Role, allowed: readonly string[] = VOCAL_TAGS, onScene: (index: number, count: number, dropped: string[]) => void = () => {}): Promise<number[]> {
+  const done = vocalTags(log.events, allowed);
+  const tags = sceneTags(log.events);
+  const aliases = speakerAliases(log.events);
+  const latest = new Map(log.events.filter((e) => e.type === "scene_committed").map((e) => [(e.data as SceneCommittedData).index, e.data as SceneCommittedData]));
+  const made: number[] = [];
+  for (const d of [...latest.values()].sort((a, b) => a.index - b.index)) {
+    if (done.has(d.index)) continue;
+    const paragraphs = proseParagraphs(d.prose);
+    const speakers = (tags.get(d.index)?.tags ?? paragraphs.map(() => "narrator")).map((t) => aliases.get(t) ?? t);
+    const out = await directVocals(role, { paragraphs, speakers, tags: [...allowed] });
+    const checked = checkVocals(paragraphs, speakers, out.result, allowed);
+    await log.append("vocal_tags", { index: d.index, source: vocalSource(d.prose, speakers, allowed), tags: [...allowed], vocal: checked.vocal, ...(checked.dropped.length ? { dropped: checked.dropped } : {}) } satisfies VocalTagsData);
+    onScene(d.index, checked.vocal.reduce((a, v) => a + (v?.length ?? 0), 0), checked.dropped);
+    made.push(d.index);
+  }
+  return made;
 }

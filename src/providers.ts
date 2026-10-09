@@ -79,6 +79,7 @@ export class MockProvider {
       case "lengthfit":
         return JSON.stringify({ items: [{ item: "Mock: the whole plan", minutes: ctx.minutes ?? 1 }], needMinutes: ctx.minutes ?? 1, cuts: [], split: "" });
       case "voicedirector": {
+        if (ctx.task === "vocal") return JSON.stringify({ marks: [] });
         if (ctx.task === "cast") {
           // Each character takes the next unused library voice, in order.
           const lib: string[] = ctx.libraryIds ?? [];

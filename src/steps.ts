@@ -27,7 +27,7 @@ import type { ArtManifest, ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
 import { storyArtStyle } from "./visualrefs.ts";
-import { designRun, needsTagging, proseHash, sceneTags, tagRun } from "./tagging.ts";
+import { designRun, needsTagging, proseHash, sceneTags, tagRun, vocalRun, VOCAL_TAGS } from "./tagging.ts";
 import { briefLogoArt, designLogo, draftCrawl, writeAuditions, writeBoxCopy } from "./roles.ts";
 import { castVoiceRun, narratorReads } from "./casting.ts";
 import { speechCheckRound } from "./rounds.ts";
@@ -451,6 +451,7 @@ export interface AudiobookStepOptions {
   casting?: boolean;          // cast Gemini voices from the library (default true when Gemini speaks)
   castingFile?: string;       // a cast list shared across chapters
   castMin?: number;           // characters spoken to earn a voice of their own; the rest are read by the narrator
+  audioTags?: boolean | string[];  // performance tags in Gemini lines (#71): true, or a list of allowed sounds; off by default
   pronunciations?: Pronunciations;  // how to say the story's hard words, for every Gemini line
   designVoices?: string[];    // characters to give a designed voice
   force?: boolean;
@@ -461,6 +462,15 @@ export interface AudiobookStepOptions {
 // so every story can be voiced. Uses the config's "voicedirector" role, else its
 // continuist's model (a cheap one). Without a config, untagged scenes are read
 // by the narrator alone.
+// audioTags in the story file: true for the standard list, or a list of its tags; off by default.
+export function resolveAudioTags(setting: boolean | string[] | undefined): readonly string[] | undefined {
+  if (!setting) return undefined;
+  if (setting === true) return VOCAL_TAGS;
+  const bad = setting.filter((t) => !(VOCAL_TAGS as readonly string[]).includes(t));
+  if (bad.length) throw new Error(`audiobook.audioTags: unknown tag${bad.length === 1 ? "" : "s"} ${bad.join(", ")} — use any of ${VOCAL_TAGS.join(", ")}`);
+  return setting.length ? setting : undefined;
+}
+
 async function tagStep(runDir: string, events: StoryEvent[], config?: StoryConfig, palette?: TonePaletteData): Promise<StoryEvent[]> {
   const bible = replay(events);
   const known = new Set(Object.keys(bible.characters));
@@ -504,6 +514,21 @@ async function prepareVoices(runDir: string, events: StoryEvent[], opts: Audiobo
     events = log.events;
   }
   events = await tagStep(runDir, events, opts.config, palette);
+  // Performance tags (#71): the sounds each scene's lines call for, once its speakers are known.
+  const audioTags = resolveAudioTags(opts.audioTags);
+  if (audioTags && (opts.narration === "gemini" || opts.dialogue === "gemini")) {
+    const roles = opts.config ? buildRoleProviders(opts.config) : undefined;
+    const role = roles?.voicedirector ?? roles?.continuist;
+    if (!role) console.error(`[scriptorium] ${c.retry("audioTags needs a config (for the voice director's model) — pass --config")}`);
+    else {
+      const log = new EventLog(runDir);
+      await log.load();
+      await vocalRun(log, role, audioTags, (index, count, dropped) => {
+        console.error(`[scriptorium] ${c.ok(`scene ${index + 1}: ${count} sound${count === 1 ? "" : "s"} marked`)}${dropped.length ? c.dim(` (${dropped.length} set aside: ${dropped.slice(0, 3).join("; ")})`) : ""}`);
+      });
+      events = log.events;
+    }
+  }
   // Casting: a voice from Gemini's library (or a designed one) for every speaker.
   let geminiVoices = opts.geminiVoices;
   const geminiSpeaks = opts.narration === "gemini" || opts.dialogue === "gemini";
@@ -589,6 +614,7 @@ async function audiobookStepInner(runDir: string, events: StoryEvent[], opts: Au
   const { palette, geminiVoices, byNarrator } = prepared;
   const result = await generateAudiobook(events, {
     runDir,
+    ...(resolveAudioTags(opts.audioTags) ? { audioTags: resolveAudioTags(opts.audioTags) } : {}),
     narratorVoice: opts.narratorVoice,
     language: opts.language,
     characterGenders: opts.characterGenders,

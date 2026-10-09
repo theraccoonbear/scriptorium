@@ -21,7 +21,7 @@ import { changedShare } from "./tagging.ts";
 import { withRunLock } from "./runLock.ts";
 import type { LockOptions } from "./runLock.ts";
 import type { Pitch } from "./pitch.ts";
-import { accounted, artStep, audiobookStep, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
+import { accounted, artStep, audiobookStep, resolveAudioTags, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
 import type { AudiobookStepOptions } from "./steps.ts";
 import { portraitIds, recordedSheet, syncCharacterSheet } from "./characterSheet.ts";
 import { staleCharacterRefs } from "./engine.ts";
@@ -74,6 +74,7 @@ export interface StoryFile {
     geminiBatch?: boolean;                       // batched modes through Gemini Batch Mode (half price, slower); not for 3.8+ TTS, which is voiced live (#114)
     castingFile?: string;                        // a cast list shared by every chapter (relative to the story file)
     castMin?: number;                            // characters spoken to earn a voice of their own (default 120); the rest are read by the narrator
+    audioTags?: boolean | string[];              // sounds in Gemini lines — laughs, sighs, pauses — where the prose calls for them (#71); off by default
     pronunciations?: Pronunciations;     // how to say the story's hard words: { "McPoyle": "mick-POYL, rhymes with boil" }
     designVoices?: string[];                     // character ids to give a designed voice
   };
@@ -162,6 +163,9 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...(raw.turns ?? baseConfig.turns ? { turns: raw.turns ?? baseConfig.turns } : {}),
     ...(raw.artist ? { artist: { ...baseConfig.artist, ...raw.artist } } : {})
   };
+  if (raw.audiobook?.audioTags !== undefined) {
+    try { resolveAudioTags(raw.audiobook.audioTags); } catch (err) { throw new Error(`${path}: ${(err as Error).message}`); }
+  }
   if (config.budget !== undefined && !(typeof config.budget.usd === "number" && config.budget.usd > 0)) {
     throw new Error(`${path}: "budget" must look like { "usd": 5 }`);
   }
@@ -426,7 +430,7 @@ function audiobookOptions(s: ResolvedStory): AudiobookStepOptions {
     narration: a.narration, dialogue: a.dialogue, geminiModel: a.geminiModel, geminiVoices: a.geminiVoices,
     kokoroVoices: a.kokoroVoices, characterVoices: a.characterVoices,
     geminiMode: a.geminiMode, paletteSize: a.paletteSize, geminiRpm: a.geminiRpm, geminiFallback: a.geminiFallback, pauseScale: a.pauseScale,
-    casting: a.casting, geminiConcurrency: a.geminiConcurrency, geminiBatch: a.geminiBatch, castingFile: a.castingFile, castMin: a.castMin, pronunciations: a.pronunciations, designVoices: a.designVoices,
+    casting: a.casting, geminiConcurrency: a.geminiConcurrency, geminiBatch: a.geminiBatch, castingFile: a.castingFile, castMin: a.castMin, audioTags: a.audioTags, pronunciations: a.pronunciations, designVoices: a.designVoices,
     config: s.config
   };
 }
