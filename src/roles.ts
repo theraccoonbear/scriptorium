@@ -914,6 +914,39 @@ Output ONLY JSON:
 - Unspoken thoughts, sounds, and words read off a page are narrator.
 - delivery: a few words directing how the paragraph's speaker performs it, from what the scene makes clear — e.g. "low and furious, trying not to be overheard", "dry, unhurried", "hushed, dreading what comes next". "" when a plain read is right. Never add words to be spoken.`;
 
+// Performance tags (#71): sounds the prose implies — a laugh mid-line, a sigh,
+// a pause — placed by quoting the words they come before or after. The text is
+// never sent back, so it can't change; every placement is checked in code.
+export const VOCAL_SYSTEM = `You mark where an audiobook's voices make a sound the story calls for: a laugh in the middle of a line, a sigh before one, a gasp, a sob, a pause. The text is read exactly as written; your marks are performed, not spoken.
+
+Output ONLY JSON:
+{"marks":[{"n":number,"tag":string,"before":string}|{"n":number,"tag":string,"after":string}]}
+
+- n: the paragraph number. tag: one of TAGS, exactly. before / after: 2 to 6 words copied EXACTLY from that paragraph, saying where the sound goes (just before or just after those words).
+- Only where the prose says or plainly shows it: "she laughed", "he sighed", "his voice broke", "she caught her breath", a line trailing off. Never as decoration. Most paragraphs get none; never more than two in a paragraph.
+- A character's sound goes inside their own spoken words (the quoted part), never in the narration around it.
+- In a paragraph the NARRATOR reads (speaker "narrator"), use only pauses and breaths, and only where a storyteller would stop for effect.
+- No marks at all is a fine answer: {"marks":[]}.`;
+
+export interface VocalMark { n: number; tag: string; before?: string; after?: string }
+
+export async function directVocals(role: Role, p: { paragraphs: string[]; speakers: string[]; tags: string[] }): Promise<RoleOutput<VocalMark[]>> {
+  const prompt = [
+    `TAGS: ${p.tags.join(", ")}`,
+    `SCENE (${p.paragraphs.length} numbered paragraphs, each with who reads it):\n${p.paragraphs.map((x, i) => `[${i + 1}] (${p.speakers[i] ?? "narrator"}) ${x}`).join("\n\n")}`
+  ].join("\n\n");
+  const out = await callJson(role, { role: "voicedirector", system: VOCAL_SYSTEM, prompt, ctx: { task: "vocal", paragraphs: p.paragraphs } });
+  const raw = (out.result as { marks?: unknown })?.marks;
+  const marks = (Array.isArray(raw) ? raw : []).map((m) => m as Record<string, unknown>).flatMap((m) => {
+    const n = Number(m.n);
+    const tag = String(m.tag ?? "").trim().replace(/^<|>$/g, "").toLowerCase();
+    const before = typeof m.before === "string" ? m.before.trim() : undefined;
+    const after = typeof m.after === "string" ? m.after.trim() : undefined;
+    return Number.isInteger(n) && tag && (before || after) ? [{ n, tag, ...(before ? { before } : { after: after! }) }] : [];
+  });
+  return { ...out, result: marks };
+}
+
 export interface SpeakerTagging {
   missing?: number;    // paragraphs the voice director skipped (now narrator)
   tones?: (number | null)[];  // with palettes: per paragraph, an index into its speaker's palette

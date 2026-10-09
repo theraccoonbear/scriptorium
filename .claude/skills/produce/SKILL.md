@@ -104,6 +104,8 @@ After `--only voices`, build the reel (`npm run review -- <story.json> voices`) 
 - **Speech check:** every Gemini take is checked against its script and redone when a word comes out wrong. Lines still wrong after 3 takes go in a `speech-check` review round: send its `legend.txt` and tell the author. When a name keeps failing, propose a pronunciation (`audiobook.pronunciations`) and confirm it with the author.
 - **Narrator or own voice:** `"voiced": true|false` on the sheet moves a speaker between the cast and the narrator (then re-run `--only voices`).
 
+**Sounds in the performance (optional):** `"audioTags": true` in `audiobook` (Gemini voices only) has the voice director mark laughs, sighs, gasps and pauses where the prose calls for them, performed inline. It's off by default. Offer it for a story with lively dialogue, and say it's a small extra call per scene. The run prints how many sounds each scene got and any marks it set aside. If a sound lands wrong, the author can narrow the list (`"audioTags": ["sigh", "short pause"]`) or turn it off. Either re-voices only the scenes it changes.
+
 ## Phase 4: shots
 
 `--only art` plans shots for every scene that has none, then renders them. Send the shots contact sheet (`npm run review -- <story.json> shots`), scene by scene. Approve good shots by key (`scene-03-07`); approved images are never redone. After redos, retakes or reshoots, send the round's `changed.jpg` rather than whole scenes.

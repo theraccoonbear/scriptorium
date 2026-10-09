@@ -58,6 +58,10 @@ type Audio = { samples: Float32Array; sampleRate: number };
 // the closest (fewest problems) was kept.
 export interface CheckReport { script: string; ok: boolean; kept: number; takes: { audio: Audio; heard: string; problems: string[] }[] }
 
+// The script as words alone: performance tags (#71) are performed, not spoken,
+// so a take that says "laugh" out loud has words the script doesn't.
+export const plainScript = (text: string) => (/<[a-z]/.test(text) ? text.replace(/ ?<[a-z][a-z -]*> ?/g, " ").replace(/ {2,}/g, " ").replace(/ ([.,;!?])/g, "$1").trim() : text);
+
 // A speaker whose takes are checked: up to `tries` takes, the first clean one
 // kept; with none clean, the one with the fewest problems. Any line with a
 // failed take is reported, rejected takes included, so the author can hear
@@ -70,19 +74,20 @@ export function checkedSpeaker<I extends { text: string }>(
   const tries = opts.tries ?? 3;
   return async (input, voice) => {
     const takes: CheckReport["takes"] = [];
+    const script = plainScript(input.text);
     for (let i = 0; i < tries; i++) {
       const audio = await speak(input, voice);
       let heard: Heard;
-      try { heard = await check(audio, input.text); } catch (err) { heard = { ok: false, heard: "", problems: [`check failed: ${(err as Error).message.slice(0, 120)}`] }; }
+      try { heard = await check(audio, script); } catch (err) { heard = { ok: false, heard: "", problems: [`check failed: ${(err as Error).message.slice(0, 120)}`] }; }
       takes.push({ audio, heard: heard.heard, problems: heard.problems });
       if (heard.ok) {
-        if (takes.length > 1) opts.onReport?.({ script: input.text, ok: true, kept: i, takes });
+        if (takes.length > 1) opts.onReport?.({ script, ok: true, kept: i, takes });
         return audio;
       }
       if (i < tries - 1) opts.onRetake?.(heard.problems);
     }
     const kept = takes.reduce((best, t, i) => (t.problems.length < takes[best].problems.length ? i : best), 0);
-    opts.onReport?.({ script: input.text, ok: false, kept, takes });
+    opts.onReport?.({ script, ok: false, kept, takes });
     return takes[kept].audio;
   };
 }

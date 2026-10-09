@@ -21,6 +21,7 @@ export interface BatchPiece {
   speaker: string;
   text: string;
   tone?: string;    // palette mode: the tone this line is performed in
+  performed?: string;  // the text with sounds placed (#71): what the model reads; `text` stays plain for the cut and the checks
 }
 
 export interface Batch {
@@ -57,7 +58,7 @@ export function batchPrompt(batch: Batch, who: { name: string; profile: string }
     name: who.name,
     profile: who.profile,
     notes: [batch.tone ? `Perform every line ${batch.tone}.` : "", BATCH_PAUSE_NOTE].filter(Boolean).join(" "),
-    line: batch.pieces.map((p) => p.text).join("\n\n")
+    line: batch.pieces.map((p) => p.performed ?? p.text).join("\n\n")
   });
 }
 
