@@ -41,6 +41,9 @@ const BEAT_CRAFT = `WRITE THE BEAT AS OUTCOMES, NOT CHOREOGRAPHY — the Writer 
 - Physical canon (sizes, colors, materials) already lives in the bible; don't copy it into constraints.
 - Leave room for surprise: a beat whose every move is fixed reads as a checklist.`;
 
+// How the gates read the writer's notes: intent that can explain a choice, never evidence.
+const NOTES_RULE = `WRITER'S NOTES, when given, say what the writer meant. Use them to understand a deliberate choice (a motif being seeded, a reveal left implied, a detail planted to mislead) and don't flag it as a mistake when the beat and bible allow it. They are never evidence: judge only what the prose itself establishes. A note claiming something the page doesn't show counts for nothing.`;
+
 // What each kind of setup is for (#93): shared by the roles that plant, gate and record them.
 export const SETUP_KINDS_RULES = `SETUP KINDS — not every detail is a promise:
 - promise: a setup the story must pay off (a clue that matters, a weapon on the wall).
@@ -112,6 +115,7 @@ THE CONTRACT (non-negotiable):
 - MUST REVEAL is what the reader must come to understand. Let them understand it through what happens; a character voices part of it only if they truly would, and never as a summary.
 - KEY OBJECTS in the bible have canon physical descriptions: depict and handle them exactly as described — never give an object a feature, size, or way of being held that its description rules out. A description binds that object only, not others of its kind.
 - Do not resolve anything the beat does not resolve. Output only the scene text.
+- WRITER'S NOTES (optional): after the scene, a line "### WRITER'S NOTES" and at most five short bullets telling the reviewers about deliberate choices that could look like mistakes: a motif you're seeding, a reveal left implied on purpose, a detail planted to mislead. Never a summary of the scene, never part of it. The notes are cut off before anyone reads the story.
 
 CRAFT:
 - A scene turns. Someone wants something, meets resistance, and comes out changed — winning, losing, or learning at a cost. Find the turn and build to it. Make obstacles push back; let victory cost something.
@@ -333,6 +337,8 @@ DELIVERING THE BEAT (check this every draft):
 - If the prose violates an explicit constraint, flag CONSTRAINT_VIOLATION with that constraint text.
 - Do not assume a later scene will deliver what this beat requires. The beat gate approved the spec for THIS scene.
 
+${NOTES_RULE}
+
 ${ISSUE_RULES}`;
 
 export const CRITIC_SYSTEM = `You are the Critic. You review drafts of a story scene for quality and request revisions when needed.
@@ -370,7 +376,8 @@ DO NOT put CRAFT issues (word choice, repetition, voice, exposition style, metap
 - FLAG ONLY THE 3-5 MOST IMPACTFUL ISSUES. If you see more, pick the ones that would most confuse or alienate a reader. Everything else goes in the review.
 ${ISSUE_RULES}
 - Be honest about quality but pragmatic — not every imperfection justifies a rewrite.
-- You share this pipeline with a continuity checker. Focus on prose quality and story craft; they handle continuity.`;
+- You share this pipeline with a continuity checker. Focus on prose quality and story craft; they handle continuity.
+${NOTES_RULE}`;
 
 export const ARCHIVIST_SYSTEM = `You are the Archivist, the only role allowed to change the story bible.
 Read the committed scene and output ONLY a JSON patch:
@@ -836,7 +843,7 @@ export async function write(role: Role, params: {
   previousScenes?: string[];
   speakerTags?: boolean;
   suggestions?: Issue[];  // optional craft notes (advisory critic) — take or leave
-} & CreativeFeedback): Promise<RoleOutput<string>> {
+} & CreativeFeedback): Promise<RoleOutput<string> & { notes?: string }> {
   const { bible, beat, sceneIndex, attempt, sceneWords, previousDraft, previousScenes, speakerTags, issues, fresh, suggestions } = params;
   // Voice sheets for every character in the bible — not just POV, so minor
   // characters arrive with their own register and voices cannot converge.
@@ -904,7 +911,18 @@ export async function write(role: Role, params: {
     console.error(`[scriptorium]   ${c.retry(`writer: ${err.message} — keeping the partial draft for review`)}`);
     raw = err.partial;
   }
-  return { result: raw, prompt, system: WRITER_SYSTEM, raw };
+  const { prose, notes } = splitWriterNotes(raw);
+  return { result: prose, ...(notes ? { notes } : {}), prompt, system: WRITER_SYSTEM, raw };
+}
+
+// The writer's notes to its reviewers, cut off its draft so they never reach
+// the prose: everything from a "WRITER'S NOTES" heading on.
+const NOTES_HEADING = /^[ \t]*(?:#{1,6}[ \t]*|\*\*)?WRITER'?S?[ \t]+NOTES\b.*$/im;
+export function splitWriterNotes(raw: string): { prose: string; notes?: string } {
+  const m = NOTES_HEADING.exec(raw);
+  if (!m) return { prose: raw };
+  const notes = raw.slice(m.index + m[0].length).trim().slice(0, 1500);
+  return { prose: raw.slice(0, m.index).trimEnd(), ...(notes ? { notes } : {}) };
 }
 
 export const EDITOR_SYSTEM = `You are the Line Editor. You get one scene of a serialized story and return it edited: the same scene, better written. You are not the author. Never add, remove, reorder or change events, facts, who does what, what anyone learns, or how the scene ends; never change a proper name.
@@ -928,7 +946,7 @@ export async function edit(role: Role, params: {
   previousScene?: string;
   sceneWords?: WordBudget;
   trim?: boolean;   // the draft runs past its budget (#170): cut it to fit
-}): Promise<RoleOutput<string>> {
+}): Promise<RoleOutput<string> & { notes?: string }> {
   const { bible, prose, sceneIndex, previousScene, sceneWords, trim } = params;
   const voices = Object.values(bible.characters).filter((ch) => ch.voice).map((ch) => `- ${ch.name}: ${ch.voice}`).join("\n");
   const prompt = [
@@ -1410,10 +1428,11 @@ export interface ProseGateParams {
   previousScenes?: string[];
   previousIssues?: ReadonlyArray<Issue | string>;
   context?: string;
+  writerNotes?: string;  // the writer's stated intent for this draft
 }
 
 function buildGateContext(params: ProseGateParams): string {
-  const { bible, beat, prose, sceneIndex, attempt, sceneWords, previousScenes, previousIssues, context } = params;
+  const { bible, beat, prose, sceneIndex, attempt, sceneWords, previousScenes, previousIssues, context, writerNotes } = params;
   const priorProse = (previousScenes || [])
     .map((s, idx) => `--- SCENE ${idx + 1} (committed) ---\n${s}`)
     .join("\n\n");
@@ -1430,7 +1449,8 @@ function buildGateContext(params: ProseGateParams): string {
     priorIssues,
     beat ? `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}` : "",
     sceneWords ? `LENGTH TARGET: ${sceneWords.min}-${sceneWords.max} words` : "",
-    `CURRENT SCENE (draft ${draftNum}):\n${prose}`
+    `CURRENT SCENE (draft ${draftNum}):\n${prose}`,
+    writerNotes ? `WRITER'S NOTES (the writer's stated intent, not part of the scene):\n${writerNotes}` : ""
   ].filter(Boolean).join("\n\n");
 }
 
@@ -1602,8 +1622,9 @@ export async function archive(role: Role, params: {
   prose: string;
   sceneIndex: number;
   isFinal: boolean;
+  writerNotes?: string;
 } & CreativeFeedback): Promise<RoleOutput<Patch>> {
-  const { bible, beat, prose, sceneIndex, isFinal, issues, fresh } = params;
+  const { bible, beat, prose, sceneIndex, isFinal, issues, fresh, writerNotes } = params;
   const fix = feedbackBlock(
     issues,
     fresh,
@@ -1614,6 +1635,7 @@ export async function archive(role: Role, params: {
     renderBible(bible),
     `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`,
     `COMMITTED SCENE:\n${prose}`,
+    writerNotes ? `WRITER'S NOTES (what the writer meant — use them to give a setup the scene shows its kind and purpose; record only what the scene establishes):\n${writerNotes}` : "",
     fix
   ].filter(Boolean).join("\n\n");
   const { result, system, raw } = await callJson(role, {

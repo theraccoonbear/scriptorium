@@ -407,6 +407,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       await produceBeat();
 
       let prose = "";
+      let writerNotes: string | undefined;  // the writer's notes to its reviewers on the current draft, never part of it
       let verdict: Verdict = { ok: false, issues: [] };
       let suggestions: Issue[] = [];   // advisory critic's notes for the next draft
       let attempt = 0;
@@ -434,6 +435,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         recordTiming("writer", Date.now() - t0);
         if (runDir) await writeRoleOutput(runDir, ++seq, `writer-a${attempt}`, writeOut);
         prose = writeOut.result;
+        writerNotes = writeOut.notes;
         attempt++;
 
         // Line editor (optional): polishes the draft before review. An edit
@@ -478,7 +480,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         // Continuist and critic run in parallel — identical context, different prompts.
         t0 = Date.now();
         const gateCtx = {
-          bible, beat: beat.result, prose, sceneIndex: i, attempt: attempt - 1, previousScenes, sceneWords,
+          bible, beat: beat.result, prose, sceneIndex: i, attempt: attempt - 1, previousScenes, sceneWords, ...(writerNotes ? { writerNotes } : {}),
           previousIssues: dedupIssues([...contHistory, ...criticHistory]),
           context: config.context
         };
@@ -610,7 +612,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         feedback: [],
         gen: async (issues, fresh, generation) => {
           t0 = Date.now();
-          const out = await archive(roles.archivist, { bible, beat: beat.result, prose, sceneIndex: i, isFinal, issues, fresh });
+          const out = await archive(roles.archivist, { bible, beat: beat.result, prose, sceneIndex: i, isFinal, issues, fresh, ...(writerNotes ? { writerNotes } : {}) });
           recordTiming("archivist", Date.now() - t0);
           if (runDir) await writeRoleOutput(runDir, ++seq, generation === 0 ? "archivist" : `archivist-g${generation}`, out);
           return out;

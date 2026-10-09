@@ -95,3 +95,32 @@ test("a mock story: scene 1 plants a promise, a red herring and an open question
   assert.deepEqual(bible.hiddenTruths, ["the cook wrote the letter"]);
   assert.ok(["herring", "bell"].every((id) => bible.ledger.some((s) => s.id === id)), "the red herring and the open question survive the ending unexplained");
 });
+
+test("the writer's notes are cut off its draft: never in the prose, shown to the reviewers and the archivist as intent", async () => {
+  const { splitWriterNotes } = await import("../src/roles.ts");
+  assert.deepEqual(splitWriterNotes("The bell rang.\n\n### WRITER'S NOTES\n- seeding the bell as a motif"), { prose: "The bell rang.", notes: "- seeding the bell as a motif" });
+  assert.deepEqual(splitWriterNotes("The bell rang.\n\n**Writers notes**\n- x"), { prose: "The bell rang.", notes: "- x" });
+  assert.deepEqual(splitWriterNotes("The bell rang. He wrote notes in the margin."), { prose: "The bell rang. He wrote notes in the margin." }, "no heading, no notes");
+
+  const base = JSON.parse(await readFile(new URL("../story.config.json", import.meta.url), "utf8"));
+  const config = { ...base, scenes: 1, premise: "A bell nobody rings." } as StoryConfig;
+  const roles = buildRoleProviders(config);
+  const seen: Record<string, string[]> = {};
+  for (const name of ["writer", "continuist", "critic", "archivist"] as const) {
+    const role = roles[name]!;
+    const real = role.provider.complete.bind(role.provider);
+    role.provider = { complete: async (req) => {
+      (seen[req.role] ??= []).push(req.prompt);
+      const out = await real(req);
+      return req.role === "writer" ? `${out}\n\n### WRITER'S NOTES\n- seeding the bell as a motif; its ringer stays unknown on purpose` : out;
+    } };
+  }
+  const dir = await mkdtemp(join(tmpdir(), "scriptorium-notes-"));
+  const log = new EventLog(dir);
+  await runStory({ config, log, roles, runDir: dir });
+  const committed = log.events.find((e) => e.type === "scene_committed")!.data as { prose: string };
+  assert.doesNotMatch(committed.prose, /WRITER'S NOTES|seeding the bell/);
+  assert.match(seen.continuist.at(-1)!, /WRITER'S NOTES \(the writer's stated intent, not part of the scene\):\n- seeding the bell as a motif/);
+  assert.match(seen.archivist.at(-1)!, /WRITER'S NOTES \(what the writer meant/);
+  assert.match(CONTINUIST_SYSTEM, /They are never evidence: judge only what the prose itself establishes/);
+});

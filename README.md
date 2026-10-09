@@ -183,7 +183,7 @@ Outside the run folder, the story file in `stories/`, your `contexts/` and any `
 | **worldbuilder** | Names characters and places that belong in the setting. | optional |
 | **creator** | Builds the foundation: premise, tone, **art style**, cast (with gender), locations, **key objects**, threads, the story's **tension arc**, and scene 1's beat. Runs on the `director`'s provider. | — |
 | **director** | Plans each later scene as a JSON beat spec, including the scene's **turn**. Never writes prose. | yes |
-| **writer** | Writes the scene in the POV character's voice, inside a word band. | yes |
+| **writer** | Writes the scene in the POV character's voice, inside a word band. It may end a draft with **writer's notes** for the reviewers (a motif it's seeding, a reveal left implied on purpose). These are cut off before the prose goes anywhere, and the reviewers read them as intent, never as evidence. Every role's thread file keeps them. | yes |
 | **editor** | Line-edits each draft before review: hunts machine-prose tics, trims about 10%, and keeps every event, name and speaker tag. An edit that guts or pads the scene is discarded. | optional |
 | **continuist** | Blocks continuity and canon errors: POV, timeline, constraints, setups, key-object contradictions. | yes |
 | **critic** | Blocks craft problems: pacing, telling-not-showing, sensory detail, voice drift, recurring style tics. | optional |
