@@ -228,12 +228,12 @@ export async function artStep(runDir: string, config: StoryConfig, events: Story
 // The extras phase (#49): key art (2:3, 16:9, 1:1) and a cast photo, in the
 // story's art style, at 2K; directed once, then rendered like the cover.
 // redo: these extras keys again (a new prompt with redirect, or just new takes).
-export async function extrasStep(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, opts: { redo?: string[]; redirect?: boolean; notes?: string; title?: string; subtitle?: string; base?: string } = {}) {
+export async function extrasStep(runDir: string, config: StoryConfig, events: StoryEvent[], force: boolean | undefined, opts: { redo?: string[]; redirect?: boolean; notes?: string; title?: string; subtitle?: string; base?: string; edit?: { keys: string[]; note: string; source?: string; with?: string[] } } = {}) {
   return accounted(runDir, config, "extras", async () => {
     const approved = new Set((await readApprovals(runDir)).art);
     const roles = buildRoleProviders(config);
     if (!roles.artdirector) throw new Error("the extras step needs a config with an artdirector role");
-    const locked = (opts.redo ?? []).filter((k) => approved.has(k));
+    const locked = [...(opts.redo ?? []), ...(opts.edit?.keys ?? [])].filter((k) => approved.has(k));
     if (locked.length) throw new Error(`${locked.join(", ")} ${locked.length === 1 ? "is" : "are"} approved — revoke the approval before redoing`);
     const log = new EventLog(runDir);
     await log.load();
@@ -244,7 +244,9 @@ export async function extrasStep(runDir: string, config: StoryConfig, events: St
     const x = config.extras ?? {};
     const look = (own?: { style?: string; direction?: string }) => ({ ...(own?.style ?? x.style ? { style: own?.style ?? x.style } : {}), ...(own?.direction ?? x.direction ? { direction: own?.direction ?? x.direction } : {}) });
     const overrides = Object.fromEntries([...Object.keys(KEY_ART).map((k) => [k, look(x.keyArt)]), [CAST_PHOTO_KEY, look(x.castPhoto)]].filter(([, o]) => Object.keys(o as object).length));
-    const result = await artStepInner(runDir, config, log.events, force, { approved, keys, ...(Object.keys(overrides).length ? { overrides } : {}), ...(opts.redo?.length ? { redoKeys: opts.redo } : {}) });
+    // An edit in place (#150): the image, plus any likeness references, and the note.
+    const edits = opts.edit ? Object.fromEntries(opts.edit.keys.map((k) => [k, { note: opts.edit!.note, ...(opts.edit!.source ? { source: opts.edit!.source } : {}), ...(opts.edit!.with?.length ? { with: opts.edit!.with } : {}) }])) : undefined;
+    const result = await artStepInner(runDir, config, log.events, force, { approved, keys, ...(Object.keys(overrides).length ? { overrides } : {}), ...(opts.redo?.length ? { redoKeys: opts.redo } : {}), ...(edits ? { edits } : {}) });
     await composeExtras(runDir, config, log, roles, { ...(opts.title ? { title: opts.title } : {}), ...(opts.subtitle ? { subtitle: opts.subtitle } : {}), ...(opts.base ? { base: opts.base } : {}), ...(opts.redo?.includes("extra-logo") ? { redoLogo: true } : {}) });
     return result;
   });
