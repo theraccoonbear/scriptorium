@@ -447,6 +447,16 @@ Other config keys:
 
 `make`, `canon --apply` and `audition` hold a lock on the run (`<run>/.lock`) while they work, because two at once would overwrite each other's art manifest, event log and rounds. A second command on the same run waits for the first and prints what it's waiting for. `--no-wait` makes it stop instead. A lock left by a process that died is taken over. `approve` and the read-only commands (`pitch`, `review`, `show`, `spend`) don't lock, so you can approve images while a render runs.
 
+## What's waiting on you
+
+`npm run review -- <story.json> pending` lists every review round you haven't dealt with yet, what each one waits on, and the exact files to look at. It works this out from the run:
+- **Images:** done once each one is approved or redone in a later round.
+- **Auditions:** done once a voice is picked (or the voice is approved).
+- **A canon check:** done once applied.
+- **A speech check:** done when nothing is still flagged.
+
+Anything else (a speech check you've listened to, a note) is closed by hand: `npm run review -- <story.json> done <N> [--note "…"]`.
+
 ## Spend
 
 Every paid API call is logged to `<run>/usage.jsonl`. That covers the text roles, Gemini images, the image inspector and Gemini TTS; Kokoro and ffmpeg are local and free. Each entry records the step, role, model, token counts and estimated cost. `make` and the individual commands print what each step spent, `make` ends with a breakdown by step, role and model, and `cost --out <run>` reports on any run.

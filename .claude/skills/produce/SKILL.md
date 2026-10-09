@@ -91,6 +91,7 @@ Before the video, check the story file has a `title` (and `subtitle`, and `serie
 ## House rules
 
 - **One command at a time per run is enforced.** `make`, `canon --apply` and `audition` hold `<run>/.lock`. A second one waits for the first and says what it's waiting for (`--no-wait` stops instead). To queue follow-up work, just run the next command, in the background. Never hand-roll waits (`pgrep` loops can match their own command line and deadlock). `approve` and the read-only commands (`pitch`, `review`, `spend`) don't lock.
+- **What's waiting on the author comes from `npm run review -- <story.json> pending`,** never from memory. Each open round shows what it waits on and the exact files to look at. Put those absolute paths in the review request, grouped by round, and send the files themselves when the author is on their phone. When the author says a round is dealt with and nothing records it (a speech check listened to, a note seen), close it with `npm run review -- <story.json> done <N> [--note "…"]`.
 
 - **A missing key or tool:** when a phase fails on one, run `npm run doctor -- <story.json>` and fix what it marks ✗ (the `setup` skill covers getting keys).
 - **Never spend without the pitch and a yes.** Free phases (characters, video, review) need no pitch.
