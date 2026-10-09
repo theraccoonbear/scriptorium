@@ -846,8 +846,58 @@ async function directCoverArt(role: Role, bible: Bible, committed: SceneCommitte
   const characters = leads.filter((id) => appearances.characters[id]).slice(0, COVER_LEADS);
   if (characters.length === 0) return { out, characters: undefined };
   console.error(`[scriptorium]   ${c.dim(`cover leads: ${characters.join(", ")}; anyone else in the background`)}`);
-  const prompt = await blockIfCrowded(role, out.result.prompt, characters, appearances.characters, artStyle, 0);
+  const prompt = await blockCover(role, out.result.prompt, characters, castLooks(bible, appearances), artStyle);
   return { out: { ...out, result: { ...out.result, prompt } }, characters };
+}
+
+function castLooks(bible: Bible, appearances: RefAppearances): Record<string, string> {
+  return Object.fromEntries(Object.entries(appearances.characters).filter(([id, look]) => bible.characters[id] && look));
+}
+
+// The cover's blocking, checked (#164): every lead must be in the prompt and the
+// first (the title character) must lead it. The cast check reads the rewrite
+// against the whole cast; a miss goes back once with what was wrong. A second
+// miss keeps whichever version missed less, with a warning — never fatal.
+export async function blockCover(role: Role, prompt: string, leads: string[], looks: Record<string, string>, artStyle?: string): Promise<string> {
+  const people = leads.filter((id) => looks[id]).map((id) => ({ id, look: looks[id] }));
+  if (people.length === 0) return prompt;
+  const body = artStyle ? prompt.split(artStyle).join(" ").trim() : prompt;
+  const withStyle = (p: string) => (artStyle ? `${p} ${artStyle}` : p);
+  const cast = Object.entries(looks).map(([id, look]) => ({ id, look }));
+  const problems = async (p: string): Promise<string[] | undefined> => {
+    try {
+      const seen = (await checkShotCast(role, { cast, shots: [{ n: 1, prompt: p }] })).result[1] ?? [];
+      const missing = people.filter((x) => !seen.includes(x.id));
+      return [
+        ...missing.map((x) => `left out: ${x.look}`),
+        ...(seen[0] !== people[0].id && !missing.includes(people[0]) ? [`the lead (${people[0].look}) isn't the main figure — put them in the foreground, at the centre`] : [])
+      ];
+    } catch (err) {
+      if (isBudgetError(err)) throw err;
+      console.error(`[scriptorium]   ${c.retry(`cover cast check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
+      return undefined;
+    }
+  };
+  let best: { prompt: string; misses: number } | undefined;
+  let note: string | undefined;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let blocked: string;
+    try {
+      blocked = (await blockGroupPicture(role, { prompt: body, people, lead: true, ...(note ? { note } : {}) })).result;
+    } catch (err) {
+      if (isBudgetError(err)) throw err;
+      console.error(`[scriptorium]   ${c.retry(`blocking pass failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
+      continue;
+    }
+    if (!blocked) continue;
+    const found = await problems(blocked);
+    if (found === undefined) return withStyle(blocked);
+    if (found.length === 0) return withStyle(blocked);
+    if (!best || found.length < best.misses) best = { prompt: blocked, misses: found.length };
+    note = found.join("; ");
+    console.error(`[scriptorium]   ${c.retry(`cover blocking ${attempt === 1 ? "sent back" : "still off"}: ${note}`)}`);
+  }
+  return best ? withStyle(best.prompt) : prompt;
 }
 
 // Who leads the cover (#164): the title character (one the title names), then
