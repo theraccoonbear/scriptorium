@@ -1,0 +1,45 @@
+{
+  "rngSeed": 7,
+  "scenes": 8,
+  "maxRevisions": 2,
+  "overdueAfter": 3,
+  "providers": {
+    "luna": {
+      "type": "openai",
+      "model": "gpt-6-luna",
+      "maxTokens": 16384,
+      "noTemperature": true
+    },
+    "sol": {
+      "type": "openai",
+      "model": "gpt-6.1-sol",
+      "maxTokens": 16384,
+      "noTemperature": true,
+      "timeoutMs": 600000
+    }
+  },
+  "artist": {
+    "image": {
+      "type": "openai",
+      "model": "gpt-image-2.5-flare",
+      "aspectRatio": "16:9",
+      "quality": "high"
+    },
+    "inspector": {
+      "type": "openai",
+      "model": "gpt-6.1-sol"
+    },
+    "maxAttempts": 3,
+    "maxReferences": 3
+  },
+  "roles": {
+    "worldbuilder": { "provider": "luna" },
+    "director": { "provider": "luna" },
+    "writer": { "provider": "sol" },
+    "continuist": { "provider": "luna" },
+    "critic": { "provider": "luna" },
+    "archivist": { "provider": "luna" },
+    "artdirector": { "provider": "luna" },
+    "editor": { "provider": "sol" }
+  }
+}
