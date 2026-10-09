@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { audioFilterGraph, buildSrt, buildTimeline, cardFilterGraph, cardSpec, fitSize, kenBurnsFilter, moveFor, renderVideo, sceneFilterGraph } from "../src/video.ts";
+import { audioFilterGraph, buildSrt, buildTimeline, cardFilterGraph, cardSpec, crawlSec, fitSize, kenBurnsFilter, moveFor, renderVideo, sceneFilterGraph } from "../src/video.ts";
 import type { Timeline, Timings } from "../src/video.ts";
 import type { TitleCards } from "../src/titles.ts";
 import type { ArtManifest, ManifestEntry } from "../src/artist.ts";
@@ -277,6 +277,21 @@ test("a narrated title lengthens the opening to fit and plays under it, after th
   assert.ok(audioFilterGraph(long).includes(`[3:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=1800|1800,apad=whole_dur=${long.introFrames / 30}`));
   // Without the WAV's length the opening stays silent.
   assert.equal(buildTimeline(manifest, timings, { titles: narrated }).narration, undefined);
+});
+
+test("a narrated crawl lasts as long as the reading, after the title's narration in the inputs", () => {
+  const crawl = ["Long ago, a wagon left the city.", "It did not go quietly."];
+  const both = { ...titles, crawl, narration: "video/title.wav", crawlNarration: "video/crawl.wav" };
+  const tl = buildTimeline(manifest, timings, { titles: both, narrationSec: 2, crawlNarrationSec: 20 });
+  const part = tl.parts.find((p) => p.kind === "crawl")!;
+  assert.equal(part.frames, Math.ceil((1 + 20 + 2) * 30), "the reading, a beat in, a beat after");
+  assert.equal(tl.crawlNarration, "video/crawl.wav");
+  // Inputs: 1-2 scenes, 3 the title's narration, 4 the crawl's.
+  assert.ok(audioFilterGraph(tl).includes(`[4:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=1000|1000,apad=whole_dur=${part.frames / 30}`));
+  // Without the WAV's length, the crawl keeps its reading-pace length, silent.
+  const silent = buildTimeline(manifest, timings, { titles: both, narrationSec: 2 });
+  assert.equal(silent.crawlNarration, undefined);
+  assert.equal(silent.parts.find((p) => p.kind === "crawl")!.frames, Math.ceil(crawlSec(crawl) * 30));
 });
 
 test("cards: what each says and when, drawn from text files, fading in and out", () => {
