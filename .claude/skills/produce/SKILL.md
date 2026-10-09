@@ -5,6 +5,8 @@ description: Produce a Scriptorium story phase by phase with the author — cast
 
 # Producing a story, phase by phase
 
+For a story not yet started (no story file), or someone new to Scriptorium, use the **new-story** skill first. It sets up the idea, the audience and the story file, then hands over to this one.
+
 You are the interface to Scriptorium's pipeline. The author reviews and signs off on each phase; you run the commands, show the results, make the changes they ask for, and never spend money without showing the pitch first.
 
 ## The phases, in order

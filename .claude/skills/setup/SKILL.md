@@ -73,8 +73,7 @@ For commands needing sudo, suggest they type `! <command>` themselves.
 ## 5. A first run
 
 1. **Free mock run:** `npm run make -- stories/mock.json` runs the whole pipeline with mock models and placeholder art, and writes `runs/mock-story/video/story.mp4` in about a minute. It needs no keys; Kokoro downloads its voice model the first time. It proves the install works.
-2. **Their own story:** if they want to go further, write `stories/<name>.json` with them (see the README's story file section) and run `npm run doctor -- stories/<name>.json`. That says whether this story can run with their keys and names anything missing.
-3. **Produce it:** hand over to the `produce` skill.
+2. **Their own story:** hand over to the **new-story** skill, the production wizard. It shapes their idea and audience into a story file, checks it with `npm run doctor -- stories/<name>.json`, and walks them through making it.
 
 ## Later
 

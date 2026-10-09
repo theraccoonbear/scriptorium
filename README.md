@@ -15,6 +15,8 @@ All state lives in an append-only event log (`<run>/events.jsonl`). The story bi
 
 ## Quick start
 
+**New here?** Open [Claude Code](https://claude.com/claude-code) in this folder and say *"I want to make a story"*. Its production wizard (`.claude/skills/new-story`) sets you up, shapes your idea into a story file, and walks you through every step to the finished film, saying what each paid step costs before it runs. `story.recommended.config.json` is the setup it uses: Opus writes, Haiku 5.5 plans and reviews, and Gemini draws, voices and scores.
+
 ```bash
 npm install
 npm run story:mock -- --scenes 3          # offline: mock models, placeholder art
