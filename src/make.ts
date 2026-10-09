@@ -13,6 +13,7 @@ import { buildRoleProviders, checkDirection } from "./providers.ts";
 import { COST_KINDS, formatSummary, getCostKey, parseCostKind, readLedger, setCostKey, summarize, usd } from "./usage.ts";
 import type { CostKind } from "./usage.ts";
 import { pitch } from "./pitch.ts";
+import { changedShare } from "./tagging.ts";
 import type { Pitch } from "./pitch.ts";
 import { accounted, artStep, audiobookStep, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
 import type { AudiobookStepOptions } from "./steps.ts";
@@ -326,7 +327,7 @@ export interface StepRunners {
   art: (story: ResolvedStory, events: StoryEvent[], shots?: ShotRedo) => Promise<void>;
   extras: (story: ResolvedStory, events: StoryEvent[], redo: string[], notes?: string) => Promise<void>;
   canon: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
-  audiobook: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
+  audiobook: (story: ResolvedStory, events: StoryEvent[], opts?: { freshPalette?: boolean }) => Promise<void>;
   music: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
   video: (story: ResolvedStory, events: StoryEvent[]) => Promise<void>;
 }
@@ -367,7 +368,7 @@ const defaultRunners: StepRunners = {
   },
   // --redo extras directs the key art and cast photo again; --redo extra-cast just retakes one.
   extras: async (s, events, redo, notes) => { await extrasStep(s.runDir, s.config, events, false, { redo: redo.filter((r) => r !== "extras"), redirect: redo.includes("extras"), ...(notes ? { notes } : {}), ...(s.title ? { title: s.title } : {}), ...(s.subtitle ? { subtitle: s.subtitle } : {}), base: dirname(resolve(s.file)) }); },
-  audiobook: async (s, events) => { await audiobookStep(s.runDir, events, audiobookOptions(s)); },
+  audiobook: async (s, events, opts) => { await audiobookStep(s.runDir, events, { ...audiobookOptions(s), ...(opts?.freshPalette ? { freshPalette: true } : {}) }); },
   // Off unless the story file has a "music" block.
   music: async (s) => {
     if (!s.music) { console.error(`[scriptorium] ${c.dim("no music in the story file — skipping")}`); return; }
@@ -428,7 +429,8 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
       cues: (story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length) + 1,
       ...readJson<Record<string, { clean?: boolean }>>(join(story.runDir, "music", "cues.json"), (m) => ({ made: Object.values(m).filter((c) => c.clean).length }))
     },
-    scenesVoiced: existsSync(join(story.runDir, "audiobook")) ? readdirSync(join(story.runDir, "audiobook")).filter((f) => /^scene-\d+\.wav$/.test(f)).length : 0
+    scenesVoiced: existsSync(join(story.runDir, "audiobook")) ? readdirSync(join(story.runDir, "audiobook")).filter((f) => /^scene-\d+\.wav$/.test(f)).length : 0,
+    revoiceShare: changedShare(events)
   });
 }
 
@@ -509,7 +511,10 @@ async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {
   const replanScenes = redo.filter((r) => /^scene:\d+$/.test(r)).map((r) => Number(r.slice("scene:".length)) - 1);
   const redoExtras = redo.filter((r) => r === "extras" || r.startsWith("extra-"));  // extra-logo redraws the logo
   if (redoExtras.length && !steps.includes("extras")) throw new Error(`--redo ${redoExtras.join(",")}: extras are redone in the extras phase (--only extras)`);
-  const redoRefs = redo.filter((r) => !r.startsWith("voice:") && !redoShots.includes(r) && !redoExtras.includes(r) && !/^scene:\d+$/.test(r));
+  // --redo palette: design the voices' tone palettes anew (they're otherwise kept, #135).
+  const freshPalette = redo.includes("palette");
+  if (freshPalette && !steps.includes("audiobook")) throw new Error("--redo palette: the tone palettes are made in the audiobook step (--only audiobook)");
+  const redoRefs = redo.filter((r) => r !== "palette" && !r.startsWith("voice:") && !redoShots.includes(r) && !redoExtras.includes(r) && !/^scene:\d+$/.test(r));
   if (redoRefs.length && !steps.includes("refs")) throw new Error(`--redo ${redoRefs.join(",")}: references are remade in the refs phase (--only refs)`);
   if (redoVoices.length && !steps.includes("voices")) throw new Error(`--redo voice:…: voices are recast in the voices phase (--only voices)`);
   if ((redoShots.length || replanScenes.length) && !steps.includes("art")) throw new Error(`--redo scene-…: shots are redone in the art step (--only art)`);
@@ -596,7 +601,7 @@ async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {
       ? { kind: "redo", subject: [...redoShots, ...replanScenes.map((i) => `scene ${i + 1}`)].join(" "), ...(shots.note ? { note: shots.note } : {}) }
       : { kind: "shots", subject: "new" };
     const before = stage.includes("art") ? await snapshotArt(story.runDir) : new Map();
-    const results = await Promise.allSettled(stage.map((step) => (step === "art" ? withImageRound(story.runDir, before, () => run.art(story, events, shots), artRound) : run[step as "audiobook" | "music" | "video"](story, events))));
+    const results = await Promise.allSettled(stage.map((step) => (step === "art" ? withImageRound(story.runDir, before, () => run.art(story, events, shots), artRound) : step === "audiobook" ? run.audiobook(story, events, { freshPalette }) : run[step as "music" | "video"](story, events))));
     const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
     if (failed) throw failed.reason;
   }
