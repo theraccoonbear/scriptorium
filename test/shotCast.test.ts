@@ -74,3 +74,14 @@ test("only characters the scene's prose mentions can be added to its shots", () 
   assert.equal(inScene(prose, "rebert", "Rebert Kyraus"), false, "a lookalike from another scene isn't added");
   assert.equal(inScene("Lemuelson spoke.", "lemuel", "Lemuel"), false, "whole words only");
 });
+
+test("the cover shows who its prompt describes (the cast check), all of them, and no most-used place", async () => {
+  const { buildArtJobs } = await import("../src/artist.ts");
+  const refs = ["lemuel", "hellga", "ivana", "riann", "liam", "rantoul", "oglesby"].map((id, k) => ev(k, "visual_ref", { kind: "character", id, appearance: id, prompt: `portrait ${id}` }));
+  const base = [...refs, ev(10, "visual_ref", { kind: "location", id: "tavern", appearance: "a tavern", prompt: "tavern" }),
+    ev(11, "scene_art", { sceneIndex: 0, prompt: "x", shots: [{ startParagraph: 0, prompt: "x", characters: ["ivana"], location: "tavern" }] })];
+  const old = buildArtJobs([...base, ev(12, "cover_art", { sceneCount: 1, prompt: "the company on the road" })]).find((j) => j.key === "cover")!;
+  assert.equal(old.location, "tavern", "a cover planned before the check keeps the old picks");
+  const cover = buildArtJobs([...base, ev(12, "cover_art", { sceneCount: 1, prompt: "the company on the road", characters: ["lemuel", "hellga", "ivana", "riann", "liam", "rantoul", "oglesby"] })]).find((j) => j.key === "cover")!;
+  assert.deepEqual([cover.characters, cover.location, cover.maxPortraits], [["lemuel", "hellga", "ivana", "riann", "liam", "rantoul", "oglesby"], undefined, 8]);
+});

@@ -196,7 +196,13 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
     ...(featured.location ? { location: featured.location } : {}),
     ...(featured.props.length > 0 ? { props: featured.props } : {})
   };
-  if (cover) jobs.push({ key: "cover", prompt: cover.prompt, ...feature });
+  // The cover shows who its prompt describes (the cast check), with no
+  // most-used place: the cover's own setting is in its prompt. Covers planned
+  // before the check keep the most-shown characters, place and props.
+  const coverCast = cover?.characters?.filter((id) => refIds("character").has(id));
+  if (cover) jobs.push(coverCast?.length
+    ? { key: "cover", prompt: cover.prompt, characters: coverCast, maxPortraits: MAX_CAST_PHOTO, ...(featured.props.length > 0 ? { props: featured.props } : {}) }
+    : { key: "cover", prompt: cover.prompt, ...feature });
   if (extras) {
     // Every story prompt ends with the art style, verbatim; an extra without it
     // drifts to the image model's own look, so it's added when missing.
