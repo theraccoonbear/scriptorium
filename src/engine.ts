@@ -6,7 +6,7 @@ import type { RatingConflict } from "./roles.ts";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import type { ArtDirection } from "./roles.ts";
-import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect, checkShotCast, mergeShotCast } from "./roles.ts";
+import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect, checkShotCast, mergeShotCast, blockGroupPicture } from "./roles.ts";
 import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
@@ -604,7 +604,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   if (roles.artdirector && committed.length > 0 && lastCover?.sceneCount !== committed.length) {
     const artRole = roles.artdirector;
     await nonFatal("cover art prompt", async () => {
-      const { out, characters } = await directCoverArt(artRole, bible, committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
+      const { out, characters } = await directCoverArt(artRole, bible, committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events), coverLeads(log.events, bible, config.title));
       if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
       const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt, ...(characters ? { characters } : {}) };
       await log.append("cover_art", cover);
@@ -817,7 +817,11 @@ async function castCheck(role: Role, bible: Bible, log: EventLog, out: RoleOutpu
       return characters.length ? { ...s, characters } : s;
     });
     if (added.length) console.error(`[scriptorium]   ${c.dim(`scene ${sceneIndex + 1} cast check: tagged ${added.join("; ")}`)}`);
-    return { ...out, result: { ...out.result, shots: next } };
+    // A shot of more than three named people is blocked out like the cast photo.
+    const style = storyArtStyle(log.events);
+    const looks = Object.fromEntries(cast.map((x) => [x.id, x.look]));
+    const blocked = await Promise.all(next.map(async (s) => ((s.characters?.length ?? 0) > 3 ? { ...s, prompt: await blockIfCrowded(role, s.prompt, s.characters!, looks, style) } : s)));
+    return { ...out, result: { ...out.result, shots: blocked, prompt: blocked[0]?.prompt ?? out.result.prompt } };
   } catch (err) {
     if (isBudgetError(err)) throw err;
     console.error(`[scriptorium]   ${c.retry(`scene ${sceneIndex + 1} cast check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
@@ -829,21 +833,54 @@ async function castCheck(role: Role, bible: Bible, log: EventLog, out: RoleOutpu
 // against every character's look, so each one it describes gets their
 // portrait. Picking the most-shown characters instead gave the cover three
 // portraits for a company of ten, and strangers for the rest.
-async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[], appearances: RefAppearances, artStyle?: string) {
+// The cover: the art director's prompt, centred on the story's leads (#164) —
+// the title character, then the most present — at most COVER_LEADS of them
+// with portraits (Google documents 4 characters held consistent; a moving
+// group of ten came out with people doubled and missing). Everyone else the
+// prompt describes stays as background figures. Blocked out like the cast photo.
+export const COVER_LEADS = 4;
+async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[], appearances: RefAppearances, artStyle?: string, leads: string[] = []) {
   const t0 = Date.now();
   const out = await artDirect(role, { bible, mode: "cover", beats: committed.map((d) => d.beat), appearances, artStyle, previousPrompts });
   recordTiming("artdirector", Date.now() - t0);
-  const cast = Object.entries(appearances.characters).filter(([id, look]) => bible.characters[id] && look).map(([id, look]) => ({ id, look }));
-  if (cast.length === 0) return { out, characters: undefined };
+  const characters = leads.filter((id) => appearances.characters[id]).slice(0, COVER_LEADS);
+  if (characters.length === 0) return { out, characters: undefined };
+  console.error(`[scriptorium]   ${c.dim(`cover leads: ${characters.join(", ")}; anyone else in the background`)}`);
+  const prompt = await blockIfCrowded(role, out.result.prompt, characters, appearances.characters, artStyle, 0);
+  return { out: { ...out, result: { ...out.result, prompt } }, characters };
+}
+
+// Who leads the cover (#164): the title character (one the title names), then
+// the characters most present across the story's shots.
+export function coverLeads(events: StoryEvent[], bible: Bible, storyTitle?: string, count = COVER_LEADS): string[] {
+  const title = (storyTitle ?? "").toLowerCase();
+  const named = Object.entries(bible.characters).filter(([, ch]) => {
+    const first = (ch.name ?? "").split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return Boolean(first && first.length > 2 && new RegExp(`\\b${first}`).test(title));
+  }).map(([id]) => id);
+  const art = new Map<number, SceneArtData>();
+  for (const e of events) if (e.type === "scene_art") art.set((e.data as SceneArtData).sceneIndex, e.data as SceneArtData);
+  const counts = new Map<string, number>();
+  for (const a of art.values()) for (const shot of a.shots ?? []) for (const id of shot.characters ?? []) counts.set(id, (counts.get(id) ?? 0) + 1);
+  const most = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([id]) => id).filter((id) => !named.includes(id));
+  return [...named, ...most].slice(0, count);
+}
+
+// A picture of several named people, rewritten as blocking (the cast photo's
+// recipe): a head count, each person in their place. Only above `from` people
+// (shots: more than three). The style paragraph is set aside and put back
+// verbatim; a failed or empty rewrite keeps the original.
+async function blockIfCrowded(role: Role, prompt: string, ids: string[], looks: Record<string, string>, artStyle?: string, from = 3): Promise<string> {
+  const people = ids.filter((id) => looks[id]).map((id) => ({ id, look: looks[id] }));
+  if (people.length <= from) return prompt;
+  const body = artStyle ? prompt.split(artStyle).join(" ").trim() : prompt;
   try {
-    const checked = await checkShotCast(role, { cast, shots: [{ n: 1, prompt: out.result.prompt }] });
-    const characters = mergeShotCast([], checked.result[1]);
-    if (characters.length) console.error(`[scriptorium]   ${c.dim(`cover cast check: ${characters.join(", ")}`)}`);
-    return { out, characters: characters.length ? characters : undefined };
+    const out = await blockGroupPicture(role, { prompt: body, people });
+    return out.result ? (artStyle ? `${out.result} ${artStyle}` : out.result) : prompt;
   } catch (err) {
     if (isBudgetError(err)) throw err;
-    console.error(`[scriptorium]   ${c.retry(`cover cast check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
-    return { out, characters: undefined };
+    console.error(`[scriptorium]   ${c.retry(`blocking pass failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
+    return prompt;
   }
 }
 
@@ -908,7 +945,7 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
   }
   onReferences?.(made.map((r) => `${r.kind}:${r.id}`));
   if (committed.length > 0) {
-    const { out, characters } = await directCoverArt(artRole, replay(events), committed, prompts, refAppearances(log.events), storyArtStyle(log.events));
+    const { out, characters } = await directCoverArt(artRole, replay(events), committed, prompts, refAppearances(log.events), storyArtStyle(log.events), coverLeads(log.events, replay(events), config.title));
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover-redo", out);
     const cover: CoverArtData = { sceneCount: committed.length, prompt: out.result.prompt, ...(characters ? { characters } : {}) };
     await log.append("cover_art", cover);
@@ -1022,7 +1059,7 @@ export async function planShots({ config, log, roles, runDir, replan = [], redir
   const committed = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData);
   const lastCover = log.events.filter((e) => e.type === "cover_art").at(-1)?.data as CoverArtData | undefined;
   if (committed.length > 0 && (planned > 0 || redirectCover || lastCover?.sceneCount !== committed.length)) {
-    const { out, characters } = await directCoverArt(artRole, replay(log.events), committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events));
+    const { out, characters } = await directCoverArt(artRole, replay(log.events), committed, sceneArtPrompts(log.events), refAppearances(log.events), storyArtStyle(log.events), coverLeads(log.events, replay(log.events), config.title));
     if (runDir) await writeRoleOutput(runDir, ++seq, "artdirector-cover", out);
     await log.append("cover_art", { sceneCount: committed.length, prompt: out.result.prompt, ...(characters ? { characters } : {}) } satisfies CoverArtData);
   }

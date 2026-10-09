@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CAST_SHEET_LABEL, MockImageBackend, PORTRAIT_LABEL, magickCastSheet, renderArt } from "../src/artist.ts";
+import { MockImageBackend, PORTRAIT_LABEL, renderArt } from "../src/artist.ts";
 import type { ArtProgress } from "../src/artist.ts";
 import { checkShotCast, mergeShotCast } from "../src/roles.ts";
 import { inScene } from "../src/engine.ts";
@@ -26,44 +26,28 @@ test("the cast check names who each prompt describes, only known ids; merging ke
   assert.deepEqual(mergeShotCast([], ["a", "b", "c", "d", "e", "f", "g", "h", "i"]), ["a", "b", "c", "d", "e", "f", "g", "h"], "eight at most (they share a contact sheet)");
 });
 
-const fourPeople = (): StoryEvent[] => [
-  ...["hellga", "riann", "osmagus", "lemuel"].map((id, k) => ev(k, "visual_ref", { kind: "character", id, appearance: id, prompt: `portrait ${id}` })),
-  ev(4, "scene_art", { sceneIndex: 0, prompt: "x", shots: [{ startParagraph: 0, prompt: "breakfast", characters: ["hellga", "riann", "osmagus", "lemuel"] }] })
-];
+const people = (n: number): StoryEvent[] => {
+  const ids = Array.from({ length: n }, (_, k) => `p${k + 1}`);
+  return [
+    ...ids.map((id, k) => ev(k, "visual_ref", { kind: "character", id, appearance: id, prompt: `portrait ${id}` })),
+    ev(n, "scene_art", { sceneIndex: 0, prompt: "x", shots: [{ startParagraph: 0, prompt: "the company", characters: ids }] })
+  ];
+};
 
-test("past the portrait limit, every character's portrait goes in one contact sheet", async () => {
+test("each character's own portrait, as the cast photo does: four people, four portraits", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "scriptorium-cast-"));
-  const sheets: number[] = [];
   const backend = new MockImageBackend();
-  await renderArt(fourPeople(), { runDir, backend, shrink: async (i) => i, castSheet: async (portraits) => { sheets.push(portraits.length); return { data: Buffer.from("sheet"), mimeType: "image/jpeg" }; } });
-  const shot = backend.calls.find((c) => c.prompt === "breakfast")!;
-  assert.deepEqual(sheets, [4], "all four portraits, on one sheet");
-  assert.deepEqual(shot.references.filter((r) => r.label === CAST_SHEET_LABEL).length, 1);
-  assert.equal(shot.references.filter((r) => r.label === PORTRAIT_LABEL).length, 0);
+  await renderArt(people(4), { runDir, backend, shrink: async (i) => i });
+  assert.equal(backend.calls.find((c) => c.prompt === "the company")!.references.filter((r) => r.label === PORTRAIT_LABEL).length, 4);
 });
 
-test("no sheet: the first three portraits, and a warning naming who was left out", async () => {
+test("past 8 people, the 8 most prominent get portraits and the rest are named in a warning", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "scriptorium-cast-"));
   const events: ArtProgress[] = [];
   const backend = new MockImageBackend();
-  await renderArt(fourPeople(), { runDir, backend, shrink: async (i) => i, castSheet: async () => { throw new Error("no magick"); }, onProgress: (e) => events.push(e) });
-  const shot = backend.calls.find((c) => c.prompt === "breakfast")!;
-  assert.equal(shot.references.filter((r) => r.label === PORTRAIT_LABEL).length, 3);
-  assert.deepEqual(events.filter((e) => e.type === "portraits_dropped"), [{ type: "portraits_dropped", key: "scene-01-01", dropped: ["lemuel"] }]);
-});
-
-test("the ImageMagick contact sheet is one image of the portraits", async () => {
-  const runDir = await mkdtemp(join(tmpdir(), "scriptorium-cast-"));
-  const { MockImageBackend: M } = await import("../src/artist.ts");
-  const png = await new M().generate({ prompt: "p", references: [] });
-  try {
-    const sheet = await magickCastSheet([png, png, png, png], join(runDir, "art", ".sheets"));
-    assert.equal(sheet.mimeType, "image/jpeg");
-    assert.ok(sheet.data.length > 0);
-  } catch (err) {
-    if (/ENOENT/.test(String(err))) return;  // no ImageMagick here: covered by the fallback test
-    throw err;
-  }
+  await renderArt(people(10), { runDir, backend, shrink: async (i) => i, onProgress: (e) => events.push(e) });
+  assert.equal(backend.calls.find((c) => c.prompt === "the company")!.references.filter((r) => r.label === PORTRAIT_LABEL).length, 8);
+  assert.deepEqual(events.filter((e) => e.type === "portraits_dropped"), [{ type: "portraits_dropped", key: "scene-01-01", dropped: ["p9", "p10"] }]);
 });
 
 test("only characters the scene's prose mentions can be added to its shots", () => {
@@ -84,4 +68,24 @@ test("the cover shows who its prompt describes (the cast check), all of them, an
   assert.equal(old.location, "tavern", "a cover planned before the check keeps the old picks");
   const cover = buildArtJobs([...base, ev(12, "cover_art", { sceneCount: 1, prompt: "the company on the road", characters: ["lemuel", "hellga", "ivana", "riann", "liam", "rantoul", "oglesby"] })]).find((j) => j.key === "cover")!;
   assert.deepEqual([cover.characters, cover.location, cover.maxPortraits], [["lemuel", "hellga", "ivana", "riann", "liam", "rantoul", "oglesby"], undefined, 8]);
+});
+
+test("the cover's leads: the title character first, then the most present; four at most", async () => {
+  const { coverLeads } = await import("../src/engine.ts");
+  const bible = { characters: { rantoul: { name: "Rantoul Hayworth" }, lemuel: { name: "Lemuel" }, hellga: { name: "Hellga" }, ivana: { name: "Ivana" }, riann: { name: "Riann" } } } as never;
+  const events: StoryEvent[] = [ev(0, "scene_art", { sceneIndex: 0, prompt: "x", shots: [
+    { startParagraph: 0, prompt: "a", characters: ["lemuel", "hellga"] }, { startParagraph: 1, prompt: "b", characters: ["lemuel", "ivana"] },
+    { startParagraph: 2, prompt: "c", characters: ["lemuel", "hellga", "riann"] }, { startParagraph: 3, prompt: "d", characters: ["ivana", "rantoul"] }
+  ] })];
+  assert.deepEqual(coverLeads(events, bible, "Rantoul's Mushrooms"), ["rantoul", "lemuel", "hellga", "ivana"]);
+  assert.deepEqual(coverLeads(events, bible), ["lemuel", "hellga", "ivana", "rantoul"], "no title: the most present");
+});
+
+test("the blocking brief: a head count, each person once and placed, no names; the people go most important first", async () => {
+  const { BLOCKING_SYSTEM, blockGroupPicture } = await import("../src/roles.ts");
+  assert.match(BLOCKING_SYSTEM, /head count, first/);
+  assert.match(BLOCKING_SYSTEM, /appears once/);
+  assert.match(BLOCKING_SYSTEM, /Never use names/);
+  const out = await blockGroupPicture(reply({ prompt: " Four figures: … " }) as never, { prompt: "the company on the road", people: [{ id: "a", look: "a vast monk" }, { id: "b", look: "a ginger halfling" }] });
+  assert.equal(out.result, "Four figures: …");
 });

@@ -1,8 +1,7 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
-import { promisify } from "node:util";
 import { postJson, requireKey } from "./providers.ts";
 import { continuityAt, continuityLine, parseJson } from "./roles.ts";
 import type { ArtistBackendSpec, ArtistConfig, ContinuityEntry, CoverArtData, ExtrasArtData, GeminiSpec, SceneArtData, StoryEvent, VisualRefKind } from "./types.ts";
@@ -40,8 +39,6 @@ export const PORTRAIT_LABEL = "Canonical look of a character who appears in this
 export const LOCATION_LABEL = "The place where this image is set — keep its landmarks, architecture, terrain and materials, but choose your own camera angle and framing:";
 export const PROP_LABEL = "A key object that appears in this image — match its shape, materials, colors and markings exactly:";
 export const CAST_PHOTO_LABEL = "Real photo of the person or animal this character IS — the portrait must be unmistakably them (same face and features, build, skin, hair; for an animal, breed, coat and markings), redrawn in the story's art style and dressed as the description says, not as in the photo:";
-// More characters than portraits a request can carry (#143): one contact sheet of all of them.
-export const CAST_SHEET_LABEL = "Canonical looks of the characters who appear in this image, one portrait per panel: every one of them is in this picture. Match each one's face, build, hair, colors and clothing exactly, but NOT the poses, framing or panel layout: pose and place them exactly as this image's description says:";
 export const CAST_PORTRAIT_LABEL = "Canonical look of a character who appears in this image — a real cast member, so this likeness is intended: match their face, build, hair, colors and clothing exactly, but NOT the reference's pose, expression or framing: pose and move them exactly as this image's description says:";
 export const AUTHOR_DESIGN_LABEL = "The author's own drawing of this character — their design: follow its face, hair and facial hair, colouring, build, clothing and gear exactly, but redraw it in the story's art style (not the drawing's medium or line), posed as the description says. A drawing, not a real person:";
 export const REFRAME_LABEL = "THE image to reproduce — this exact picture: the same people, poses, place, light, colour grade and photographic look. Reframe it to this new shape: extend the scene naturally at the edges (or crop) so it fills the frame, keeping the main figures whole and central, with open sky at the top. Don't redraw, restyle, add or remove anything:";
@@ -129,7 +126,10 @@ export interface ArtJob {
 export const KEY_ART: Record<string, string> = { "extra-keyart-2x3": "2:3", "extra-keyart-16x9": "16:9", "extra-keyart-1x1": "1:1" };
 export const CAST_PHOTO_KEY = "extra-cast";
 export const EXTRAS_SIZE = "2K";
-export const MAX_CAST_PHOTO = 8;  // characters in the cast photo (and portraits passed)
+export const MAX_CAST_PHOTO = 8;
+// Separate character portraits per image: the cast photo holds 8 people well
+// (Google documents 4 for consistency; 8 has held up in practice).
+export const MAX_PORTRAITS = 8;  // characters in the cast photo (and portraits passed)
 const STYLE_SCENES_FOR_EXTRAS = 3;  // finished scenes shown to an extra for its look
 
 // Canonical references first (characters, locations, props — every later
@@ -227,7 +227,7 @@ export function buildArtJobs(events: StoryEvent[]): ArtJob[] {
 // The reference images a shot is drawn with, as renderArt picks them (up to
 // maxPortraits characters, its location, two props; only references that
 // exist), each with a hash of its image file.
-export async function shotInputs(job: ArtJob, manifest: ArtManifest, artDir: string, maxPortraits = 3): Promise<Record<string, string>> {
+export async function shotInputs(job: ArtJob, manifest: ArtManifest, artDir: string, maxPortraits = MAX_PORTRAITS): Promise<Record<string, string>> {
   const have = (key: string) => Boolean(manifest[key]);
   const keys = [
     // Every character: past maxPortraits they go together on one contact sheet (#143).
@@ -258,7 +258,7 @@ export function changedRefs(was: Record<string, string>, now: Record<string, str
 export interface StaleShot { key: string; refs: string[]; approved: boolean }
 
 // Every shot drawn from a reference that has changed since: the reshoot list.
-export async function staleShots(events: StoryEvent[], runDir: string, approved: ReadonlySet<string> = new Set(), maxPortraits = 3): Promise<StaleShot[]> {
+export async function staleShots(events: StoryEvent[], runDir: string, approved: ReadonlySet<string> = new Set(), maxPortraits = MAX_PORTRAITS): Promise<StaleShot[]> {
   const artDir = join(runDir, "art");
   let manifest: ArtManifest = {};
   try { manifest = JSON.parse(await readFile(join(artDir, "art.json"), "utf8")); } catch { return []; }
@@ -448,33 +448,10 @@ export interface ArtOptions {
   referenceSize?: number;
   inspectSize?: number;
   shrink?: Shrink;         // resizer; defaults to ffmpeg, falling back to the original
-  castSheet?: CastSheet;   // tiles portraits into one image (#143); defaults to ImageMagick
   onProgress?: (event: ArtProgress) => void;
 }
 
 export type Shrink = (image: Image, maxSide: number) => Promise<Image>;
-export type CastSheet = (portraits: Image[], workDir: string) => Promise<Image>;
-
-// One image of several portraits side by side (ImageMagick montage), for a
-// shot with more characters than the image model takes separate references for.
-// Its working files go in a folder under the run's art/ and are removed after.
-export const magickCastSheet: CastSheet = async (portraits, workDir) => {
-  await mkdir(workDir, { recursive: true });
-  const dir = await mkdtemp(join(workDir, "sheet-"));
-  try {
-    const files = await Promise.all(portraits.map(async (p, k) => {
-      const f = join(dir, `${k}.${extensionFor(p.mimeType)}`);
-      await writeFile(f, p.data);
-      return f;
-    }));
-    const out = join(dir, "sheet.jpg");
-    await promisify(execFile)("magick", ["montage", ...files, "-tile", `${Math.min(portraits.length, 4)}x`, "-geometry", "512x768+12+12", "-background", "#9a9a9a", out]);
-    return { data: await readFile(out), mimeType: "image/jpeg" };
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-};
-
 // Downscale with ffmpeg (already required by `video`) to a JPEG no larger than
 // maxSide on its longest side. Any failure — no ffmpeg, odd input — returns the
 // original: smaller requests are an optimization, never a reason to fail a render.
@@ -530,7 +507,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const maxReferences = opts.maxReferences ?? 3;
   const emit = opts.onProgress ?? (() => {});
 
-  const maxPortraits = opts.maxPortraits ?? 3;
+  const maxPortraits = opts.maxPortraits ?? MAX_PORTRAITS;
   // One art style for the whole story, sent with every image request — not left
   // to each prompt to restate.
   const style = storyArtStyle(events);
@@ -566,21 +543,18 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       const label = kind === "character" && castIds.has(id) ? CAST_PORTRAIT_LABEL : REF_LABEL[kind];
       return img ? [{ ...img, label }] : [];
     }).slice(0, limit);
-  // Each character's portrait, or, past the limit, all of them on one contact
-  // sheet, so nobody in the shot is drawn as a stranger (#143). A sheet that
-  // can't be made falls back to the first few, naming who was left out.
-  const sheetDir = join(outDir, ".sheets");
+  // Each character's own portrait, most prominent first, up to the limit: the
+  // cast photo's recipe, which holds up to 8 people. A contact sheet of every
+  // portrait in one image lost and merged people, so it's gone; anyone past the
+  // limit is drawn from their description, and named in a warning.
   const characterRefs = async (job: ArtJob): Promise<Image[]> => {
     const limit = job.maxPortraits ?? maxPortraits;
     const all = refImages("character", job.characters ?? [], Infinity);
-    if (all.length <= limit) return all;
-    try {
-      return [{ ...(await (opts.castSheet ?? magickCastSheet)(all, sheetDir)), label: CAST_SHEET_LABEL }];
-    } catch {
+    if (all.length > limit) {
       const have = (job.characters ?? []).filter((id) => refs.has(refKey("character", id)));
       emit({ type: "portraits_dropped", key: job.key, dropped: have.slice(limit) });
-      return all.slice(0, limit);
     }
+    return all.slice(0, limit);
   };
   // A shot gets the references for what it shows — up to 3 characters, its
   // location, 2 props — then a recent render or two for style. Image models

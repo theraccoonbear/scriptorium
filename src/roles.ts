@@ -201,6 +201,29 @@ export function mergeShotCast(tagged: string[], described: string[] | undefined,
   return [...new Set([...(described ?? []), ...tagged])].slice(0, Math.max(max, tagged.length));
 }
 
+// The blocking pass: a picture of more than three named people gets its prompt
+// rewritten the way the cast photo's reads — a head count, then each person on
+// their own line, placed in the frame — since a story-like prompt that lists
+// people along the way lost and doubled them.
+export const BLOCKING_SYSTEM = `You rewrite an image prompt so an image model draws every named person exactly once, each in their place. Keep the prompt's scene, moment, mood, light and camera; change only how the people are laid out.
+
+Write it like a film still's blocking:
+1. The head count, first: "Ten figures: seven named, three porters."
+2. Each PERSON in their own sentence: where they are in the frame (foreground left, centre, on the wagon bench, behind at right…), what they're doing, and their look from LOOKS in a few words (build, hair, clothing). Every person in PEOPLE appears once — never two figures from one description, never one person twice. The most important people are largest and nearest.
+3. Anyone else the scene needs (porters, a crowd) as plain background figures, after the named people.
+4. The setting in one or two sentences, then the camera.
+- Never use names: describe people by appearance only.
+- Under 220 words.
+
+Output ONLY JSON: {"prompt":string}`;
+
+export async function blockGroupPicture(role: Role, p: { prompt: string; people: { id: string; look: string }[] }): Promise<RoleOutput<string>> {
+  const prompt = [`PROMPT:\n${p.prompt}`, `PEOPLE (each appears once, most important first):\n${p.people.map((x) => `- ${x.look}`).join("\n")}`].join("\n\n");
+  const out = await callJson(role, { role: "blocking", system: BLOCKING_SYSTEM, prompt, ctx: { task: "blocking" } });
+  const text = String((out.result as { prompt?: unknown })?.prompt ?? "").trim();
+  return { ...out, result: text };
+}
+
 // The opening crawl (#145): the story so far, for a story that starts partway through.
 export const CRAWL_SYSTEM = `You write the opening crawl of a film: the words that scroll up the screen after the title, telling the audience what happened before the first scene.
 

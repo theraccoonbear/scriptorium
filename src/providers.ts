@@ -130,6 +130,9 @@ export class MockProvider {
         if (ctx.task === "logoart") {
           return JSON.stringify({ prompt: "Bold carved gold letters with a weathered edge." });
         }
+        if (ctx.task === "blocking") {
+          return JSON.stringify({ prompt: "Mock blocking: each person in their place." });
+        }
         if (ctx.task === "shotcast") {
           return JSON.stringify({ shots: [] });
         }

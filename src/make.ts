@@ -149,6 +149,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...(raw.extras ?? baseConfig.extras ? { extras: { ...baseConfig.extras, ...raw.extras } } : {}),
     ...(raw.budget ?? baseConfig.budget ? { budget: raw.budget ?? baseConfig.budget } : {}),
     ...(raw.rating !== undefined ? { rating: resolveRating(raw.rating, `${path}: "rating"`) } : {}),
+    ...(typeof raw.title === "string" && raw.title.trim() ? { title: raw.title.trim() } : {}),
     ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
     ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {}),
     ...(raw.critic ?? baseConfig.critic ? { critic: raw.critic ?? baseConfig.critic } : {}),
