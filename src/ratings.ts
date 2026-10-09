@@ -156,7 +156,7 @@ export function visualLimits(p: RatingPolicy): string {
 }
 
 // The roles that write, plan or picture the story, and get the policy.
-export const RATED_LAYERS = ["worldbuilder", "creator", "director", "beatgate", "writer", "editor", "artdirector", "voicedirector"] as const;
+export const RATED_LAYERS = ["worldbuilder", "creator", "director", "beatgate", "writer", "editor", "artdirector", "blocking", "voicedirector"] as const;
 
 // The film's rating card: the rating, its tagline, why, and for whom.
 export function ratingCard(p: RatingPolicy): { rating: string; tagline: string; reasons?: string; age?: string; note: string } {
