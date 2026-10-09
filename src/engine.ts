@@ -1,7 +1,7 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import type { ArtDirection } from "./roles.ts";
-import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect } from "./roles.ts";
+import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect, checkShotCast, mergeShotCast } from "./roles.ts";
 import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
 import { c } from "./colors.ts";
@@ -10,7 +10,7 @@ import { isBudgetError } from "./usage.ts";
 import { storedContext } from "./context.ts";
 import { continuistLane, dedupIssues, sameIssue, stuckIssues } from "./review.ts";
 import { readVisualRefs, refAppearances, storyArtStyle } from "./visualrefs.ts";
-import { lookOf, portraitIds } from "./characterSheet.ts";
+import { lookOf, portraitIds, recordedSheet } from "./characterSheet.ts";
 import type { RefAppearances } from "./visualrefs.ts";
 import type {
   Beat,
@@ -708,7 +708,7 @@ async function directSceneShots(
   previousPrompts: string[], log: EventLog,
   recordRefs: (out: RoleOutput<ArtDirection>, batch: number) => Promise<void>
 ): Promise<{ drafts: RoleOutput<ArtDirection>[]; made: VisualRefData[] }> {
-  const first = await directSceneArt(role, config, bible, beat, prose, sceneIndex, previousPrompts, refAppearances(log.events), storyArtStyle(log.events));
+  const first = await castCheck(role, bible, log, await directSceneArt(role, config, bible, beat, prose, sceneIndex, previousPrompts, refAppearances(log.events), storyArtStyle(log.events)), sceneIndex, prose);
   const have = refAppearances(log.events);
   const shots = first.result.shots ?? [];
   // The author's "portrait": false holds here too: those characters are drawn from their description alone.
@@ -727,8 +727,49 @@ async function directSceneShots(
     return { drafts: [first], made: [] };
   }
   if (made.length === 0) return { drafts: [first], made };
-  const final = await directSceneArt(role, config, bible, beat, prose, sceneIndex, previousPrompts, refAppearances(log.events), storyArtStyle(log.events));
+  const final = await castCheck(role, bible, log, await directSceneArt(role, config, bible, beat, prose, sceneIndex, previousPrompts, refAppearances(log.events), storyArtStyle(log.events)), sceneIndex, prose);
   return { drafts: [first, final], made };
+}
+
+// A character is in a scene when its prose names them: their name or first
+// name, or (for an unnamed part) their id's words ("elf woman").
+export function inScene(prose: string, id: string, name?: string): boolean {
+  const text = prose.toLowerCase();
+  const words = (name ?? "").replace(/^unknown\s+/i, "").toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  const candidates = [words.join(" "), words[0], id.replace(/_/g, " ").toLowerCase()].filter(Boolean) as string[];
+  return candidates.some((w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(text));
+}
+
+// The cast check (#143): every character a shot's prompt describes is tagged,
+// so their portrait goes with it. Looks come from their reference portrait's
+// description, else the author's sheet, else the bible. A failed check keeps
+// the shots as the art director tagged them.
+async function castCheck(role: Role, bible: Bible, log: EventLog, out: RoleOutput<ArtDirection>, sceneIndex: number, prose: string): Promise<RoleOutput<ArtDirection>> {
+  const shots = out.result.shots ?? [];
+  if (shots.length === 0) return out;
+  const looks = refAppearances(log.events).characters;
+  const sheet = recordedSheet(log.events) ?? {};
+  // Only who this scene's prose mentions can be in its shots: someone who
+  // merely looks alike (another story's barkeep) isn't added.
+  const cast = Object.entries(bible.characters).filter(([id, ch]) => inScene(prose, id, ch.name))
+    .map(([id, ch]) => ({ id, look: looks[id] || sheet[id]?.appearance || [ch.name, (ch as { traits?: string }).traits].filter(Boolean).join(": ") })).filter((c) => c.look);
+  if (cast.length === 0) return out;
+  try {
+    const checked = await checkShotCast(role, { cast, shots: shots.map((s, k) => ({ n: k + 1, prompt: s.prompt })) });
+    const added: string[] = [];
+    const next = shots.map((s, k) => {
+      const characters = mergeShotCast(s.characters ?? [], checked.result[k + 1]);
+      const missing = characters.filter((id) => !(s.characters ?? []).includes(id));
+      if (missing.length) added.push(`${k + 1}: +${missing.join(", +")}`);
+      return characters.length ? { ...s, characters } : s;
+    });
+    if (added.length) console.error(`[scriptorium]   ${c.dim(`scene ${sceneIndex + 1} cast check: tagged ${added.join("; ")}`)}`);
+    return { ...out, result: { ...out.result, shots: next } };
+  } catch (err) {
+    if (isBudgetError(err)) throw err;
+    console.error(`[scriptorium]   ${c.retry(`scene ${sceneIndex + 1} cast check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
+    return out;
+  }
 }
 
 async function directCoverArt(role: Role, bible: Bible, committed: SceneCommittedData[], previousPrompts: string[], appearances: RefAppearances, artStyle?: string) {

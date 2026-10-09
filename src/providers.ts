@@ -126,6 +126,9 @@ export class MockProvider {
         if (ctx.task === "logoart") {
           return JSON.stringify({ prompt: "Bold carved gold letters with a weathered edge." });
         }
+        if (ctx.task === "shotcast") {
+          return JSON.stringify({ shots: [] });
+        }
         if (ctx.task === "canon") {
           return JSON.stringify({ issues: [] });
         }
