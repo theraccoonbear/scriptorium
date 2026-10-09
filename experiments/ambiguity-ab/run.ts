@@ -21,7 +21,7 @@ import { accounted } from "../../src/steps.ts";
 import { readLedger } from "../../src/usage.ts";
 import type { Patch, SceneCommittedData, StoryConfig } from "../../src/types.ts";
 
-const { values } = parseArgs({ options: { arms: { type: "string", default: "A,B" }, runs: { type: "string", default: "1" }, mock: { type: "boolean", default: false } } });
+const { values } = parseArgs({ options: { arms: { type: "string", default: "A,B" }, runs: { type: "string", default: "1" }, mock: { type: "boolean", default: false }, resume: { type: "string" } } });
 const ROOT = "runs/_scratch/ab-ambiguity";
 
 export const PREMISE = "In a fog-bound fishing village, the harbourmaster's apprentice finds the village's only boat cut loose on the night before the herring run, and has until dawn to learn who did it and why.";
@@ -51,8 +51,9 @@ export function splice(draft: string): string {
   return paras.join("\n\n") + (rest ? `\n\n${rest}` : "");
 }
 
-async function runArm(arm: "A" | "B", n: number, base: StoryConfig) {
-  const runDir = join(ROOT, `${new Date().toISOString().replace(/[:.]/g, "-")}-${arm}${n}`);
+// A stopped run picks up where its log left off (runStory resumes).
+async function runArm(arm: "A" | "B", n: number, base: StoryConfig, resumeDir?: string) {
+  const runDir = resumeDir ?? join(ROOT, `${new Date().toISOString().replace(/[:.]/g, "-")}-${arm}${n}`);
   await mkdir(runDir, { recursive: true });
   const config: StoryConfig = { ...base, scenes: 3, premise: PREMISE, setting: SETTING, sceneWords: { min: 700, max: 1000 }, ambiguity: "some", writerNotes: arm === "B" };
   const roles = buildRoleProviders(config);
@@ -149,7 +150,15 @@ if (import.meta.main) {
   const base = JSON.parse(await readFile(values.mock ? "story.config.json" : "story.recommended.config.json", "utf8")) as StoryConfig;
   const arms = values.arms!.split(",").map((a) => a.trim().toUpperCase()) as ("A" | "B")[];
   const results = [];
-  for (let n = 1; n <= Number(values.runs); n++) for (const arm of arms) results.push(await runArm(arm, n, base));
+  if (values.resume) {
+    // --resume dir1,dir2: finish (or just measure) earlier runs; the arm is the dir's suffix (…-A1, …-B1).
+    for (const dir of values.resume.split(",").map((d) => d.trim()).filter(Boolean)) {
+      const arm = (/-([AB])\d+$/.exec(dir)?.[1] ?? "A") as "A" | "B";
+      results.push(await runArm(arm, 1, base, dir));
+    }
+  } else {
+    for (let n = 1; n <= Number(values.runs); n++) for (const arm of arms) results.push(await runArm(arm, n, base));
+  }
   const md = report(results);
   await mkdir(ROOT, { recursive: true });
   const file = join(ROOT, `report-${new Date().toISOString().replace(/[:.]/g, "-")}${values.mock ? "-mock" : ""}.md`);
