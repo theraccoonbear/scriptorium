@@ -8,7 +8,7 @@ import { dueSetups, runStory, withPlants } from "../src/engine.ts";
 import { AMBIGUITY_GUIDE, BEAT_GATE_SYSTEM, CONTINUIST_SYSTEM, DIRECTOR_SYSTEM, ARCHIVIST_SYSTEM } from "../src/roles.ts";
 import { EventLog } from "../src/eventlog.ts";
 import { buildRoleProviders } from "../src/providers.ts";
-import type { Beat, Setup, StoryConfig } from "../src/types.ts";
+import type { Beat, Role, Setup, StoryConfig } from "../src/types.ts";
 
 // Issue #93: not every setup is a promise. Red herrings misdirect, open
 // questions may stay open, motifs recur — and a hidden layer the prose never states.
@@ -123,4 +123,21 @@ test("the writer's notes are cut off its draft: never in the prose, shown to the
   assert.match(seen.continuist.at(-1)!, /WRITER'S NOTES \(the writer's stated intent, not part of the scene\):\n- seeding the bell as a motif/);
   assert.match(seen.archivist.at(-1)!, /WRITER'S NOTES \(what the writer meant/);
   assert.match(CONTINUIST_SYSTEM, /They are never evidence: judge only what the prose itself establishes/);
+});
+
+test("writerNotes: false takes the notes channel away; the A/B harness splices its floating detail into the prose, never the notes", async () => {
+  const { write } = await import("../src/roles.ts");
+  const systems: string[] = [];
+  const role = { provider: { complete: async (req: { system: string }) => { systems.push(req.system); return "The fog came in.\n\n### WRITER'S NOTES\n- x"; } } } as unknown as Role;
+  const beat = { goal: "", conflict: "", pov: "", location: "", mustReveal: "", constraints: [], payoffs: [] } as Beat;
+  const off = await write(role, { bible: emptyBible(), beat, sceneIndex: 0, attempt: 0, sceneWords: { min: 1, max: 2 }, notes: false });
+  const on = await write(role, { bible: emptyBible(), beat, sceneIndex: 0, attempt: 0, sceneWords: { min: 1, max: 2 } });
+  assert.doesNotMatch(systems[0], /WRITER'S NOTES/);
+  assert.match(systems[1], /WRITER'S NOTES \(optional\)/);
+  assert.deepEqual([off.result, off.notes], ["The fog came in.", undefined], "notes are still cut off the prose, and dropped");
+  assert.deepEqual([on.result, on.notes], ["The fog came in.", "- x"]);
+  const { splice, PROBE_F } = await import("../experiments/ambiguity-ab/run.ts");
+  const spliced = splice("One.\n\nTwo.\n\nThree.\n\n### WRITER'S NOTES\n- the bell stays unexplained");
+  assert.equal(spliced, `One.\n\nTwo.\n\n${PROBE_F.sentence}\n\nThree.\n\n### WRITER'S NOTES\n- the bell stays unexplained`);
+  assert.equal(splice(spliced), spliced, "once only");
 });

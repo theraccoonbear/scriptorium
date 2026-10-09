@@ -344,6 +344,7 @@ export interface StoryConfig {
   overdueAfter?: number;
   sceneWords?: WordBudget;
   ambiguity?: Ambiguity;  // how much the story leaves unsaid (#93): "tidy", "some" (default) or "lots"
+  writerNotes?: boolean;  // the writer may tell its reviewers what it meant, off the page (default true)
   length?: import("./length.ts").LengthSetting;  // a running time (#170): { minutes, scenes?, wordsPerMinute?, fit? }
   providers: Record<string, ProviderSpec>;
   roles: Record<string, RoleSpec>;

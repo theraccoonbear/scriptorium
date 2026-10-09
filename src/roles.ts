@@ -843,8 +843,10 @@ export async function write(role: Role, params: {
   previousScenes?: string[];
   speakerTags?: boolean;
   suggestions?: Issue[];  // optional craft notes (advisory critic) — take or leave
+  notes?: boolean;        // offer the writer's notes channel (default true; config writerNotes)
 } & CreativeFeedback): Promise<RoleOutput<string> & { notes?: string }> {
   const { bible, beat, sceneIndex, attempt, sceneWords, previousDraft, previousScenes, speakerTags, issues, fresh, suggestions } = params;
+  const system = params.notes === false ? WRITER_SYSTEM.replace(/\n- WRITER'S NOTES \(optional\):[^\n]*/, "") : WRITER_SYSTEM;
   // Voice sheets for every character in the bible — not just POV, so minor
   // characters arrive with their own register and voices cannot converge.
   const voiceSheets = Object.values(bible.characters)
@@ -898,7 +900,7 @@ export async function write(role: Role, params: {
   try {
     raw = await role.provider.complete({
       role: "writer",
-      system: WRITER_SYSTEM,
+      system,
       prompt,
       temperature: role.temperature,
       timeoutMs: role.timeoutMs,
@@ -912,7 +914,7 @@ export async function write(role: Role, params: {
     raw = err.partial;
   }
   const { prose, notes } = splitWriterNotes(raw);
-  return { result: prose, ...(notes ? { notes } : {}), prompt, system: WRITER_SYSTEM, raw };
+  return { result: prose, ...(notes && params.notes !== false ? { notes } : {}), prompt, system, raw };
 }
 
 // The writer's notes to its reviewers, cut off its draft so they never reach

@@ -443,7 +443,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         }
         const fresh = stage === 2;
         t0 = Date.now();
-        const writeOut = await write(roles.writer, { bible, beat: beat.result, sceneIndex: i, attempt, sceneWords, issues: verdict.issues, suggestions, previousDraft: prose, previousScenes, fresh, speakerTags: config.speakerTags });
+        const writeOut = await write(roles.writer, { bible, beat: beat.result, sceneIndex: i, attempt, sceneWords, issues: verdict.issues, suggestions, previousDraft: prose, previousScenes, fresh, speakerTags: config.speakerTags, notes: config.writerNotes !== false });
         recordTiming("writer", Date.now() - t0);
         if (runDir) await writeRoleOutput(runDir, ++seq, `writer-a${attempt}`, writeOut);
         prose = writeOut.result;
