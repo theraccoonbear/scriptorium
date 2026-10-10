@@ -9,7 +9,7 @@ Walk the user from nothing to a working setup. Go one step at a time and wait fo
 
 ## 1. What Scriptorium makes
 
-Explain this in a few lines, then ask what they want to make: a story only, an illustrated audiobook, or the full video. That decides which keys they need.
+Explain this in a few lines, then ask what they want to make with the **AskUserQuestion** tool: "The full film (Recommended)" / "An illustrated audiobook" / "The story only", each with a one-line description of its keys and rough cost. That decides which keys they need. Ask every later choice the same way: options with a suggestion, one decision per question.
 
 Scriptorium turns a premise, or the author's own notes, into a finished story. It goes phase by phase:
 

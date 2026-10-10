@@ -74,6 +74,16 @@ A story can be given a running time: `"length": { "minutes": 12 }`, with `"scene
 - **The pitch** gives the running time ("~12 min read aloud (asked 12)").
 - `"fit": "off"` skips the check.
 
+## Asking the author
+
+Every choice goes through the **AskUserQuestion** tool: 2–4 options, the suggested one first and marked "(Recommended)", and "Other" for their own words. Examples:
+- **a pitch:** "Go ahead, about $0.42 (Recommended)" / "Not now";
+- **an audition:** each candidate voice as an option;
+- **the canon check's fixes:** "Apply all (Recommended)" / "Apply all but some" / "None";
+- **approving a round:** "Approve all", or "Approve some" with the keys typed in Other.
+
+Show what they need to see first (the contact sheet, the reel, the legend, the pitch) in a short message, then ask. Where the tool isn't available, ask one question in text and wait.
+
 ## Before every paid phase: the pitch
 
 Run `npm run pitch -- <story.json> --only <phase>` and tell the author, in a line or two, what it will make and cost, and the budget left (`story.budget.usd` in the story file). Wait for a yes. If the estimate exceeds the budget, say so and offer to raise it — never raise it yourself.
