@@ -918,7 +918,7 @@ export async function generateAudiobook(events: StoryEvent[], opts: AudiobookOpt
   const verbatim = readsVerbatim(opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL);
   if (opts.geminiBatch && mode !== "line" && verbatim) console.error(`[scriptorium] geminiBatch: ${opts.geminiModel ?? DEFAULT_GEMINI_TTS_MODEL} takes direction only in a live request — voicing live (full price)`);
   const batchSpeak = opts.geminiBatch && mode !== "line" && !verbatim && !opts.speak
-    ? geminiBatchSpeaker(geminiBatchJobs({ stateFile: `${outDir}/batch-jobs.json`, log: (m) => console.error(`[scriptorium] ${m}`) }), { model: opts.geminiModel })
+    ? geminiBatchSpeaker(geminiBatchJobs({ stateFile: `${outDir}/batch-jobs.json`, log: (m) => console.error(`[scriptorium] ${m}`) }), { model: opts.geminiModel, ...(opts.pronunciations ? { pronunciations: opts.pronunciations } : {}) })
     : undefined;
   // Batched modes voice each scene's Gemini pieces up front; synth hands them out
   // by piece number, and anything a batch couldn't voice goes line by line.
