@@ -19,7 +19,7 @@ import { buildRoleProviders } from "../../src/providers.ts";
 import { splitWriterNotes } from "../../src/roles.ts";
 import { accounted } from "../../src/steps.ts";
 import { readLedger } from "../../src/usage.ts";
-import type { Patch, SceneCommittedData, StoryConfig } from "../../src/types.ts";
+import type { LooseEndsData, Patch, SceneCommittedData, StoryConfig } from "../../src/types.ts";
 
 const { values } = parseArgs({ options: { arms: { type: "string", default: "A,B" }, runs: { type: "string", default: "1" }, mock: { type: "boolean", default: false }, resume: { type: "string" } } });
 const ROOT = "runs/_scratch/ab-ambiguity";
@@ -85,6 +85,7 @@ async function measure(runDir: string, log: EventLog, roles: ReturnType<typeof b
   const writerNotes = (await Promise.all(files.filter((f) => /writer-a/.test(f)).map(read)))
     .map((t) => splitWriterNotes(t.split("## Raw Response").at(-1) ?? "").notes).filter(Boolean) as string[];
   const story = scenes.map((s) => s.prose).join("\n\n");
+  const loose = log.events.filter((e) => e.type === "loose_ends").map((e) => e.data as LooseEndsData).at(-1)?.ends ?? [];
   const probe = (p: typeof PROBE_D | typeof PROBE_F) => {
     const opened = setups.filter((s) => p.match.test(`${s.id} ${s.text ?? ""}`));
     return {
@@ -93,7 +94,9 @@ async function measure(runDir: string, log: EventLog, roles: ReturnType<typeof b
       paid: opened.some((s) => paid.has(s.id)),
       stillOpen: bible.ledger.filter((s) => p.match.test(`${s.id} ${s.text}`)).map((s) => s.id),
       gateIssues: gateIssues.filter((l) => p.match.test(l)).length,
-      inWriterNotes: writerNotes.some((n) => p.match.test(n))
+      inWriterNotes: writerNotes.some((n) => p.match.test(n)),
+      // The loose-ends check (#180): found it? judged it declared (left open) or owed (a promise)?
+      looseEnd: (() => { const e = loose.find((x) => p.match.test(`${x.quote} ${x.detail}`)); return e ? (e.declared ? `declared (draft ${e.draft})` : "owed") : "not found"; })()
     };
   };
   const judged = await judge(roles, story);
@@ -126,15 +129,15 @@ async function judge(roles: ReturnType<typeof buildRoleProviders>, story: string
 function report(results: Awaited<ReturnType<typeof runArm>>[]): string {
   const row = (r: (typeof results)[number], p: "D" | "F") => {
     const x = r[p];
-    return `| ${r.arm} | ${p} | ${x.inFinalProse ? "yes" : "no"} | ${x.recordedAs.join("; ") || "—"} | ${x.paid ? "yes" : "no"} | ${x.stillOpen.join(", ") || "—"} | ${x.gateIssues} | ${x.inWriterNotes ? "yes" : "no"} | ${x.judge} |`;
+    return `| ${r.arm} | ${p} | ${x.inFinalProse ? "yes" : "no"} | ${x.recordedAs.join("; ") || "—"} | ${x.looseEnd} | ${x.paid ? "yes" : "no"} | ${x.gateIssues} | ${x.inWriterNotes ? "yes" : "no"} | ${x.judge} |`;
   };
   return [
     `# Ambiguity A/B (#180)`,
     ``,
     `D = deliberate loose end (${PROBE_D.what}); F = floating detail (${PROBE_F.what}).`,
-    `Hoped for: D recorded as an open question or motif, few reviewer issues, left open at the end; F recorded as a promise and paid off or flagged.`,
+    `Hoped for (#180's loose-ends check): in B, D is declared on the draft that introduced it and left open; F is owed and the final scene pays it off. In A (no notes) both are owed.`,
     ``,
-    `| arm | probe | in scene 2 | recorded as | paid | open at end | reviewer issues | in writer's notes | judge |`,
+    `| arm | probe | in scene 2 | recorded as | loose-ends check | paid | reviewer issues | in writer's notes | judge |`,
     `|---|---|---|---|---|---|---|---|---|`,
     ...results.flatMap((r) => [row(r, "D"), row(r, "F")]),
     ``,

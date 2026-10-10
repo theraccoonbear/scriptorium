@@ -97,6 +97,16 @@ export interface Setup {
   kind?: SetupKind;
   purpose?: string;   // the hidden layer: what it's for ("makes the reader suspect Nell"); never stated in the prose
 }
+// Every draft of a scene, with the writer's notes on it (#180): the loose-ends
+// check takes a note as intent only from the draft that introduced the detail.
+export interface SceneDraftsData { index: number; drafts: SceneDraft[] }
+export interface SceneDraft { n: number; prose: string; notes?: string }
+// What the loose-ends check found before the final scene (#180).
+export interface LooseEndsData {
+  before: number;                // the final scene's index
+  ends: { scene: number; quote: string; detail: string; draft?: number; declared: boolean; id?: string }[];
+}
+
 // How much the story leaves unsaid (#93): tidy explains everything by the end;
 // some lets a couple of questions survive; lots plants and keeps them freely.
 export type Ambiguity = "tidy" | "some" | "lots";
@@ -175,6 +185,7 @@ export interface StoryEvent<T = unknown> {
 
 export interface SceneCommittedData {
   patchDisputed?: string[];  // the patch gate's last objections, when the archivist's patch was kept after the last try
+  drafts?: SceneDraft[];  // every draft as reviewed, with the writer's notes (#180)
   index: number;
   tension: number;
   complication?: string;  // runs written before turns (#90): the stock complication it was given
@@ -345,6 +356,7 @@ export interface StoryConfig {
   sceneWords?: WordBudget;
   ambiguity?: Ambiguity;  // how much the story leaves unsaid (#93): "tidy", "some" (default) or "lots"
   writerNotes?: boolean;  // the writer may tell its reviewers what it meant, off the page (default true)
+  looseEnds?: boolean;    // before the final scene, pay off details the story left hanging by accident (default true)
   length?: import("./length.ts").LengthSetting;  // a running time (#170): { minutes, scenes?, wordsPerMinute?, fit? }
   providers: Record<string, ProviderSpec>;
   roles: Record<string, RoleSpec>;

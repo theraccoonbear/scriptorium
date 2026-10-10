@@ -1618,6 +1618,36 @@ export async function checkLengthFit(role: Role, p: { story: string; minutes: nu
   return { ...out, result: { needMinutes: need, items, cuts, ...(split ? { split } : {}) } };
 }
 
+// Loose ends (#180): before the final scene, what the story introduced and never
+// used again, read from the page alone (the writer's notes are not shown).
+export const LOOSE_ENDS_SYSTEM = `You read a story so far and find its LOOSE ENDS: concrete, specific details the prose introduces — an odd object, a mark, a sound, a stranger, a strange fact — that are never used, mentioned or picked up again, and that nothing below accounts for.
+
+NOT loose ends:
+- Atmosphere and ordinary texture (fog, a creaking floor, the smell of fish) that asks no question.
+- Anything in the OPEN SETUPS (already tracked) or the PLANTED list (planted on purpose by the plan, with its kind).
+- Something already used again in a later scene.
+
+Output ONLY JSON: {"looseEnds":[{"scene":number,"quote":string,"detail":string}]}
+- scene: the scene it first appears in (1-based). quote: 4 to 12 words copied EXACTLY from that scene where it first appears. detail: what is left hanging, in a few words.
+- At most six, the most conspicuous first. None is a fine answer: {"looseEnds":[]}.`;
+
+export interface LooseEnd { scene: number; quote: string; detail: string }
+
+export async function findLooseEnds(role: Role, p: { scenes: string[]; ledger: Setup[]; planted: { id: string; text: string; kind: string }[] }): Promise<RoleOutput<LooseEnd[]>> {
+  const prompt = [
+    `OPEN SETUPS (tracked already):\n${p.ledger.map((s) => `- ${s.id} [${s.kind ?? "promise"}]: ${s.text}`).join("\n") || "(none)"}`,
+    `PLANTED ON PURPOSE:\n${p.planted.map((s) => `- ${s.id} [${s.kind}]: ${s.text}`).join("\n") || "(none)"}`,
+    ...p.scenes.map((s, i) => `--- SCENE ${i + 1} ---\n${s}`)
+  ].join("\n\n");
+  const out = await callJson(role, { role: "looseends", system: LOOSE_ENDS_SYSTEM, prompt, ctx: { task: "looseends" } });
+  const raw = (out.result as { looseEnds?: unknown })?.looseEnds;
+  const ends = (Array.isArray(raw) ? raw : []).map((x) => x as Record<string, unknown>)
+    .map((x) => ({ scene: Number(x.scene), quote: String(x.quote ?? "").trim(), detail: String(x.detail ?? "").trim() }))
+    .filter((x) => Number.isInteger(x.scene) && x.scene >= 1 && x.scene <= p.scenes.length && x.quote && x.detail)
+    .slice(0, 6);
+  return { ...out, result: ends };
+}
+
 export async function archive(role: Role, params: {
   bible: Bible;
   beat: Beat;
@@ -1637,7 +1667,7 @@ export async function archive(role: Role, params: {
     renderBible(bible),
     `BEAT SPEC:\n${JSON.stringify(beat, null, 2)}`,
     `COMMITTED SCENE:\n${prose}`,
-    writerNotes ? `WRITER'S NOTES (what the writer meant — use them to give a setup the scene shows its kind and purpose; record only what the scene establishes):\n${writerNotes}` : "",
+    writerNotes ? `WRITER'S NOTES (what the writer meant; they never set a setup's kind — a detail they call deliberate is left out of openSetups, and the loose-ends check rules on it):\n${writerNotes}` : "",
     fix
   ].filter(Boolean).join("\n\n");
   const { result, system, raw } = await callJson(role, {

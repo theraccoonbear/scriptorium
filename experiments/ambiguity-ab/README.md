@@ -24,7 +24,12 @@ There are two probes, the same in both arms. They give a ground truth we control
 - **The judge:** a separate read of the finished story, which labels each probe *explained*, *left open*, *dropped* or *absent*.
 - **Cost and churn:** drafts per scene, and spend.
 
-**Hoped for:** in B, D is recorded as an open question or motif, gets fewer reviewer issues than in A, and is left open at the end. F is recorded as a promise and paid off or flagged, in both arms. The failure to watch for is B waving F through as deliberate.
+**First run (one of each arm, before the loose-ends check):** D survived in both arms. F was caught in neither, and in B the writer claimed it in a later draft's notes ("a stray detail for texture"). See #180.
+
+**With the loose-ends check (#180):** before the final scene, a reviewer that reads only the page lists the loose ends. One counts as deliberate only if the notes of *the draft that introduced it* say so. **Hoped for:**
+- In B, D is *declared* (draft 1) and left open, while F is *owed* and paid off in the final scene.
+- In A (no notes), both are owed.
+- The failure to watch for: F judged declared, or D not found at all.
 
 ## Run
 ```bash
