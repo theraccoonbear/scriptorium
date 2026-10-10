@@ -174,6 +174,7 @@ export interface StoryEvent<T = unknown> {
 }
 
 export interface SceneCommittedData {
+  patchDisputed?: string[];  // the patch gate's last objections, when the archivist's patch was kept after the last try
   index: number;
   tension: number;
   complication?: string;  // runs written before turns (#90): the stock complication it was given
