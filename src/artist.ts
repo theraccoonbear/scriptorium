@@ -11,6 +11,7 @@ import { isBudgetError } from "./usage.ts";
 import { microBatcher } from "./batchJobs.ts";
 import type { BatchJobs } from "./batchJobs.ts";
 import { CAST_SYSTEM, castCharacters, loadImage, toCastDescription } from "./cast.ts";
+import { OPENAI_MAX_REFERENCES, OpenAICastDescriber, OpenAIImageBackend, OpenAIInspector } from "./openaiArt.ts";
 import type { CastDescriber } from "./cast.ts";
 
 // The Artist renders the Art Director's scene_art / cover_art prompts into images.
@@ -958,6 +959,15 @@ export class BatchImageBackend implements ImageBackend {
   generate(req: ImageRequest): Promise<Image> { return this.send(req); }
 }
 
+// What a reference is, as the inspector is told.
+export function referenceKind(ref: Image): string {
+  return ref.label === PORTRAIT_LABEL ? "CHARACTER PORTRAIT"
+    : ref.label === CAST_PORTRAIT_LABEL ? "CHARACTER PORTRAIT — CAST MEMBER (a real person; likeness intended)"
+    : ref.label === CAST_PHOTO_LABEL ? "REAL PHOTO of the cast member this portrait must depict"
+    : ref.label === AUTHOR_DESIGN_LABEL ? "AUTHOR'S DESIGN — the author's drawing of this character; the portrait must follow it (not a real person)"
+    : ref.label === LOCATION_LABEL ? "LOCATION" : ref.label === PROP_LABEL ? "PROP" : "art style only";
+}
+
 export class GeminiInspector implements Inspector {
   spec: GeminiSpec;
   constructor(spec: GeminiSpec) { this.spec = spec; }
@@ -968,12 +978,7 @@ export class GeminiInspector implements Inspector {
     if (direction) parts.push({ text: `AUTHOR DIRECTION:\n${direction}` });
     parts.push({ text: "CANDIDATE IMAGE:" }, imagePart(image));
     for (const ref of references) {
-      const kind = ref.label === PORTRAIT_LABEL ? "CHARACTER PORTRAIT"
-        : ref.label === CAST_PORTRAIT_LABEL ? "CHARACTER PORTRAIT — CAST MEMBER (a real person; likeness intended)"
-        : ref.label === CAST_PHOTO_LABEL ? "REAL PHOTO of the cast member this portrait must depict"
-        : ref.label === AUTHOR_DESIGN_LABEL ? "AUTHOR'S DESIGN — the author's drawing of this character; the portrait must follow it (not a real person)"
-        : ref.label === LOCATION_LABEL ? "LOCATION" : ref.label === PROP_LABEL ? "PROP" : "art style only";
-      parts.push({ text: `REFERENCE IMAGE — ${kind}:` });
+      parts.push({ text: `REFERENCE IMAGE — ${referenceKind(ref)}:` });
       parts.push(imagePart(ref));
     }
     const data = await geminiGenerate(this.spec, "inspector", {
@@ -1073,6 +1078,7 @@ export function makeCastDescriber(config: ArtistConfig): CastDescriber {
   const spec = config.inspector ?? DEFAULT_ARTIST_CONFIG.inspector!;
   if (spec.type === "mock") return new MockCastDescriber();
   if (spec.type === "gemini") return new GeminiCastDescriber(spec);
+  if (spec.type === "openai") return new OpenAICastDescriber(spec);
   throw new Error(`Unknown casting backend type: ${(spec as { type: string }).type}`);
 }
 
@@ -1092,11 +1098,13 @@ export function resolveArtistConfig(partial?: Partial<ArtistConfig>): ArtistConf
 export function makeImageBackend(spec: ArtistBackendSpec): ImageBackend {
   if (spec.type === "mock") return new MockImageBackend(spec.failOn);
   if (spec.type === "gemini") return new GeminiImageBackend(spec);
+  if (spec.type === "openai") return new OpenAIImageBackend(spec, (n) => console.error(`[scriptorium]   GPT Image takes ${OPENAI_MAX_REFERENCES} references — ${n} left out`));
   throw new Error(`Unknown artist image backend type: ${(spec as { type: string }).type}`);
 }
 
 export function makeInspector(spec: ArtistBackendSpec): Inspector {
   if (spec.type === "mock") return new MockInspector(spec.rejectFirst);
   if (spec.type === "gemini") return new GeminiInspector(spec);
+  if (spec.type === "openai") return new OpenAIInspector(spec, { system: INSPECTOR_SYSTEM, toInspection, labels: referenceKind });
   throw new Error(`Unknown artist inspector type: ${(spec as { type: string }).type}`);
 }

@@ -454,11 +454,19 @@ Provider types:
 
 - `mock`: offline and deterministic
 - `anthropic`
-- `openai`: any OpenAI-compatible server, including Ollama, llama.cpp and Gemini's OpenAI endpoint
+- `openai`: OpenAI itself, or any OpenAI-compatible server (Ollama, llama.cpp, Gemini's OpenAI endpoint). Without a `baseUrl`, it calls api.openai.com with `OPENAI_API_KEY` and sends `max_completion_tokens`; other hosts get `max_tokens` (`maxTokensField` overrides). Set `noTemperature` for reasoning models.
 - `responses`: OpenAI Responses
 - `opencode-go`: takes `model` and `api` (`chat`, `messages` or `responses`); uses `OPENCODE_API_KEY`
 
 All providers strip `<think>` blocks, retry on 429/5xx, and fail loudly on empty completions. For reasoning models, raise `maxTokens`.
+
+**OpenAI throughout** (#89): `story.openai.config.json` runs every role on OpenAI. GPT-6.1 Sol writes and edits, GPT-6 Luna plans and reviews, GPT Image 2.5 Flare draws, and GPT-6.1 Sol inspects. Voices and music stay on Gemini (and Kokoro), and the config's roles can mix providers freely.
+- **The artist:** `"image": { "type": "openai", "model": "gpt-image-2.5-flare" | "gpt-image-2.5-sunburst", "quality": "high" }`.
+  - Sizes follow our aspect ratios (16:9 is 1536×864; 2K and 4K scale up).
+  - Shots with references go to the edits endpoint, which takes **4 references at most**. Past that, the rest are left out with a warning: a cast photo of eight loses four portraits, so keep `maxReferences` at 3–4 or use Gemini for group pictures.
+  - Batch mode is Gemini-only; with OpenAI, images render live.
+- **The inspector** (`"type": "openai"` with a vision model) gets the candidate and each labelled reference, and gives the same verdict as Gemini's.
+- **Prices** for GPT-6 Astra, Sol and Luna, GPT-5.6 Sol, GPT Image 2.5 and GPT-4o mini TTS are built in.
 
 Other config keys:
 

@@ -303,6 +303,7 @@ export interface ProviderSpec {
   temperature?: number;
   timeoutMs?: number;
   maxTokens?: number;
+  maxTokensField?: "max_tokens" | "max_completion_tokens";  // chat completions: which name the host takes (default: max_completion_tokens on OpenAI, max_tokens elsewhere)
   noTemperature?: boolean;
   retries?: number;
   extraBody?: Record<string, unknown>;
@@ -403,7 +404,21 @@ export interface MockArtSpec {
   rejectFirst?: number;  // inspector: reject the first N looks at each image
 }
 
-export type ArtistBackendSpec = GeminiSpec | MockArtSpec;
+// OpenAI as the artist (#89): GPT Image for the image, a GPT vision model for the inspector.
+export interface OpenAIArtSpec {
+  type: "openai";
+  model: string;         // image: gpt-image-2.5-sunburst / -flare; inspector: a vision model (gpt-6.1-sol)
+  apiKeyEnv?: string;    // default OPENAI_API_KEY
+  baseUrl?: string;
+  timeoutMs?: number;
+  retries?: number;
+  aspectRatio?: string;  // image only, default 16:9
+  quality?: "low" | "medium" | "high" | "xhigh" | "max" | "auto";  // image only, default high
+  moderation?: "auto" | "low";  // image only
+  temperature?: number;  // inspector only (reasoning models take none)
+}
+
+export type ArtistBackendSpec = GeminiSpec | MockArtSpec | OpenAIArtSpec;
 
 export interface ArtistConfig {
   image: ArtistBackendSpec;

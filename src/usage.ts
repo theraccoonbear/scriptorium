@@ -32,6 +32,15 @@ export const DEFAULT_PRICES: Readonly<Record<string, Price>> = {
   "gemini-3.8-flash-lite-tts": { input: 0.5, output: 6 },
   "gemini-3.8-flash": { input: 0.75, output: 3.75 },
   "gemini-3.1-flash-image": { input: 0.25, output: 60 },  // images bill as output tokens
+  // OpenAI (October 2026 list prices). GPT Image bills image input $8, text input $5,
+  // output $30 per 1M tokens; image input dominates a request with references.
+  "gpt-6-astra": { input: 10, output: 50, cacheRead: 1 },
+  "gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1 },
+  "gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2 },
+  "gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01 },
+  "gpt-5.6-sol": { input: 4, output: 20, cacheRead: 0.4 },
+  "gpt-image-2.5": { input: 8, output: 30, cacheRead: 2 },
+  "gpt-4o-mini-tts": { input: 0.6, output: 12 },
   // Lyria music: a flat price per generated cue, whatever its length
   "lyria-3.5": { input: 0, output: 0, perRequest: 0.08 },
   "lyria-3-clip-preview": { input: 0, output: 0, perRequest: 0.04 }

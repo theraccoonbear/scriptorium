@@ -427,6 +427,23 @@ function nonEmpty(text: unknown, spec: ProviderSpec, detail: string): string {
   return out;
 }
 
+// A chat completions request. OpenAI's own API (no baseUrl) takes
+// max_completion_tokens (its newer models reject max_tokens); other hosts keep
+// max_tokens unless the spec says otherwise.
+export function chatBody(spec: ProviderSpec, system: string, prompt: string, temperature?: number): Record<string, any> {
+  const body: Record<string, any> = {
+    model: spec.model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt }
+    ],
+    ...(spec.extraBody || {})
+  };
+  if (!spec.noTemperature) body.temperature = temperature ?? spec.temperature ?? 0.8;
+  if (spec.maxTokens) body[spec.maxTokensField ?? (spec.baseUrl ? "max_tokens" : "max_completion_tokens")] = spec.maxTokens;
+  return body;
+}
+
 // OpenAI chat completions. Also Ollama, llama.cpp, vLLM, OpenRouter, OpenCode Go "chat" models.
 export class OpenAICompatProvider implements Provider {
   spec: ProviderSpec;
@@ -439,28 +456,16 @@ export class OpenAICompatProvider implements Provider {
 
   async complete({ role, system, prompt, temperature, timeoutMs }: CompletionRequest): Promise<string> {
     const headers: Record<string, string> = {};
-    if (this.spec.apiKeyEnv) {
-      headers.authorization = `Bearer ${requireKey(this.spec.apiKeyEnv)}`;
+    // OpenAI itself (no baseUrl) always needs its key; other hosts say which, if any (#89).
+    const keyEnv = this.spec.apiKeyEnv || (this.spec.baseUrl ? undefined : "OPENAI_API_KEY");
+    if (keyEnv) {
+      headers.authorization = `Bearer ${requireKey(keyEnv)}`;
     }
     if (this.sessionId) {
       headers["x-opencode-session"] = this.sessionId;
     }
     const base = this.spec.baseUrl || "https://api.openai.com/v1";
-    const body: Record<string, any> = {
-      model: this.spec.model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: prompt }
-      ],
-      ...(this.spec.extraBody || {})
-    };
-    const temp = temperature ?? this.spec.temperature ?? 0.8;
-    if (!this.spec.noTemperature) {
-      body.temperature = temp;
-    }
-    if (this.spec.maxTokens) {
-      body.max_tokens = this.spec.maxTokens;
-    }
+    const body = chatBody(this.spec, system, prompt, temperature);
     const data = await postJson(`${base}/chat/completions`, headers, body, { ...this.spec, role, timeoutMs: timeoutMs ?? this.spec.timeoutMs });
     const choice = data.choices && data.choices[0];
     const msg = choice && choice.message || {};
