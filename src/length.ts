@@ -9,7 +9,7 @@ import type { SceneCommittedData, StoryEvent, WordBudget } from "./types.ts";
 
 export interface LengthSetting {
   minutes: number;            // the running time to aim for: narration, not counting titles and cards
-  scenes?: number;            // how many scenes (else one per ~10 minutes); the story file's "scenes" wins
+  // The scene count is the story file's own "scenes" (else one per ~10 minutes); it isn't set here.
   wordsPerMinute?: number;    // the narrator's pace (else measured from this run's audiobook, else 156)
   // When the plan won't fit: "check" (default) stops before writing, with the
   // options; "compress" goes ahead, telling the director what to tighten; "off" skips the check.
@@ -31,11 +31,12 @@ export interface ResolvedLength {
 }
 
 export function resolveLength(len: LengthSetting, opts: { scenes?: number; measuredWpm?: number } = {}): ResolvedLength {
+  if ("scenes" in len) throw new Error(`"length.scenes" is gone: the scene count has one place, "scenes" at the top of the story file`);
   if (!(typeof len.minutes === "number" && len.minutes > 0)) throw new Error(`"length.minutes" must be a positive number`);
   const wordsPerMinute = len.wordsPerMinute ?? opts.measuredWpm ?? WORDS_PER_MINUTE;
   const totalWords = Math.round(len.minutes * wordsPerMinute);
-  const scenes = opts.scenes ?? len.scenes ?? Math.max(1, Math.round(totalWords / WORDS_PER_SCENE));
-  if (!(Number.isInteger(scenes) && scenes > 0)) throw new Error(`"length.scenes" must be a positive whole number`);
+  const scenes = opts.scenes ?? Math.max(1, Math.round(totalWords / WORDS_PER_SCENE));
+  if (!(Number.isInteger(scenes) && scenes > 0)) throw new Error(`"scenes" must be a positive whole number`);
   const fit = len.fit ?? "check";
   if (!["check", "compress", "off"].includes(fit)) throw new Error(`"length.fit" must be "check", "compress" or "off"`);
   return { minutes: len.minutes, scenes, wordsPerMinute, totalWords, sceneWords: band(totalWords / scenes), fit };

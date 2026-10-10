@@ -491,9 +491,9 @@ Other config keys:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `scenes` | — | Scenes per story (or `--scenes`). |
+| `scenes` | — | **Set it in the story file, not here.** A story's scene count has one place, `"scenes"` in its story file; without it, `length` sets it from the minutes. A config's `scenes` is only a fallback for older story files (flagged), and the old `run` command takes `--scenes`. |
 | `maxRevisions` | 2 | Drafts per scene = this + 1 (or `--max-attempts`). |
-| `length` | — | A running time: `{ "minutes": 12, "scenes"?: 3, "wordsPerMinute"?: 156, "fit"?: "check" \| "compress" \| "off" }`. Sets the scene count (about 10 minutes a scene) and each scene's word budget at the narrator's pace (measured from the run's audiobook once there is one), weighted by the arc. Before writing, a fit check stops a plan that needs far more time, listing what to stretch, cut or split (`<run>/length.md`); `"compress"` goes ahead and tightens it. Drafts more than 15% over their budget are trimmed. |
+| `length` | — | A running time: `{ "minutes": 12, "wordsPerMinute"?: 156, "fit"?: "check" \| "compress" \| "off" }`. Sets each scene's word budget, and the scene count when the story file has no `"scenes"` (about 10 minutes a scene) at the narrator's pace (measured from the run's audiobook once there is one), weighted by the arc. Before writing, a fit check stops a plan that needs far more time, listing what to stretch, cut or split (`<run>/length.md`); `"compress"` goes ahead and tightens it. Drafts more than 15% over their budget are trimmed. |
 | `sceneWords` | `{min:1200,max:1800}` | The writer's word band; overrides `length`'s budgets. The critic blocks more than 2× overshoot. |
 | `overdueAfter` | 3 | Scenes before an open promise must be paid off. |
 | `looseEnds` | true | Before the final scene, a reviewer reads the story so far (never the writer's notes) for **loose ends**: concrete details introduced and never used again that no tracked or planted setup accounts for. A loose end counts as deliberate only if the writer's notes said so **on the draft that introduced it**; a claim made on a later draft doesn't count (an accident adopted on revision). Every other loose end becomes a promise the final scene pays off. The verdicts go in `<run>/loose-ends.md`. Each committed scene keeps its drafts and their notes for this. |

@@ -81,7 +81,7 @@ It then gets their API keys and checks them with `doctor`. Come back here when d
 Work out what you can from their first message, then **propose the rest** (see "Propose; don't interrogate"). These are the things the plan covers, not a list to ask. Ask only the one that matters most and that you can't guess; usually that's the audience (section 3) when it's for children.
 - **What's it about?** One or two sentences: who wants what, and what's in the way. This is the *premise*.
 - **Where and when?** The *setting*: a fantasy town, a space station, a school.
-- **How long?** In *minutes*: the running time, read aloud (titles and cards add a minute or two). About 10 minutes a scene unless they say how many scenes: 10–15 minutes makes a bedtime story, 30 a short, an hour or more an evening. It goes in the story file as `"length": { "minutes": 12 }`, or `{ "minutes": 12, "scenes": 3 }` to fix the scene count too.
+- **How long?** In *minutes*: the running time, read aloud (titles and cards add a minute or two). About 10 minutes a scene unless they say how many scenes: 10–15 minutes makes a bedtime story, 30 a short, an hour or more an evening. It goes in the story file as `"length": { "minutes": 12 }`, with `"scenes": 3` at the top of the story file to fix the scene count (the only place a scene count goes).
   - **If they have a plan, say how much it holds.** Roughly: a quick moment or a line of plot is half a minute; an arrival or a short exchange, a minute; a real conversation, a fight or a chase, two to four. Fifteen plot points and four long exchanges won't fit in three minutes, so say so now rather than after the writing.
 - **What does it feel like?** Funny, cosy, spooky, an adventure, a mystery.
 - **How much is left unsaid?** `"ambiguity"`: `"tidy"` (everything explained by the end, good for young readers), `"some"` (the default: the odd red herring, a question or two left open), or `"lots"` (mysteries, unease, a reader left to draw their own conclusions).
@@ -134,7 +134,8 @@ Never a whole plan with several questions in prose.
   "premise": "…",
   "setting": "…",
   "context": ["../contexts/<slug>.md"],          // only with notes: theirs (anywhere), or the plan you wrote in runs/<slug>/notes/
-  "length": { "minutes": 30 },                   // the running time; "scenes": N inside it fixes the scene count
+  "scenes": 3,                                   // the scene count: here and nowhere else (leave it out to let the minutes decide)
+  "length": { "minutes": 30 },                   // the running time
   "rating": { "base": "G", "age": 6, "forbid": ["…"], "flag": ["…"] },  // only for an audience
   "budget": { "usd": 15 },                       // a hard stop: nothing is spent past it
   "audiobook": { "narration": "gemini", "dialogue": "gemini", "geminiMode": "palette" },

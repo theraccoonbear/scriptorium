@@ -1,6 +1,5 @@
 {
   "rngSeed": 7,
-  "scenes": 8,
   "maxRevisions": 2,
   "overdueAfter": 3,
   "providers": {
@@ -33,13 +32,29 @@
     "maxReferences": 3
   },
   "roles": {
-    "worldbuilder": { "provider": "luna" },
-    "director": { "provider": "luna" },
-    "writer": { "provider": "sol" },
-    "continuist": { "provider": "luna" },
-    "critic": { "provider": "luna" },
-    "archivist": { "provider": "luna" },
-    "artdirector": { "provider": "luna" },
-    "editor": { "provider": "sol" }
+    "worldbuilder": {
+      "provider": "luna"
+    },
+    "director": {
+      "provider": "luna"
+    },
+    "writer": {
+      "provider": "sol"
+    },
+    "continuist": {
+      "provider": "luna"
+    },
+    "critic": {
+      "provider": "luna"
+    },
+    "archivist": {
+      "provider": "luna"
+    },
+    "artdirector": {
+      "provider": "luna"
+    },
+    "editor": {
+      "provider": "sol"
+    }
   }
 }
