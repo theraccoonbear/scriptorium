@@ -22,18 +22,15 @@ Speak plainly: "the writer drafts a scene, then three reviewers read it", not "t
 - **Tasks aren't questions.** Things for them to do (put photos in a folder) come on their own, with exact steps.
 - **Don't ask about what can wait:** music, extras, the crawl, voices. Use the defaults and mention later that they can be changed.
 
-**Files and folders: do the work, name the place.**
-- **Never say "this project" or "the folder".** Say "your Scriptorium folder" or the story's own folder, and always give the **full path as a clickable link**, e.g. `/home/them/scriptorium/contexts/ole-and-dookie/photos/`.
-- **Create any folder before asking them to put something in it** (`mkdir -p`), then give its path. Better still, offer to fetch the files: "Where are the photos now? Give me the folder (or drag them in) and I'll copy them over."
-- **Each story keeps one layout,** which you set up. Show it once, the first time they need it:
-  - `stories/<slug>.json`: the story file (you write it);
-  - `contexts/<slug>.md`: their notes and plan;
-  - `contexts/<slug>/`: their material:
-    - `photos/` (`<name>-1.jpg`, `<name>-2.jpg`…);
-    - `drawings/` (their art of characters);
-    - `music/` (their own tracks);
-  - `runs/<slug>/`: everything Scriptorium makes.
-- **After they add files, check them** (list what arrived, and that each person has 2–4 clear photos) before going on.
+**Files and folders: who writes where.** (The README's "Who writes where" has the full table.)
+- **`contexts/` is theirs.** You may scaffold empty folders there for them to fill (`contexts/<slug>/photos/`). Never write, edit, copy, move or delete a file in it. Read their notes there, and point the story file at their files.
+- **Their files:** offer two ways. Either you make them a folder to drop the files into (scaffold `contexts/<slug>/photos/` and give the clickable path), or they tell you where the files already are and you use them there. Absolute paths are fine. Never copy their files yourself.
+- **What you write goes in two places:**
+  - the story file `stories/<slug>.json`;
+  - `runs/<slug>/notes/` (create it) for anything you compose from the chat: their plan in their words (`plan.md`), a summary, publishing text.
+- **What the pipeline makes** goes in `runs/<slug>/`.
+- **Name places exactly.** Never "this project" or "the folder". Give the full path as a clickable link, e.g. `/home/them/scriptorium/runs/ole-and-dookie/notes/plan.md`, and say whose it is.
+- **Check what they point you at:** list the files you found, and that each person has 2–4 clear photos, before going on.
 
 ## 0. How it works (say this in a few lines)
 
@@ -66,9 +63,13 @@ Work out what you can from their first message, then **propose the rest** (see "
   - **If they have a plan, say how much it holds.** Roughly: a quick moment or a line of plot is half a minute; an arrival or a short exchange, a minute; a real conversation, a fight or a chase, two to four. Fifteen plot points and four long exchanges won't fit in three minutes, so say so now rather than after the writing.
 - **What does it feel like?** Funny, cosy, spooky, an adventure, a mystery.
 - **How much is left unsaid?** `"ambiguity"`: `"tidy"` (everything explained by the end, good for young readers), `"some"` (the default: the odd red herring, a question or two left open), or `"lots"` (mysteries, unease, a reader left to draw their own conclusions).
-- **Is it based on something?** Their own notes, a tabletop campaign, a bedtime story they tell. If so, write those notes into `contexts/<slug>.md` in their words. If they know what happens in each scene, add a scene-by-scene plan ("Scene 1 — Title: what happens"). The writers then keep every beat, name and joke from the notes. Without notes, the story is invented from the premise.
+- **Is it based on something?** Their own notes, a tabletop campaign, a bedtime story they tell.
+  - **Notes they've written:** ask where they are. Their own folder is `contexts/`, but they may keep them anywhere. Point the story file's `context` at them, and read them; never edit them.
+  - **Notes they tell you:** write what they said, in their words, to `runs/<slug>/notes/plan.md`, and show it to them. Include a scene-by-scene plan if they know what happens ("Scene 1 — Title: what happens"). Point the story file's `context` at it once they're happy with it.
+
+  Either way the writers keep every beat, name and joke from the notes. Without notes, the story is invented from the premise.
 - **Characters they want?** Name, look, voice. These go on the character sheet in phase 1. They can skip this, and the story will invent its cast.
-- **Real people in it?** Their kids, their friends, their gaming group: photos can cast them. Their photos go in `contexts/<slug>/photos/`: create it, give the full path, or copy the photos in from wherever they are. Add a `cast` to the story file, one entry per person: `{ "name": "Mia", "photos": ["../contexts/<slug>/photos/mia-1.jpg", "../contexts/<slug>/photos/mia-2.jpg"], "notes": "she/her, 7, the brave one" }`.
+- **Real people in it?** Their kids, their friends, their gaming group: photos can cast them. Offer a folder to drop them in (scaffold `contexts/<slug>/photos/` and give its path), or use them where they already are; never copy them yourself. Add a `cast` to the story file, one entry per person, pointing at their files: `{ "name": "Mia", "photos": ["/home/them/Pictures/mia-1.jpg", "/home/them/Pictures/mia-2.jpg"], "notes": "she/her, 7, the brave one" }`.
   - **Before anything else,** `npm run cast -- stories/<slug>.json` previews them: it describes each person from their photos and draws one portrait each into `runs/<slug>/cast/preview/`, for a few cents. Show those portraits before writing.
   - Ask that everyone in the photos (or their parents) is happy to be in it, and keep the photos in this folder.
   - `--as "a dwarf warrior in chainmail"` previews someone in costume.
@@ -90,7 +91,7 @@ Once they've agreed the plan, write `stories/<slug>.json` for them. Show it with
 1. > "Lovely. Ole the earnest tracker and Dookie the lazy tabby, roused by the catnip, follow the thief's trail into the Dells' sandstone canyons and pine woods. Is that the story?"
 2. > "I'd make it for kids around 6, rated G: a little spooky, never truly frightening. Right age?"
 3. > "I'd suggest 12 minutes, a bedtime story in 3 scenes. Good?"
-4. > "I've made a folder for the photos: `/…/contexts/ole-and-dookie/photos/`. Put 2–4 clear photos of each in there, or tell me where they are and I'll copy them in."
+4. > "For the photos of Ole and Dookie, I've made you a folder to drop them in: `/…/contexts/ole-and-dookie/photos/`. Or, if they're already somewhere, tell me where and I'll use them there. 2–4 clear ones of each is ideal."
 5. > "Here's the plan: … The exact quote is $11.80, and I'd set a $15 limit. Shall I start writing?"
 
 Never the whole plan in one message, and never several questions at once.
@@ -102,7 +103,7 @@ Never the whole plan in one message, and never several questions at once.
   "title": "The Dragon Who Was Afraid of Fire",
   "premise": "…",
   "setting": "…",
-  "context": ["../contexts/<slug>.md"],          // only with notes
+  "context": ["../contexts/<slug>.md"],          // only with notes: theirs (anywhere), or the plan you wrote in runs/<slug>/notes/
   "length": { "minutes": 30 },                   // the running time; "scenes": N inside it fixes the scene count
   "rating": { "base": "G", "age": 6, "forbid": ["…"], "flag": ["…"] },  // only for an audience
   "budget": { "usd": 15 },                       // a hard stop: nothing is spent past it
@@ -133,7 +134,8 @@ Show them their run folder once the first phase has made it (`runs/<slug>/`):
 - `length.md` (stories with a `length`): what the plan asks for, minute by minute, and what to cut if it doesn't fit.
 - `loose-ends.md`: details the story left hanging, checked before the last scene; what the last scene must pay off, and what was left open on purpose.
 - `events.jsonl`: the story's master record. Never edit it by hand; ask, and changes are made safely with a backup.
-- `notes/` and `backups/`: theirs, never cleaned up.
+- `notes/`: what you wrote for them (their plan in their words, publishing text). `backups/`: copies made before changes. Neither is cleaned up.
+- **Their own `contexts/`** isn't in the run folder. It's theirs; Scriptorium only reads it.
 
 The README's "What's in a run folder" has the full list.
 
@@ -155,7 +157,7 @@ Before every paid phase, run the pitch and get a yes. The pitch also says how lo
 
 **The first writing run checks the plan against the running time** before writing a word. If it needs far more time than they asked for, nothing is written and `runs/<slug>/length.md` lists what the plan asks for. Go through it with them and let them choose:
 - **stretch:** ask for more minutes;
-- **cut:** drop or merge items from their notes, least needed first, as the list suggests (edit `contexts/<slug>.md` together);
+- **cut:** drop or merge items from the plan, least needed first, as the list suggests. If it's their own file, give them the exact lines to change; never edit it yourself. If it's the plan you wrote (`runs/<slug>/notes/plan.md`), change it on their yes.
 - **split:** make it a series (Part 1, Part 2), where the list says it breaks;
 - **compress:** keep the plan, add `"fit": "compress"` to `length`, and the writers tighten it to fit (small events folded together, exchanges shortened).
 
@@ -169,7 +171,7 @@ At each review, `npm run review -- stories/<slug>.json pending` lists what's wai
 - **"Just fix this one thing"** edits the picture in place and keeps everything else: `--edit scene-02-05 --note "…"`. Add `--with character-<id>` when someone's face or costume is wrong; the portrait carries the likeness. Notes say what should be there, never what shouldn't ("he stands on the floor", not "not on a table").
 - **"That voice is wrong"**: `npm run audition -- <story> <speaker>` plays a few candidates, then `--pick N`.
 - **"That's not what happens"**: the story's notes win. How to change the words depends on how much needs changing:
-  - **A detail** (a name, a colour, a weapon): the canon check fixes it in the prose and the shot descriptions, with a backup (`--only canon`, then `npm run canon -- <story> --apply`). If it isn't from their notes, add it to `contexts/<slug>.md` first so the check knows.
+  - **A detail** (a name, a colour, a weapon): the canon check fixes it in the prose and the shot descriptions, with a backup (`--only canon`, then `npm run canon -- <story> --apply`). If it isn't in their notes, the check can't know it. Ask them to add it to their own notes, or (with their OK) put it in the plan you wrote, or on the character sheet if it's about someone.
   - **A scene going the wrong way:** rewrite just that scene with their note, in their words: `npm run make -- stories/<slug>.json --only story --redo scene:2 --note "Hellga wins the argument"`. Pitch it first (about the price of writing one scene).
     - The planner and writer redo that one scene to the note, keeping what the note doesn't touch, and its reviewers check it as usual. The old version is backed up.
     - The scenes after it are then read against the new one. Anything that no longer fits comes back as fixes to pick from, the same as the canon check (`npm run canon -- <story> --apply`). Nothing is changed behind their back.

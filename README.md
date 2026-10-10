@@ -151,6 +151,21 @@ docker compose run --rm --entrypoint npm scriptorium test
 
 npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, `video`, `test`, `typecheck`. Run `node src/cli.ts` with no command for the full usage text.
 
+## Who writes where
+
+Four places, three owners. **Never write in someone else's.**
+
+| Folder | Whose | Who writes it |
+|---|---|---|
+| `contexts/` | **Yours.** Your notes, plans and research; your photos, drawings and music, if you choose to keep them here. | **Only you write files here.** Claude may scaffold empty folders for you to fill (`contexts/<slug>/photos/`). Scriptorium and Claude read your files, and never write, edit, copy, move or delete them. A story file can also point at your files wherever they live (absolute paths are fine), so nothing ever needs copying in. |
+| `stories/` | The story files: one per story, the settings it's made with. | Claude writes yours in the wizard, and you can edit it. The tracked examples (`stories/mock.json`) belong to the repo. |
+| `runs/<slug>/` | Everything made for one story (the table below), and Claude's working files: `notes/` (anything it composes from your chat, such as a summary, a scene plan or publishing text), `logs/` and `backups/`. | The pipeline, and Claude through the pipeline's commands. Your decisions recorded here (the character sheet, approvals) are canon. |
+| `runs/_scratch/` | Claude's experiments and dev tests. | Claude. Spend there is tagged `experiment`. |
+
+- **When you tell the wizard your plan instead of writing it yourself,** it writes what you said, in your words, to `runs/<slug>/notes/plan.md`, shows it to you, and points the story file's `context` at it. To make it yours, copy it into `contexts/`.
+- **`.env`** is yours too (your keys). Claude writes it only when you hand it a key, and never shows one.
+- **`npm run fresh`** clears what Claude and the pipeline made (story files it wrote, `runs/`, and Claude's memory of the folder) and never touches `contexts/`.
+
 ## What's in a run folder
 
 A story file's `"out"` folder holds everything the pipeline made for that story. Some of it is **canon**: the story itself and your decisions, which can't be remade. Some is **paid for**: it can be remade, but that costs money and won't come out the same. The rest can be **rebuilt for free**.
@@ -217,7 +232,7 @@ A reviewer that only repeats complaints it already made counts as approving. Rep
 
 ### Context files
 
-`--context <file.md>` hands your own notes to every role that plans or reviews the story: characters, places, history, and how things really work. Use it for facts the models get wrong, such as how an unusual object is held or played. See `contexts/` for examples.
+`--context <file.md>` hands your own notes to every role that plans or reviews the story: characters, places, history, and how things really work. Use it for facts the models get wrong, such as how an unusual object is held or played. Your notes usually live in `contexts/`, which is yours alone (see "Who writes where"); see `contexts/nightsoil-and-stablemans-guild.md` for an example.
 
 `--context` can be repeated to mix and match, for example `--context world.md --context hero.md --context rival.md`. Each file goes in under a `### from <file>` header, so every role can tell where a detail came from. The run remembers its context, so resuming without `--context` uses the same files.
 
@@ -225,7 +240,7 @@ Before anything is generated, the **context gate** checks the combined files. It
 
 ### Starring you: a cast from photos
 
-A story file can list a **cast**: real people and animals who star in the story, each with one or more photos. Photo paths are relative to the story file.
+A story file can list a **cast**: real people and animals who star in the story, each with one or more photos. Photo paths are relative to the story file, or absolute, so the photos can stay wherever you keep them (your own `contexts/`, `~/Pictures`); nothing is copied.
 
 ```jsonc
   "cast": [

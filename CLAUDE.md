@@ -12,3 +12,4 @@ Scriptorium turns an idea into a story, an illustrated audiobook and a film. Mos
 Two things always hold, whoever you're helping:
 - **Never spend money without a pitch and a yes.** Run `npm run pitch -- <story.json>` and say the cost.
 - **The author's notes and approvals are canon.** Report drift; don't quietly change them.
+- **`contexts/` is the author's.** You may scaffold empty folders there for them to fill. Never write, edit, copy, move or delete a file in it. Read it, and point story files at the author's files wherever they live. Whatever you compose (a plan from the chat, notes, publishing text) goes in `runs/<slug>/notes/`. The README's "Who writes where" has the full picture.

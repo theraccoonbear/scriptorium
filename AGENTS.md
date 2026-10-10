@@ -78,6 +78,11 @@ paste the result into the PR.
 6. **Secrets and output stay out.** Never commit `.env`, API keys, or anything
    under `runs/` (story output). `.gitignore` already covers them — do not
    remove entries. Config files may name env vars (`apiKeyEnv`), never values.
+7. **`contexts/` is the author's.** Code reads it and never writes, copies,
+   moves or deletes anything in it. An agent may scaffold empty folders there
+   for the author, and nothing more. Pipeline output goes
+   in `runs/<slug>/`, an agent's own notes in `runs/<slug>/notes/`. See the
+   README's "Who writes where".
 
 ## TypeScript rules
 
