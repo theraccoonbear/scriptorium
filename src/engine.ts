@@ -6,6 +6,7 @@ import type { RatingConflict } from "./roles.ts";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { applyPatch, replay } from "./bible.ts";
 import type { ArtDirection } from "./roles.ts";
+import { findLooseEnds } from "./roles.ts";
 import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect, checkShotCast, mergeShotCast, blockGroupPicture, checkLengthFit } from "./roles.ts";
 import { findUntaggedParagraphs, sceneParagraphs, stripSpeakerTags } from "./audiobook.ts";
 import { recordTiming } from "./providers.ts";
@@ -29,7 +30,9 @@ import type {
   Role,
   Roles,
   SceneArtData,
+  LooseEndsData,
   SceneCommittedData,
+  SceneDraftsData,
   Setup,
   StoryConfig,
   StoryEvent,
@@ -64,6 +67,63 @@ export function dueSetups(ledger: Setup[], i: number, isFinal: boolean, overdueA
   const keep = new Set(questions.slice(0, OPEN_QUESTIONS_SURVIVING[ambiguity]).map((s) => s.id));
   const due = ledger.filter((s) => kind(s) === "promise" || (ambiguity === "tidy" && kind(s) === "red_herring") || (kind(s) === "open_question" && !keep.has(s.id)));
   return { due, standing: ledger.filter((s) => !due.includes(s)) };
+}
+
+// Loose ends before the final scene (#180), checked once per version of the
+// story and kept in the log. A loose end is deliberate only when the writer's
+// notes said so on the draft that introduced it; a claim made on a later draft
+// (an accident adopted on revision) doesn't count. The rest become promises.
+async function looseEndsBeforeFinal(role: Role, log: EventLog, bible: Bible, i: number, runDir?: string): Promise<Setup[]> {
+  let found = log.events.filter((e) => e.type === "loose_ends").map((e) => e.data as LooseEndsData).find((d) => d.before === i);
+  if (!found) {
+    const committed = log.events.filter((e) => e.type === "scene_committed").map((e) => e.data as SceneCommittedData).sort((a, b) => a.index - b.index);
+    const latest = new Map(committed.map((d) => [d.index, d]));
+    const scenes = [...latest.values()].map((d) => d.prose);
+    const planted = [...latest.values()].flatMap((d) => d.beat?.plants ?? []);
+    try {
+      const out = await findLooseEnds(role, { scenes, ledger: bible.ledger, planted });
+      const drafts = new Map([...latest.values()].map((d) => [d.index, d.drafts ?? []]));
+      found = { before: i, ends: classifyLooseEnds(out.result, drafts) };
+    } catch (err) {
+      if (isBudgetError(err)) throw err;
+      console.error(`[scriptorium]   ${c.retry(`loose-ends check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`)}`);
+      return [];
+    }
+    await log.append("loose_ends", found);
+    if (runDir) await writeFile(join(runDir, "loose-ends.md"), looseEndsMarkdown(found));
+  }
+  for (const e of found.ends) console.error(`[scriptorium]   ${e.declared ? c.dim(`loose end left open (declared on draft ${e.draft}): ${e.detail}`) : c.retry(`loose end to pay off: ${e.detail} (scene ${e.scene})`)}`);
+  return found.ends.filter((e) => !e.declared).map((e) => ({ id: e.id!, text: `${e.detail} — "${e.quote}"`, openedAt: e.scene - 1 }));
+}
+
+// Content words, for matching a note to the detail it's about.
+const contentWords = (t: string) => new Set(t.toLowerCase().match(/[a-z][a-z'-]{3,}/g)?.filter((w) => !STOPWORDS.has(w)) ?? []);
+const STOPWORDS = new Set(["this", "that", "with", "from", "into", "they", "them", "their", "there", "where", "which", "while", "what", "when", "have", "been", "were", "will", "would", "could", "should", "about", "after", "before", "over", "under", "just", "only", "still", "never", "left", "stays", "stay", "kept", "keep", "deliberately", "purpose", "unexplained", "detail", "scene"]);
+
+// For each loose end: the first draft of its scene that has its words, and
+// whether that draft's notes talk about it (two content words in common).
+export function classifyLooseEnds(ends: { scene: number; quote: string; detail: string }[], drafts: Map<number, SceneDraftsData["drafts"]>): LooseEndsData["ends"] {
+  const norm = (t: string) => t.replace(/\s+/g, " ").toLowerCase();
+  return ends.map((e, k) => {
+    const list = drafts.get(e.scene - 1) ?? [];
+    const first = list.find((d) => norm(d.prose).includes(norm(e.quote)));
+    const want = new Set([...contentWords(e.quote), ...contentWords(e.detail)]);
+    const said = first?.notes ? [...contentWords(first.notes)].filter((w) => want.has(w)).length : 0;
+    const declared = said >= 2;
+    return { ...e, ...(first ? { draft: first.n } : {}), declared, ...(declared ? {} : { id: `loose_end_${k + 1}` }) };
+  });
+}
+
+function looseEndsMarkdown(d: LooseEndsData): string {
+  const open = d.ends.filter((e) => e.declared);
+  const owed = d.ends.filter((e) => !e.declared);
+  return [
+    `# Loose ends before scene ${d.before + 1}`,
+    ``,
+    owed.length ? `## To pay off in the final scene\n${owed.map((e) => `- **${e.detail}** (scene ${e.scene}): "${e.quote}"`).join("\n")}` : `Nothing left to pay off.`,
+    ``,
+    ...(open.length ? [`## Left open on purpose (the writer said so when it wrote them)\n${open.map((e) => `- **${e.detail}** (scene ${e.scene}, draft ${e.draft}): "${e.quote}"`).join("\n")}`, ``] : [])
+  ].join("\n");
 }
 
 // What the director planted on purpose goes into the ledger with its kind,
@@ -296,9 +356,19 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
     // With an author's plan, setups are paid where the plan pays them: an
     // unexplained detail may stay unexplained on purpose, so none is overdue.
     // Otherwise only promises fall due (#93); the rest stand by their kind.
-    const { due: overdue, standing } = config.context
+    const { due, standing } = config.context
       ? { due: [], standing: [] }
       : dueSetups(bible.ledger, i, isFinal, overdueAfter, ambiguity);
+    // Before the final scene, the loose ends the story left (#180): each one the
+    // writer didn't declare when it wrote it becomes a promise this scene pays.
+    let overdue = due;
+    if (isFinal && i > 0 && !config.context && config.looseEnds !== false) {
+      const promoted = await looseEndsBeforeFinal(roles.continuist, log, bible, i, runDir);
+      overdue = [...due, ...promoted];
+      // Into this scene's ledger too, as promises: the beat gate and the continuist then hold
+      // the final scene to paying them off like any other setup (#180: being told wasn't enough).
+      if (promoted.length) bible = { ...bible, ledger: [...bible.ledger, ...promoted.filter((p) => !bible.ledger.some((s) => s.id === p.id))] };
+    }
 
     console.error(`[scriptorium] ${c.blue(c.bold(`scene ${i + 1}/${total}`))} tension=${c.yellow(creating && config.tension?.[0] == null ? "from the creator's arc" : String(tension))}${turn ? c.dim(` · the author's turn: ${turn}`) : ""}`);
     let t0 = Date.now();
@@ -420,6 +490,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
 
       let prose = "";
       let writerNotes: string | undefined;  // the writer's notes to its reviewers on the current draft, never part of it
+      const drafts: SceneDraftsData["drafts"] = [];  // every draft as reviewed, with its notes (#180)
       let verdict: Verdict = { ok: false, issues: [] };
       let suggestions: Issue[] = [];   // advisory critic's notes for the next draft
       let attempt = 0;
@@ -443,7 +514,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         }
         const fresh = stage === 2;
         t0 = Date.now();
-        const writeOut = await write(roles.writer, { bible, beat: beat.result, sceneIndex: i, attempt, sceneWords, issues: verdict.issues, suggestions, previousDraft: prose, previousScenes, fresh, speakerTags: config.speakerTags });
+        const writeOut = await write(roles.writer, { bible, beat: beat.result, sceneIndex: i, attempt, sceneWords, issues: verdict.issues, suggestions, previousDraft: prose, previousScenes, fresh, speakerTags: config.speakerTags, notes: config.writerNotes !== false });
         recordTiming("writer", Date.now() - t0);
         if (runDir) await writeRoleOutput(runDir, ++seq, `writer-a${attempt}`, writeOut);
         prose = writeOut.result;
@@ -489,6 +560,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           }
         }
 
+        drafts.push({ n: attempt, prose, ...(writerNotes ? { notes: writerNotes } : {}) });
         // Continuist and critic run in parallel — identical context, different prompts.
         t0 = Date.now();
         const gateCtx = {
@@ -654,6 +726,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       else if (foundation && i === 0) data.bible = foundation;
       if (patchDisputed) data.patchDisputed = patchDisputed;
       data.patch = withPlants(data.patch, beat.result, bible.ledger);
+      if (drafts.length) data.drafts = drafts;
       await log.append("scene_committed", data);
       if (rating) {
         // What the censor changed on the way (#88), and what a parent should know.

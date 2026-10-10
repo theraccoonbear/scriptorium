@@ -8,7 +8,7 @@ import { dueSetups, runStory, withPlants } from "../src/engine.ts";
 import { AMBIGUITY_GUIDE, BEAT_GATE_SYSTEM, CONTINUIST_SYSTEM, DIRECTOR_SYSTEM, ARCHIVIST_SYSTEM } from "../src/roles.ts";
 import { EventLog } from "../src/eventlog.ts";
 import { buildRoleProviders } from "../src/providers.ts";
-import type { Beat, Setup, StoryConfig } from "../src/types.ts";
+import type { Beat, Role, Setup, StoryConfig } from "../src/types.ts";
 
 // Issue #93: not every setup is a promise. Red herrings misdirect, open
 // questions may stay open, motifs recur — and a hidden layer the prose never states.
@@ -123,4 +123,68 @@ test("the writer's notes are cut off its draft: never in the prose, shown to the
   assert.match(seen.continuist.at(-1)!, /WRITER'S NOTES \(the writer's stated intent, not part of the scene\):\n- seeding the bell as a motif/);
   assert.match(seen.archivist.at(-1)!, /WRITER'S NOTES \(what the writer meant/);
   assert.match(CONTINUIST_SYSTEM, /They are never evidence: judge only what the prose itself establishes/);
+});
+
+test("writerNotes: false takes the notes channel away; the A/B harness splices its floating detail into the prose, never the notes", async () => {
+  const { write } = await import("../src/roles.ts");
+  const systems: string[] = [];
+  const role = { provider: { complete: async (req: { system: string }) => { systems.push(req.system); return "The fog came in.\n\n### WRITER'S NOTES\n- x"; } } } as unknown as Role;
+  const beat = { goal: "", conflict: "", pov: "", location: "", mustReveal: "", constraints: [], payoffs: [] } as Beat;
+  const off = await write(role, { bible: emptyBible(), beat, sceneIndex: 0, attempt: 0, sceneWords: { min: 1, max: 2 }, notes: false });
+  const on = await write(role, { bible: emptyBible(), beat, sceneIndex: 0, attempt: 0, sceneWords: { min: 1, max: 2 } });
+  assert.doesNotMatch(systems[0], /WRITER'S NOTES/);
+  assert.match(systems[1], /WRITER'S NOTES \(optional\)/);
+  assert.deepEqual([off.result, off.notes], ["The fog came in.", undefined], "notes are still cut off the prose, and dropped");
+  assert.deepEqual([on.result, on.notes], ["The fog came in.", "- x"]);
+  const { splice, PROBE_F } = await import("../experiments/ambiguity-ab/run.ts");
+  const spliced = splice("One.\n\nTwo.\n\nThree.\n\n### WRITER'S NOTES\n- the bell stays unexplained");
+  assert.equal(spliced, `One.\n\nTwo.\n\n${PROBE_F.sentence}\n\nThree.\n\n### WRITER'S NOTES\n- the bell stays unexplained`);
+  assert.equal(splice(spliced), spliced, "once only");
+});
+
+test("loose ends: deliberate only when the draft that introduced it said so; a claim on a later draft doesn't count", async () => {
+  const { classifyLooseEnds } = await import("../src/engine.ts");
+  const drafts = new Map([[1, [
+    { n: 1, prose: "A bell rang once at midnight. Someone had left a muddy boot print on the ceiling.", notes: "- The midnight bell stays unexplained on purpose." },
+    { n: 2, prose: "A bell rang once at midnight. Someone had left a muddy boot print on the ceiling. Revised.", notes: "- The boot print on the ceiling is a stray detail for texture." }
+  ]]]);
+  const ends = classifyLooseEnds([
+    { scene: 2, quote: "A bell rang once at midnight", detail: "a midnight bell with no church" },
+    { scene: 2, quote: "a muddy boot print on the ceiling", detail: "boot print on the ceiling" },
+    { scene: 1, quote: "a cart with no horse", detail: "a horseless cart" }
+  ], drafts);
+  assert.deepEqual(ends.map((e) => [e.declared, e.draft, e.id]), [[true, 1, undefined], [false, 1, "loose_end_2"], [false, undefined, "loose_end_3"]]);
+});
+
+test("a mock story: before the final scene, an accidental loose end falls due and a declared one stays open", async () => {
+  const base = JSON.parse(await readFile(new URL("../story.config.json", import.meta.url), "utf8"));
+  const config = { ...base, scenes: 2, premise: "A fog, a boat cut loose." } as StoryConfig;
+  const roles = buildRoleProviders(config);
+  const wrap = (name: "writer" | "continuist" | "director", f: (req: { role: string; prompt: string; ctx?: unknown }, out: string) => string) => {
+    const role = roles[name]!;
+    const real = role.provider.complete.bind(role.provider);
+    role.provider = { complete: async (req) => f(req, await real(req)) };
+  };
+  wrap("writer", (req, out) => ((req.ctx as { sceneIndex?: number })?.sceneIndex === 0
+    ? `${out}\n\nA bell rang once at midnight. Someone had left a muddy boot print on the ceiling.\n\n### WRITER'S NOTES\n- The midnight bell stays unexplained on purpose.`
+    : out));
+  wrap("continuist", (req, out) => (req.role === "looseends"
+    ? JSON.stringify({ looseEnds: [{ scene: 1, quote: "A bell rang once at midnight", detail: "a midnight bell" }, { scene: 1, quote: "a muddy boot print on the ceiling", detail: "boot print on the ceiling" }] })
+    : out));
+  const finalPrompts: string[] = [];
+  wrap("director", (req, out) => { if (req.role === "director") finalPrompts.push(req.prompt); return out; });
+  const dir = await mkdtemp(join(tmpdir(), "scriptorium-loose-"));
+  const log = new EventLog(dir);
+  await runStory({ config, log, roles, runDir: dir });
+  const due = /OVERDUE SETUPS TO PAY OFF: (.*)/.exec(finalPrompts.at(-1)!)![1];
+  assert.match(due, /loose_end_2/);
+  assert.doesNotMatch(due, /loose_end_1/);
+  const report = await readFile(join(dir, "loose-ends.md"), "utf8");
+  assert.match(report, /## To pay off in the final scene\n- \*\*boot print on the ceiling\*\*/);
+  assert.match(report, /## Left open on purpose[^\n]*\n- \*\*a midnight bell\*\* \(scene 1, draft 1\)/);
+  assert.equal(log.events.filter((e) => e.type === "loose_ends").length, 1);
+  // Held to it like any promise: the final director sees it in the open setups, not only the overdue list.
+  assert.match(finalPrompts.at(-1)!, /OPEN SETUPS[^]*- loose_end_2 \(opened S1\): boot print on the ceiling/);
+  const committed = log.events.find((e) => e.type === "scene_committed")!.data as { drafts?: unknown[] };
+  assert.equal(committed.drafts?.length, 1, "each draft kept with the scene");
 });
