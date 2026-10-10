@@ -313,8 +313,10 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         gate: (out: T) => Promise<GateResult>;
         feedback?: ReadonlyArray<Issue | string>;
         startFresh?: boolean;
+        // Bounded mode, out of tries: keep the last output instead of failing (for bookkeeping, not creative work).
+        keepLast?: (out: T, issues: Array<Issue | string>) => T;
       }): Promise<T> => {
-        const { label, gen, gate, feedback = [], startFresh = false } = params;
+        const { label, gen, gate, feedback = [], startFresh = false, keepLast } = params;
         let issues: Array<Issue | string> = [...feedback];
         let fresh = startFresh;
         let feedbackTries = 0;
@@ -331,6 +333,10 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
             return out;
           }
           if (bounded && generation + 1 >= 4) {
+            if (keepLast) {
+              console.error(`[scriptorium]   ${c.retry(`${label} gate still disputes it after ${generation + 1} attempts — keeping the last one: ${gateOut.issueList.map((i) => renderIssue(i)).join("; ").slice(0, 300)}`)}`);
+              return keepLast(out, gateOut.issueList);
+            }
             throw new Error(`${label} gate rejected after ${generation + 1} attempts: ${gateOut.issueList.map((i) => renderIssue(i)).join("; ")}`);
           }
           history.push(...gateOut.issueList);
@@ -606,10 +612,14 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       }
 
       // Archivist writes the bible patch; the patch gate must approve before it applies.
+      // The scene is already approved: a patch the gate still disputes after the
+      // last try is kept, with the dispute recorded, rather than losing the scene.
       const patchGateRole = roles.patchgate || critic || roles.continuist;
-      const archOut = await gatedGenerate({
+      let patchDisputed: string[] | undefined;
+      const archOut = await gatedGenerate<RoleOutput<Patch>>({
         label: "patch",
         feedback: [],
+        keepLast: (out, issues) => { patchDisputed = issues.map((x) => renderIssue(x)); return out; },
         gen: async (issues, fresh, generation) => {
           t0 = Date.now();
           const out = await archive(roles.archivist, { bible, beat: beat.result, prose, sceneIndex: i, isFinal, issues, fresh, ...(writerNotes ? { writerNotes } : {}) });
@@ -635,6 +645,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         attempts: attempt
       };
       if (createdBible) data.bible = createdBible;
+      if (patchDisputed) data.patchDisputed = patchDisputed;
       data.patch = withPlants(data.patch, beat.result, bible.ledger);
       await log.append("scene_committed", data);
       if (rating) {
