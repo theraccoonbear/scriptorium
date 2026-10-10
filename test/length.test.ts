@@ -118,18 +118,25 @@ test("the narrator's measured pace, from this run's voiced scenes", async () => 
   assert.equal(measuredPace(dir, []), undefined, "no scene, no pace");
 });
 
-test("one scene count: the story file's \"scenes\", else what fits the running time; a config's scenes is only a fallback", async () => {
+test("one home per setting: the scene count is the story file's; a config's or a contradiction is refused", async () => {
   const { loadStoryFile } = await import("../src/make.ts");
   const dir = await mkdtemp(join(tmpdir(), "scriptorium-scenes-"));
-  await writeFile(join(dir, "old.config.json"), JSON.stringify({ scenes: 8, providers: {}, roles: {} }));
-  await writeFile(join(dir, "new.config.json"), JSON.stringify({ providers: {}, roles: {} }));
+  await writeFile(join(dir, "old.config.json"), JSON.stringify({ scenes: 8, maxRevisions: 2, providers: {}, roles: {}, artist: { batch: true, image: { type: "mock" } } }));
+  await writeFile(join(dir, "new.config.json"), JSON.stringify({ providers: {}, roles: {}, artist: { image: { type: "mock" } } }));
   const story = async (config: string, extra: object) => {
     await writeFile(join(dir, "story.json"), JSON.stringify({ config, out: "run", ...extra }));
     return loadStoryFile(join(dir, "story.json"));
   };
   assert.equal((await story("new.config.json", { scenes: 3, length: { minutes: 12 } })).scenes, 3);
-  assert.equal((await story("old.config.json", { length: { minutes: 30 } })).scenes, 3, "what fits the minutes, not an old config's 8");
-  assert.equal((await story("old.config.json", { scenes: 5 })).scenes, 5);
-  assert.equal((await story("old.config.json", {})).scenes, 8, "an old config's scenes still works for a story with neither");
+  assert.equal((await story("new.config.json", { length: { minutes: 30 } })).scenes, 3, "what fits the minutes");
+  const s = await story("new.config.json", { artist: { batch: true } });
+  assert.deepEqual([s.config.artist?.batch, s.config.artist?.image], [true, { type: "mock" }], "the author's image choices over the config's backends");
   await assert.rejects(story("new.config.json", { length: { minutes: 12, scenes: 3 } }), /"length.scenes" is gone/);
+  const old = story("old.config.json", { scenes: 3 });
+  await assert.rejects(old, /"scenes" is set in .*old\.config\.json: it belongs in the story file/);
+  await assert.rejects(story("old.config.json", { scenes: 3 }), /"maxRevisions" in .* is gone: set "maxAttempts" in the story file/);
+  await assert.rejects(story("old.config.json", { scenes: 3 }), /"artist\.batch" is set in .*: it belongs in the story file's "artist"/);
+  await assert.rejects(story("new.config.json", { artist: { image: { type: "mock" } } }), /"artist\.image" is set in the story file: it belongs in the config's "artist"/);
+  await assert.rejects(story("new.config.json", { length: { minutes: 12 }, sceneWords: { min: 1, max: 2 } }), /"length" and "sceneWords" both set each scene's words/);
+  await assert.rejects(story("new.config.json", { maxAttempts: 3, maxDraftsPerScene: 9 }), /"maxDraftsPerScene" caps unlimited drafts/);
 });

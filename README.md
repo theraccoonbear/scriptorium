@@ -487,14 +487,18 @@ All providers strip `<think>` blocks, retry on 429/5xx, and fail loudly on empty
 - **The inspector** (`"type": "openai"` with a vision model) gets the candidate and each labelled reference, and gives the same verdict as Gemini's.
 - **Prices** for GPT-6 Astra, Sol and Luna, GPT-5.6 Sol, GPT Image 2.5 and GPT-4o mini TTS are built in.
 
+**One home per setting.** A setting lives in exactly one file, and one in the wrong file (or two that contradict each other) stops the run with where it belongs:
+- **The story file** says what the story is: `premise`, `setting`, `context`, `title`, `scenes`, `length` or `sceneWords`, `ambiguity`, `rating`, `tension`, `turns`, `direction`, `artStyle`, `extras`, `budget`, `critic`, `speakerTags`, `maxAttempts`, `maxDraftsPerScene`, `cast`, `audiobook`, `music`, `video`, and the author's image choices in `artist` (`batch`, `retakes`, `retakeAbove`).
+- **The config** says how it's made: `providers`, `roles`, `pricing`, `rngSeed`, `overdueAfter`, `artWordsPerShot`, `writerNotes`, `looseEnds`, and the rest of `artist` (backends, `maxAttempts` per image, `maxReferences`, sizes, `concurrency`).
+
 Other config keys:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `scenes` | — | **Set it in the story file, not here.** A story's scene count has one place, `"scenes"` in its story file; without it, `length` sets it from the minutes. A config's `scenes` is only a fallback for older story files (flagged), and the old `run` command takes `--scenes`. |
-| `maxRevisions` | 2 | Drafts per scene = this + 1 (or `--max-attempts`). |
+| `scenes` | — | **Story file.** The scene count, in one place; without it, `length` sets it from the minutes. A config with `scenes` is refused. (The old `run` command takes `--scenes`.) |
+| `maxAttempts` | 3 | **Story file.** Drafts per scene, or `"unlimited"` (up to `maxDraftsPerScene`, default 20). The old config key `maxRevisions` (= this − 1) is refused with that message. |
 | `length` | — | A running time: `{ "minutes": 12, "wordsPerMinute"?: 156, "fit"?: "check" \| "compress" \| "off" }`. Sets each scene's word budget, and the scene count when the story file has no `"scenes"` (about 10 minutes a scene) at the narrator's pace (measured from the run's audiobook once there is one), weighted by the arc. Before writing, a fit check stops a plan that needs far more time, listing what to stretch, cut or split (`<run>/length.md`); `"compress"` goes ahead and tightens it. Drafts more than 15% over their budget are trimmed. |
-| `sceneWords` | `{min:1200,max:1800}` | The writer's word band; overrides `length`'s budgets. The critic blocks more than 2× overshoot. |
+| `sceneWords` | `{min:1200,max:1800}` | **Story file.** The writer's word band, instead of `length` (setting both is refused). The critic blocks more than 2× overshoot. |
 | `overdueAfter` | 3 | Scenes before an open promise must be paid off. |
 | `looseEnds` | true | Before the final scene, a reviewer reads the story so far (never the writer's notes) for **loose ends**: concrete details introduced and never used again that no tracked or planted setup accounts for. A loose end counts as deliberate only if the writer's notes said so **on the draft that introduced it**; a claim made on a later draft doesn't count (an accident adopted on revision). Every other loose end becomes a promise the final scene pays off. The verdicts go in `<run>/loose-ends.md`. Each committed scene keeps its drafts and their notes for this. |
 | `ambiguity` | `"some"` | How much the story leaves unsaid. Setups have kinds: a **promise** must pay off; a **red herring** misdirects and is shown to be nothing or left standing, never given a secret meaning; an **open question** may stay open; a **motif** recurs and never needs paying. The director plants them on purpose (`plants` in the beat, with a purpose) and marks what a scene leaves implied (`keepImplied`). The creator may set **hidden truths**, which every role keeps consistent and the prose never states. Only promises fall due mid-story. At the end, `"tidy"` settles every red herring and open question; `"some"` lets the two newest questions stand; `"lots"` leaves them all. The beat gate catches an invented explanation for a red herring or open question, and the continuist catches a hidden truth stated outright. |

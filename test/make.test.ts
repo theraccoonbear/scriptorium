@@ -119,12 +119,13 @@ test("story files layer direction and art style over the config, and reject unkn
   await assert.rejects(loadStoryFile(typo.file), /unknown layer "artdirectr"/);
 });
 
-test("story files carry a budget, a draft cap and pricing; a malformed budget is rejected", async () => {
-  const { file } = await storyDir({ budget: { usd: 5 }, maxDraftsPerScene: 12, pricing: { "my-model": { input: 1, output: 2 } } });
+test("story files carry a budget and a draft cap (pricing is the config's); a malformed budget is rejected", async () => {
+  const { file } = await storyDir({ budget: { usd: 5 }, maxDraftsPerScene: 12 });
   const s = await loadStoryFile(file);
   assert.deepEqual(s.config.budget, { usd: 5 });
   assert.equal(s.config.maxDraftsPerScene, 12);
-  assert.deepEqual(s.config.pricing, { "my-model": { input: 1, output: 2 } });
+  const priced = await storyDir({ pricing: { "my-model": { input: 1, output: 2 } } });
+  await assert.rejects(loadStoryFile(priced.file), /"pricing" is set in the story file: it belongs in the config/);
   const bad = await storyDir({ budget: 5 });
   await assert.rejects(loadStoryFile(bad.file), /"budget" must look like/);
 });
