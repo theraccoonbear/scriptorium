@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildReel, contactSheets, formatLegend, montageArgs } from "../src/reviewSheets.ts";
+import { buildReel, contactSheets, formatCharacters, formatLegend, montageArgs } from "../src/reviewSheets.ts";
+import { emptyBible } from "../src/bible.ts";
 import type { ArtManifest } from "../src/artist.ts";
 
 // Issue #84 part B: review files the author can look at on a phone.
@@ -42,4 +43,18 @@ test("the voice reel: each voice announced, then its sample, two seconds apart; 
   assert.equal(reel.audio.length, 10 * (1 + 0.6 + 3 + 2 + 1 + 0.6 + 2));
   assert.deepEqual(reel.legend.map((e) => [e.id, e.start, e.seconds, e.approved]), [["narrator", 0, 3, false], ["lemuel", 6.6, 2, true]]);
   assert.equal(formatLegend(reel.legend), "0:00  The narrator (voice:narrator) — storyteller\n0:06  ✓ Lemuel Braunschweiger (voice:lemuel) — algenib — audition line, not from the story\n       Early twenties, high rasping tenor");
+});
+
+test("the character sheet reads as one block per character: their words marked, the story's noted, blanks explained", () => {
+  const bible = emptyBible();
+  bible.characters.dookie = { id: "dookie", name: "Dookie", traits: "a lazy orange tabby", goal: "the catnip toy", voice: "", status: "active" };
+  bible.characters.thief = { id: "thief", name: "The Thief", traits: "a raccoon in the rafters", goal: "", voice: "", status: "active" };
+  const md = formatCharacters({ dookie: { appearance: "very round, heavy belly, orange tabby", vocal: "slow, grand, put-upon", voiced: true, reference: "drawings/dookie.png" } }, bible, "The Case of the Catnip Squeaker");
+  assert.match(md, /^# The characters: The Case of the Catnip Squeaker/);
+  assert.match(md, /## Dookie\n- \*\*Look:\*\* very round, heavy belly, orange tabby\n/);
+  assert.match(md, /- \*\*Background:\*\* wants: the catnip toy \*\(from the story; fill it in to change it\)\*/);
+  assert.match(md, /- \*\*Pictures and voice:\*\* a portrait; their own voice; drawn from your art: drawings\/dookie\.png/);
+  assert.match(md, /## The Thief\n- \*\*Look:\*\* a raccoon in the rafters \*\(from the story/);
+  assert.match(md, /- \*\*Sounds like:\*\* \*\(empty: the story decides\)\*/);
+  assert.doesNotMatch(md, /[{}"]/, "no JSON in sight");
 });

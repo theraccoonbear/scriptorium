@@ -401,7 +401,7 @@ async function main() {
     }
     if (!storyFile || !(REVIEW_KINDS as readonly string[]).includes(kind)) throw new Error(`usage: review <story.json> ${REVIEW_KINDS.join("|")}|pending | review <story.json> done <N>... [--note "…"]`);
     const story = await loadStoryFile(storyFile);
-    const out = await buildReview(story.runDir, kind as ReviewKind);
+    const out = await buildReview(story.runDir, kind as ReviewKind, story.title ? { title: story.title } : {});
     for (const f of out.files) console.log(f);
     if (out.legend) console.log(`\n${out.legend}`);
     return;
