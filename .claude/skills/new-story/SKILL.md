@@ -25,7 +25,7 @@ description: The production wizard. Walks someone who has never used Scriptorium
 | **The ending:** everything explained, or a mystery left open | Second call | `ambiguity` |
 | **The spending limit** (a little above the pitch, the pitch, or more) | Second call, with the pitch | `budget.usd` |
 | **Cheaper but slower pictures** (batch: half price, minutes longer) | In the pictures pitch | `artist.batch` |
-| **The art style:** the one the story picked, 2–3 alternatives, or theirs | After the story is written, **before portraits** | `artStyle` |
+| **The art style:** 2–3 styles suited to the story (suggest one), or theirs; once a story's written, its own pick too | **Before the first picture of any kind**: before the cast preview if they have a cast, else before portraits | `artStyle` |
 | **The narrator's voice** (warm storyteller, grandparent, crisp…) | Before voices | the narrator's `vocal` on the character sheet |
 | **The music:** its sound, and whether they have their own | Before the music step | `music.style`, `music.tracks` |
 | **The extras:** which ones (key art, VHS box, cast photo), and the logo's look | Before the extras step | `extras` |
@@ -100,7 +100,8 @@ Work out what you can from their first message, then **propose the rest** (see "
   Either way the writers keep every beat, name and joke from the notes. Without notes, the story is invented from the premise.
 - **Characters they want?** Name, look, voice. These go on the character sheet in phase 1. They can skip this, and the story will invent its cast.
 - **Real people in it?** Their kids, their friends, their gaming group: photos can cast them. Offer a folder to drop them in (scaffold `contexts/<slug>/photos/` and give its path), or use them where they already are; never copy them yourself. Add a `cast` to the story file, one entry per person, pointing at their files: `{ "name": "Mia", "photos": ["/home/them/Pictures/mia-1.jpg", "/home/them/Pictures/mia-2.jpg"], "notes": "she/her, 7, the brave one" }`.
-  - **Before anything else,** `npm run cast -- stories/<slug>.json` previews them: it describes each person from their photos and draws one portrait each, for a few cents. The command prints each portrait's path (`runs/<slug>/cast/preview/<name>.jpg`). Give them those paths and open the portraits for them **before** asking whether they look right. If they want a change ("make Dookie fatter"), put it in that person's `notes` and run `npm run cast` again: changed notes make it describe them afresh and draw a new portrait. Show the new one and ask again, until they say it's right.
+  - **First, the art style** (the "Offer first" table): every picture uses it, the preview included, so it's in `artStyle` before the preview is drawn. The preview refuses to draw without one.
+  - **Then,** `npm run cast -- stories/<slug>.json` previews them: it describes each person from their photos and draws one portrait each, for a few cents. The command prints each portrait's path (`runs/<slug>/cast/preview/<name>.jpg`). Give them those paths and open the portraits for them **before** asking whether they look right. If they want a change ("make Dookie fatter"), put it in that person's `notes` and run `npm run cast` again: changed notes make it describe them afresh and draw a new portrait. Show the new one and ask again, until they say it's right.
   - Ask that everyone in the photos (or their parents) is happy to be in it, and keep the photos in this folder.
   - `--as "a dwarf warrior in chainmail"` previews someone in costume.
 
@@ -184,7 +185,7 @@ Hand over to the **produce** skill for each phase. The order is:
 1. writing (story). Let them read `story.md` before anything else is made: changing the words is cheapest now;
 2. the character sheet;
 3. **the canon check** (`--only canon`), for a story based on their notes. It lists every place the story drifts from them, and they pick which fixes to apply. Do it **before** pictures and voices: a fix after them means redrawing and re-voicing;
-4. **ask the art style** (the "Offer first" table), then portraits;
+4. portraits (the art style is already set: it's asked before the first picture, the cast preview included; if it somehow isn't, ask it now);
 5. **ask about the narrator's voice**, then voices (Gemini voices only; a Kokoro story skips this and is voiced in the audiobook step);
 6. shots and the cover;
 7. the audiobook;

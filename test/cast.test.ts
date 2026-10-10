@@ -151,3 +151,18 @@ test("cast preview describes the cast into the run and renders one portrait each
   await castRun(runDir, [{ name: "Don Smith", photos: [join(src, "don.jpg")] }, { name: "Biscuit", photos: [join(src, "b1.png"), join(src, "b2.png")] }], describer, events);
   assert.equal(describer.calls.length, 2);
 });
+
+test("the cast preview refuses to draw before there's an art style, and spends nothing", async () => {
+  const { castPreviewStep } = await import("../src/steps.ts");
+  const src = await tmp();
+  const runDir = join(await tmp(), "run");
+  const backend = new MockImageBackend();
+  const describer = new MockCastDescriber();
+  await assert.rejects(castPreviewStep({
+    runDir, config: { providers: {}, roles: {} },
+    cast: [{ name: "Dookie", photos: [await photo(src, "d.jpg")] }],
+    backend, inspector: null, describer, shrink: async (img) => img
+  }), /no art style yet: set "artStyle" in the story file before the cast preview/);
+  assert.equal(backend.calls.length, 0, "nothing drawn");
+  assert.equal(describer.calls.length, 0, "nothing described either");
+});

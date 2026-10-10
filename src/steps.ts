@@ -168,6 +168,9 @@ async function castPreviewInner(opts: CastPreviewOptions) {
   if (opts.cast.length === 0) throw new Error("this story file has no \"cast\"");
   const artist = resolveArtistConfig(config.artist);
   const log = new EventLog(runDir);
+  // No style yet (the preview comes before the story picks one): the image model would improvise,
+  // differently each time, and the real portraits wouldn't match. Settled before anything is spent.
+  if (!config.artStyle && !storyArtStyle(await log.load())) throw new Error(`no art style yet: set "artStyle" in the story file before the cast preview, so the preview is drawn the way every later picture will be`);
   const entries = await castStep(runDir, config, log, opts.cast, opts.describer, opts.shrink);
   const backend = opts.backend ?? makeImageBackend(artist.image);
   const inspector = opts.inspector === undefined ? (artist.inspector ? makeInspector(artist.inspector) : undefined) : opts.inspector ?? undefined;
