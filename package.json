@@ -26,6 +26,7 @@
     "canon": "node src/cli.ts canon",
     "spend": "node src/cli.ts spend",
     "cleanup": "node src/cli.ts cleanup",
+    "fresh": "node src/cli.ts fresh",
     "fork": "node src/cli.ts fork"
   },
   "engines": {

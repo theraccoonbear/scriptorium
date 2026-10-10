@@ -31,6 +31,7 @@ import { applyCanonFixes } from "./canon.ts";
 import { findRound } from "./rounds.ts";
 import { geminiSpeaker } from "./geminiTts.ts";
 import { fetchLibrary } from "./voiceLibrary.ts";
+import { applyFresh, describeFresh, findFresh, guarded } from "./fresh.ts";
 
 const USAGE = `scriptorium <command> [options]
 
@@ -250,6 +251,7 @@ async function main() {
       before: { type: "string" },
       step: { type: "string" },
       "no-wait": { type: "boolean" },
+      yes: { type: "boolean" },
       purge: { type: "boolean" },
       "keep-last": { type: "boolean" }
     }
@@ -326,6 +328,29 @@ async function main() {
     const steps = values.only ? planSteps(values.only) : undefined;
     const redo = (values.redo ?? "").split(",").map((r) => r.trim()).filter(Boolean);
     console.log(formatPitch(storyPitch(story, events, steps, redo), story.config.budget?.usd));
+    return;
+  }
+
+  if (command === "fresh") {
+    // A clean slate for the next test run (#193): this checkout's stories, notes, runs and Claude's memory of it.
+    const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+    const items = findFresh(root);
+    console.log(describeFresh(items, root));
+    if (items.length === 0) return;
+    // Approved work is a real production, not a test: never deleted without --force, whatever --yes says.
+    const real = guarded(items);
+    if (real.length && !values.force) {
+      throw new Error(`refusing: ${real.map((i) => i.path.split("/").pop()).join(", ")} ${real.length === 1 ? "has" : "have"} approved work — this looks like a real production, not a test checkout. Run fresh in a sandbox checkout, or add --force if you really mean it.`);
+    }
+    if (!values.yes) {
+      const { createInterface } = await import("node:readline/promises");
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = (await rl.question("Delete all of this? [y/N] ")).trim().toLowerCase();
+      rl.close();
+      if (answer !== "y" && answer !== "yes") { console.log("Nothing deleted."); return; }
+    }
+    applyFresh(items);
+    console.log(`Deleted ${items.length} item${items.length === 1 ? "" : "s"}. Start a new session with plain \`claude\` (not --continue).`);
     return;
   }
 

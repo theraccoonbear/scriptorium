@@ -7,7 +7,7 @@ FROM node:${NODE_VERSION}-trixie-slim
 # ffmpeg/ffprobe: audio, music, video, reference images. ImageMagick 7: review
 # contact sheets. fontconfig and a few fonts: system title fonts.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg imagemagick fontconfig fonts-dejavu-core fonts-liberation ca-certificates \
+ && apt-get install -y --no-install-recommends ffmpeg imagemagick git fontconfig fonts-dejavu-core fonts-liberation ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # Dependencies at /node_modules: Node finds them from /app, and they're built
