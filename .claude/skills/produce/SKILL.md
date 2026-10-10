@@ -82,7 +82,7 @@ Every choice goes through the **AskUserQuestion** tool: 2–4 options, the sugge
 - **the canon check's fixes:** "Apply all (Recommended)" / "Apply all but some" / "None";
 - **approving a round:** "Approve all", or "Approve some" with the keys typed in Other.
 
-Show what they need to see first (the contact sheet, the reel, the legend, the pitch) in a short message, then ask. Where the tool isn't available, ask one question in text and wait.
+Show what they need to see first (the contact sheet, the reel, the legend, the pitch) in a short message, then ask. "Show" means: the full clickable path of every file, and the file opened for them (`xdg-open`/`open`) or sent, never just mentioned. Never ask about something they haven't been shown. Where the tool isn't available, ask one question in text and wait.
 
 **Offer first.** Every choice that shapes the story, its look or sound, or its cost is the author's first. Ask it with your suggestion **before** a phase settles it; "you pick" is fine, but only after asking. At the phase boundaries:
 - **before portraits: the art style.** Show the one the story picked (`node src/cli.ts bible --out <run>`, its ART STYLE line) and offer 2–3 alternatives suited to the story, or theirs. A change goes in `artStyle`, then a free `--only story` records it before any picture is made;
