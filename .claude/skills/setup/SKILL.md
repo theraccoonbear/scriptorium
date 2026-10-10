@@ -15,9 +15,9 @@ Scriptorium turns a premise, or the author's own notes, into a finished story. I
 
 | Phase | What it makes | Powered by |
 |---|---|---|
-| Story | the scenes, written, critiqued and revised | Claude (Anthropic), or OpenAI / OpenCode Go |
+| Story | the scenes, written, critiqued and revised | Claude (Anthropic), or OpenAI, or OpenCode Go |
 | Characters | a character sheet the author can edit | free |
-| Portraits & shots | reference portraits, then illustrations for each scene, each checked by a vision model | Gemini (images and checks) |
+| Portraits & shots | reference portraits, then illustrations for each scene, each checked by a vision model | Gemini (images and checks), or OpenAI (GPT Image; 4 references at most per picture) |
 | Voices | a cast voice per speaker, auditioned in a reel | Gemini TTS (acted), or Kokoro (local and free, plainer) |
 | Audiobook | every scene narrated and acted | Gemini TTS or Kokoro |
 | Music | a score under the narration | Gemini Lyria |
@@ -51,12 +51,12 @@ Ask only for the keys their goal needs:
 |---|---|---|
 | `ANTHROPIC_API_KEY` | writing (every Claude role) | https://console.anthropic.com/settings/keys |
 | `GEMINI_API_KEY` | images, image checks, acted voices, music | https://aistudio.google.com/apikey |
-| `OPENAI_API_KEY` | writing through OpenAI (`responses` providers) | https://platform.openai.com/api-keys |
+| `OPENAI_API_KEY` | writing, pictures and picture checks through OpenAI (`story.openai.config.json`, or `"type": "openai"` providers and artist) | https://platform.openai.com/api-keys |
 | `OPENCODE_API_KEY` | writing through OpenCode Go (`opencode-go` providers) | https://opencode.ai |
 
 - **Billing:** both main services need billing set up for real runs. Anthropic sells prepaid credits. Gemini's image, speech and music models need a key on a paid (billing-enabled) Google Cloud project. A free-tier key may list those models but fail when used. Say so: `doctor` can't tell.
 - **Cost guide:**
-  - Writing is about $1.50 a scene with Opus, much less with Haiku.
+  - Writing is about 50 cents a scene with Opus, much less with Haiku.
   - Images are about $0.05 each in batch mode.
   - Acted narration is about a cent a minute in batch mode.
   - `npm run pitch -- <story.json>` prices a story before anything is spent.

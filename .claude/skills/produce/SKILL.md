@@ -7,22 +7,28 @@ description: Produce a Scriptorium story phase by phase with the author — cast
 
 For a story not yet started (no story file), or someone new to Scriptorium, use the **new-story** skill first. It sets up the idea, the audience and the story file, then hands over to this one.
 
+**With Docker** (the setup skill decides), every `npm run <command> -- <args>` here is `docker compose run --rm scriptorium <command> <args>`.
+
 You are the interface to Scriptorium's pipeline. The author reviews and signs off on each phase; you run the commands, show the results, make the changes they ask for, and never spend money without showing the pitch first.
 
 ## The phases, in order
 
 | # | Phase | Command | Output to review | Cost |
 |---|---|---|---|---|
-| 0 | Story | `npm run make -- <story.json> --only story` | `<run>/story.md` | ~$0.45/scene (Opus) |
+| 0 | Story | `npm run make -- <story.json> --only story` | `<run>/story.md` | ~$0.50/scene (Opus) |
 | 1 | Characters | `npm run make -- <story.json> --only characters` | `<run>/characters.json` | free |
+| 1½ | Canon check (stories from notes) | `npm run make -- <story.json> --only canon` | `review/rounds/NN-canon-check/legend.txt` | ~$0.15/scene (Opus) |
 | 2 | Portraits | `npm run make -- <story.json> --only refs` | `npm run review -- <story.json> refs` | ~$0.05/image (batch) |
-| 3 | Voices | `npm run make -- <story.json> --only voices` | `npm run review -- <story.json> voices` | cents |
+| 3 | Voices (Gemini only) | `npm run make -- <story.json> --only voices` | `npm run review -- <story.json> voices` | cents |
 | 4 | Shots + cover | `npm run make -- <story.json> --only art` | `npm run review -- <story.json> shots` | ~$0.05/image (batch) |
 | 5 | Audiobook | `npm run make -- <story.json> --only audiobook` | `<run>/audiobook/scene-NN.mp3` | ~$0.01/min (batch) |
 | 5½ | Music (optional) | `npm run make -- <story.json> --only music` | `npm run review -- <story.json> music` | ~$0.18/cue incl. retakes (theme + 1 per scene) |
+| 5¾ | Extras | `npm run make -- <story.json> --only extras` | the images in `<run>/art/extra/` | ~$0.05/image (key art ×3, box, cast photo, logo) |
 | 6 | Video | `npm run make -- <story.json> --only video` | `<run>/video/story.mp4`, `<run>/video/titles.json` | free (local); a narrated title is one Gemini TTS line |
 
 `<run>` is the story file's `"out"`. Every phase resumes and skips finished work, so re-running is safe.
+
+**Order matters for cost:** let the author read `story.md` and run the canon check **before** portraits, voices and shots. A fix to the words after voicing means re-voicing, and after shots it means redrawing. A story voiced with Kokoro skips phase 3; its voices are assigned in the audiobook step.
 
 ## Review files
 
@@ -72,6 +78,26 @@ A story can be given a running time: `"length": { "minutes": 12 }`, with `"scene
 
 Run `npm run pitch -- <story.json> --only <phase>` and tell the author, in a line or two, what it will make and cost, and the budget left (`story.budget.usd` in the story file). Wait for a yes. If the estimate exceeds the budget, say so and offer to raise it — never raise it yourself.
 
+## Steering the writing
+
+The author's words for each layer go in the story file's `direction`, and that layer reads them on every call:
+- `writer`: voice, register, humour ("dry, deadpan; never explain the joke");
+- `director`: what happens and its pacing;
+- `critic`: what counts as a failure ("the hidden truth stated outright is a failure");
+- `continuist`, `editor`, `archivist`, `artdirector`, `artist`, `voicedirector`, `musicdirector`, and the planning layers `creator`, `worldbuilder`, `beatgate`, `contextgate`, `worldgate`, `patchgate` take direction too.
+
+Other levers:
+- `artStyle` fixes the pictures' style.
+- `"tension": [3, 5, 9]` pins the arc per scene (null leaves one to the planner).
+- `"turns": [null, "the map is a forgery"]` pins what turns a scene.
+- `"ambiguity": "tidy" | "some" | "lots"` sets how much is left unsaid.
+
+Direction only shapes what's written next, so set it before the writing step.
+
+**Changing written scenes:**
+- **A detail** goes through the canon check (`--only canon`, then `npm run canon -- <story.json> --apply [--skip …]`), with a backup and only the changed shots marked for redrawing. Add the fact to the author's context file first if it isn't there.
+- **A scene going the wrong way:** there's no one-scene rewrite yet (#184). Fork before it, `npm run fork -- --from <run> --at <scenes to keep> --out <new run>`, point the story file's `out` at the new run, set the direction, and run `--only story`. The later scenes are rewritten too, so pitch it.
+
 ## Phase 1: the character sheet
 
 `characters.json` holds one entry per character: `name`, `gender`, `appearance`, `background`, `vocal`, `portrait`, `voiced`, and optionally `reference`. `reference` is the author's own drawing or design of the character (a .png/.jpg/.webp, relative to `characters.json`); the portrait is drawn from it. Filled fields override everything the pipeline generated — portraits, voice casting, and any later writing. Empty fields leave the generated values alone.
@@ -114,6 +140,22 @@ After `--only voices`, build the reel (`npm run review -- <story.json> voices`) 
 - **Notes say what should be there, never what shouldn't.** "He stands on the floor among the crowd", not "not on a table": naming the unwanted thing puts it in the picture.
 - **Reshoots:** after any reference changes, `npm run reshoot -- <story.json>` lists the shots drawn from the old version (⟳ on the contact sheet) with the cost. `--only art` reshoots the unapproved ones. Pitch it like any paid phase.
 
+## Phase 5¾: extras
+
+`--only extras` (after the cover is approved) makes:
+- **Generated, and approved like art:**
+  - key art in three shapes, reframed from the cover: `extra-keyart-2x3`, `extra-keyart-16x9` and `extra-keyart-1x1`. The 16:9 one is the film's opening backdrop;
+  - the cast photo, posed (`extra-cast`) and on set (`extra-cast-set`).
+- **Put together from those, free:**
+  - the VHS box (`art/extra/box/`; `"extras": { "box": false }` skips it);
+  - the title logo (`--redo extra-logo` designs it again).
+
+Settings live under `extras`:
+- `keyArt` and `castPhoto` take `style` and `direction`;
+- `logo` takes `mode` (`drawn` or `typeset`), `font`, `treatment` (gilded, bronze, silver, iron, parchment or plain), `arc`, `caps`, or the author's own `file`.
+
+Approve these like art. `--redo extra-keyart-2x3,…` retakes one; `--redo extras` re-plans them all. `--edit extra-cast --note "…"` fixes a detail. After a new cover, reframe the key art and re-render the video (free) so the opening shows it.
+
 ## Phases 5–6
 
 The audiobook and video need no review loop; send a scene MP3 or the video path when done.
@@ -127,7 +169,15 @@ Music is off unless the story file has a `music` block. Pitch it like any paid p
 
 Covered parts get no generated cue, and `"generate": false` means no score at all. Laying the tracks happens in the video step and is free, so after adding one, re-run `--only video` and send the film or a clip.
 
-Before the video, check the story file has a `title` (and `subtitle`, and `series` for a chapter); without one, the opening has no text. After it, show the author the scene titles the run printed (from `<run>/video/titles.json`). To change one, edit its `title` there and re-run `--only video`: only that card and the join are redone. `video.titles.narrate` makes a paid TTS call, so pitch it before turning it on.
+**The opening and the ending** (all in the story file, re-rendered free with `--only video`):
+- **The title:** `title`, `subtitle`, and `series: { "next": "Part 2" }` for a chapter, which adds a "To be continued" ending and a "Next:" card. Without a `title` the opening has no text. `video.titles.ending` sets the ending card's words.
+- **The opening sequence:** the title logo over the 16:9 key art, then (optionally) the crawl, with the theme or the author's own music under both.
+- **The crawl:** `video.titles.crawl` takes the author's own text (a string or a list of paragraphs), or `true` to have the writer draft one from their notes, stopping just before scene 1. The draft lands in `<run>/video/titles.json` under `crawl`. Show it to the author; their edits there stick.
+- **A narrated title and crawl:** `video.titles.narrate: true` has the narrator read the title and the crawl. These are paid TTS lines (cents), so pitch it.
+- **The rating card** (rated stories) opens the film unless `"card": false`.
+- **Scene titles:** show the author the titles the run printed (from `<run>/video/titles.json`). To change one, edit its `title` there and re-run `--only video`: only that card and the join are redone.
+
+**Publishing:** write `notes/publish-metadata.md` (tagline, summaries, tags, chapters). Take the chapter times from the **final** render's `video/timeline.json`, and redo them after any re-render. Remind the author to tick YouTube's "altered or synthetic content" box.
 
 ## House rules
 
@@ -136,6 +186,8 @@ Before the video, check the story file has a `title` (and `subtitle`, and `serie
 - **What's waiting on the author comes from `npm run review -- <story.json> pending`,** never from memory. Each open round shows what it waits on and the exact files to look at. Put those absolute paths in the review request, grouped by round, and send the files themselves when the author is on their phone. When the author says a round is dealt with and nothing records it (a speech check listened to, a note seen), close it with `npm run review -- <story.json> done <N> [--note "…"]`.
 
 - **A missing key or tool:** when a phase fails on one, run `npm run doctor -- <story.json>` and fix what it marks ✗ (the `setup` skill covers getting keys).
+- **A stuck scene** ("scene N is stuck: … drafts"): read the last reviewer outputs in `<run>/threads/` with the author. Usually a plan item and a rule conflict, or a direction is too strict. Change the direction or notes and run again; it resumes at that scene. Raise `maxDraftsPerScene` only when the drafts are converging.
+- **Spend that isn't the story's:** testing, debugging or an experiment shouldn't count against the author's budget. Run it with `--cost-kind dev` (or `experiment`), or under `runs/_scratch/`. Re-tag past spend with `npm run spend -- <story.json> --retag --cost-kind dev --after <ts>`. `npm run spend -- <story.json>` shows spend by kind.
 - **Never spend without the pitch and a yes.** Free phases (characters, video, review) need no pitch.
 - **Sign-off before the next phase.** Don't chain paid phases on your own.
 - **Never use Kokoro on a story whose audiobook is set to Gemini**, and never change a story's voice settings to make a run succeed — stop and ask.
