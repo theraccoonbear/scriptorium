@@ -1,20 +1,43 @@
 {
-  "scenes": 8,
   "maxRevisions": 2,
   "overdueAfter": 3,
   "providers": {
-    "mock": { "type": "mock" }
+    "mock": {
+      "type": "mock"
+    }
   },
   "artist": {
-    "image": { "type": "mock" },
-    "inspector": { "type": "mock" }
+    "image": {
+      "type": "mock"
+    },
+    "inspector": {
+      "type": "mock"
+    }
   },
   "roles": {
-    "director": { "provider": "mock", "temperature": 0.7 },
-    "writer": { "provider": "mock", "temperature": 0.9 },
-    "continuist": { "provider": "mock", "temperature": 0.1 },
-    "critic": { "provider": "mock", "temperature": 0.5 },
-    "archivist": { "provider": "mock", "temperature": 0.1 },
-    "artdirector": { "provider": "mock", "temperature": 0.7 }
+    "director": {
+      "provider": "mock",
+      "temperature": 0.7
+    },
+    "writer": {
+      "provider": "mock",
+      "temperature": 0.9
+    },
+    "continuist": {
+      "provider": "mock",
+      "temperature": 0.1
+    },
+    "critic": {
+      "provider": "mock",
+      "temperature": 0.5
+    },
+    "archivist": {
+      "provider": "mock",
+      "temperature": 0.1
+    },
+    "artdirector": {
+      "provider": "mock",
+      "temperature": 0.7
+    }
   }
 }

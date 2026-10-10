@@ -17,12 +17,13 @@ import type { CompletionRequest, Role, StoryConfig, StoryEvent } from "../src/ty
 // sized to each scene's share, and the pitch saying how long it runs.
 
 test("a running time becomes word budgets: 12 minutes in 3 scenes, or the scene count chosen to fit", () => {
-  const l = resolveLength({ minutes: 12, scenes: 3 });
+  const l = resolveLength({ minutes: 12 }, { scenes: 3 });
   assert.equal(l.totalWords, 12 * 156);
   assert.deepEqual(l.sceneWords, { min: Math.round(624 * 0.85), max: Math.round(624 * 1.15) });
   assert.equal(resolveLength({ minutes: 60 }).scenes, 6, "about ten minutes a scene");
   assert.equal(resolveLength({ minutes: 2 }).scenes, 1);
-  assert.equal(resolveLength({ minutes: 12, scenes: 3 }, { scenes: 4 }).scenes, 4, "the story file's scene count wins");
+  assert.equal(resolveLength({ minutes: 12 }, { scenes: 4 }).scenes, 4, "the story file's scene count");
+  assert.throws(() => resolveLength({ minutes: 12, scenes: 3 } as never), /"length.scenes" is gone: the scene count has one place, "scenes" at the top of the story file/);
   assert.equal(resolveLength({ minutes: 10 }, { measuredWpm: 140 }).totalWords, 1400, "the narrator's measured pace");
   assert.equal(resolveLength({ minutes: 10, wordsPerMinute: 120 }, { measuredWpm: 140 }).totalWords, 1200, "the author's pace wins");
   assert.throws(() => resolveLength({ minutes: 0 }), /positive/);
@@ -44,7 +45,7 @@ test("the fit check: what the plan needs, what to cut, where to split; too long 
     needMinutes: 9, cuts: [{ item: "the long argument at the inn", saves: 3.5 }], split: "Part 1 ends at the inn"
   }), { story: "PREMISE: …", minutes: 3, scenes: 1, words: 468 });
   assert.equal(out.result.items.length, 2, "blank items dropped");
-  const len = resolveLength({ minutes: 3, scenes: 1 });
+  const len = resolveLength({ minutes: 3 }, { scenes: 1 });
   assert.ok(tooLong(out.result, 3));
   const msg = fitMessage(out.result, len);
   assert.match(msg, /needs about 9 minutes; you asked for 3/);
@@ -115,4 +116,20 @@ test("the narrator's measured pace, from this run's voiced scenes", async () => 
   const events = [{ seq: 1, type: "scene_committed", ts: "t", data: { index: 0, prose: "word ".repeat(300) } }] as StoryEvent[];
   assert.equal(measuredPace(dir, events), 150);
   assert.equal(measuredPace(dir, []), undefined, "no scene, no pace");
+});
+
+test("one scene count: the story file's \"scenes\", else what fits the running time; a config's scenes is only a fallback", async () => {
+  const { loadStoryFile } = await import("../src/make.ts");
+  const dir = await mkdtemp(join(tmpdir(), "scriptorium-scenes-"));
+  await writeFile(join(dir, "old.config.json"), JSON.stringify({ scenes: 8, providers: {}, roles: {} }));
+  await writeFile(join(dir, "new.config.json"), JSON.stringify({ providers: {}, roles: {} }));
+  const story = async (config: string, extra: object) => {
+    await writeFile(join(dir, "story.json"), JSON.stringify({ config, out: "run", ...extra }));
+    return loadStoryFile(join(dir, "story.json"));
+  };
+  assert.equal((await story("new.config.json", { scenes: 3, length: { minutes: 12 } })).scenes, 3);
+  assert.equal((await story("old.config.json", { length: { minutes: 30 } })).scenes, 3, "what fits the minutes, not an old config's 8");
+  assert.equal((await story("old.config.json", { scenes: 5 })).scenes, 5);
+  assert.equal((await story("old.config.json", {})).scenes, 8, "an old config's scenes still works for a story with neither");
+  await assert.rejects(story("new.config.json", { length: { minutes: 12, scenes: 3 } }), /"length.scenes" is gone/);
 });

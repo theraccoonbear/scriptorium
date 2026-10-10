@@ -1,6 +1,5 @@
 {
   "rngSeed": 7,
-  "scenes": 8,
   "maxRevisions": 2,
   "overdueAfter": 3,
   "providers": {

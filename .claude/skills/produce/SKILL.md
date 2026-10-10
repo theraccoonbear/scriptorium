@@ -60,7 +60,7 @@ Ask the author who the story is for **before anything is written**. A rating cha
 
 ## Before phase 0: how long?
 
-A story can be given a running time: `"length": { "minutes": 12 }`, with `"scenes": 3` inside it to fix the scene count. It becomes each scene's word budget at the narrator's pace: 156 words a minute, or this run's measured pace once there's an audiobook. The climax gets a bigger share and a quiet scene a smaller one. An explicit `sceneWords` overrides it. Without `length`, scenes are 1,200–1,800 words.
+A story can be given a running time: `"length": { "minutes": 12 }`. The scene count has one place, `"scenes"` at the top of the story file; without it, the minutes set it (about 10 a scene). It becomes each scene's word budget at the narrator's pace: 156 words a minute, or this run's measured pace once there's an audiobook. The climax gets a bigger share and a quiet scene a smaller one. An explicit `sceneWords` overrides it. Without `length`, scenes are 1,200–1,800 words.
 
 - **The fit check comes first:** the first `--only story` run checks the premise and the author's plan against the running time. If the plan needs more than 25% over, the run stops with nothing written and the options listed in `<run>/length.md`. Go through it with the author:
   - **stretch:** raise `minutes` to what the plan needs;

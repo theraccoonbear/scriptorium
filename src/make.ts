@@ -89,7 +89,7 @@ export interface StoryFile {
   budget?: { usd: number; count?: CostKind[] };  // stop before spending more than this on the run (counting these kinds of spend)
   rating?: RatingSetting;  // hold the story to an audience rating (#88): "PG", or { base, age, forbid, flag, allow, mode, card }
   ambiguity?: Ambiguity;   // how much the story leaves unsaid (#93): "tidy", "some" (default) or "lots"
-  length?: LengthSetting;  // a running time (#170): { "minutes": 12, "scenes": 3 }; sets the scene count and word budgets
+  length?: LengthSetting;  // a running time (#170): { "minutes": 12 }; sets each scene's word budget, and the scene count when "scenes" isn't set
   // How art and audio run: "audio-first" (default: voicing is cheap and listening
   // can send a story back for a rewrite before images are paid for),
   // "art-first", or "parallel" (fastest).
@@ -166,6 +166,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...(raw.turns ?? baseConfig.turns ? { turns: raw.turns ?? baseConfig.turns } : {}),
     ...(raw.artist ? { artist: { ...baseConfig.artist, ...raw.artist } } : {})
   };
+  if (baseConfig.scenes !== undefined) console.error(`[scriptorium] ${configPath ?? path}: "scenes" belongs in the story file, not a shared config — move it (the story file's "scenes" or "length" wins)`);
   if (raw.audiobook?.audioTags !== undefined) {
     try { resolveAudioTags(raw.audiobook.audioTags); } catch (err) { throw new Error(`${path}: ${(err as Error).message}`); }
   }
@@ -218,8 +219,10 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     subtitle: raw.subtitle,
     series: raw.series,
     contextPaths: contexts.map(at),
-    // A running time sets the scene count when the story file doesn't (#170).
-    scenes: raw.scenes ?? (config.length ? resolveLength(config.length, { scenes: config.scenes }).scenes : undefined),
+    // The scene count has one place: the story file's "scenes". Without it, a running
+    // time sets it (what fits the minutes). A config's "scenes" is from before that rule:
+    // used only for a story with neither, and flagged.
+    scenes: raw.scenes ?? (config.length ? resolveLength(config.length).scenes : baseConfig.scenes),
     maxAttempts: attempts,
     speakerTags: raw.speakerTags,
     audiobook: raw.audiobook?.castingFile ? { ...raw.audiobook, castingFile: at(raw.audiobook.castingFile) } : raw.audiobook ?? {},
