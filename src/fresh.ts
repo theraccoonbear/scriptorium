@@ -26,7 +26,8 @@ function size(path: string): number {
 // Files git doesn't track under these folders: what the author (or the wizard) added.
 function untracked(root: string, dirs: string[]): string[] {
   try {
-    const out = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "--directory", "--", ...dirs], { cwd: root, encoding: "utf8" });
+    // safe.directory: in Docker the mounted checkout can belong to another user id, and git would refuse it.
+    const out = execFileSync("git", ["-c", "safe.directory=*", "ls-files", "--others", "--exclude-standard", "--directory", "--", ...dirs], { cwd: root, encoding: "utf8" });
     return out.split("\n").map((l) => l.replace(/\/$/, "")).filter(Boolean);
   } catch {
     throw new Error("fresh needs a git checkout: it only deletes story files git doesn't track");
