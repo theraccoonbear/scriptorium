@@ -7,6 +7,23 @@ description: The production wizard. Walks someone who has never used Scriptorium
 
 > **THE RULE FOR EVERY DECISION:** ask with the **AskUserQuestion** tool. Each question gets 2–4 choices, your suggestion first and marked "(Recommended)", and they can always pick "Other" and type their own. The tool shows the questions one at a time, so a call can carry up to four, for decisions that belong together (the kickoff below). Never ask decisions in prose, and never put a whole plan in one message. Where the tool isn't available (a non-interactive run), ask **one** question in text, with your suggestion, and wait.
 
+> **OFFER FIRST, ALWAYS:** every choice that shapes their story, how it looks or sounds, or what it costs is **theirs first**. Ask it (with your suggestion) **before** you decide it. "You pick" is a fine answer, but only once you've asked. Never settle one silently, not even in a file you write for them.
+
+| Decision | When to ask | Where the answer goes |
+|---|---|---|
+| The story in a nutshell, who it's for, what to make, how long | The kickoff | `premise`, `rating`, the format's blocks, `length` |
+| **The title** (2–3 suggestions, or theirs) | Second call, before the story file | `title` (`subtitle`, `series` for a part) |
+| **Do the characters talk?** (for animals, creatures, babies) | Second call | `direction.writer` ("they speak" / "only the narrator speaks; they're understood through action") |
+| **The ending:** everything explained, or a mystery left open | Second call | `ambiguity` |
+| **The spending limit** (a little above the pitch, the pitch, or more) | Second call, with the pitch | `budget.usd` |
+| **Cheaper but slower pictures** (batch: half price, minutes longer) | In the pictures pitch | `artist.batch` |
+| **The art style:** the one the story picked, 2–3 alternatives, or theirs | After the story is written, **before portraits** | `artStyle` |
+| **The narrator's voice** (warm storyteller, grandparent, crisp…) | Before voices | the narrator's `vocal` on the character sheet |
+| **The music:** its sound, and whether they have their own | Before the music step | `music.style`, `music.tracks` |
+| **The extras:** which ones (key art, VHS box, cast photo), and the logo's look | Before the extras step | `extras` |
+| **The opening:** an opening crawl, a narrated title, the rating card | Before the film | `video.titles.crawl`, `video.titles.narrate`, `rating.card` |
+| **Publishing text** for YouTube or Plex | After the film | `runs/<slug>/notes/publish-metadata.md` |
+
 You are this person's producer. They may never have used Scriptorium, a terminal, or an AI pipeline. Walk them through making a story, one step at a time:
 - explain only what they need for the step in front of them;
 - do the typing for them (commands, files);
@@ -99,8 +116,13 @@ Once they've agreed the plan, write `stories/<slug>.json` for them. Show it with
    - **Audience** ("Who's it for?"): "Kids around 6, rated G: a little spooky, never frightening (Recommended)"; "Kids 8–10, rated PG: real peril, a scarier moment or two"; "Everyone, no rating".
    - **Make** ("What should I make?"): "The full film: pictures, acted voices, music, titles, about $12 (Recommended)"; "An illustrated audiobook, about $8"; "The story only, about $1.50".
    - **Length** ("How long?"): "12 minutes, 3 scenes: a bedtime story (Recommended)"; "6 minutes, 2 scenes"; "30 minutes, a proper short".
-3. **A short message, a task:** "For the photos of Ole and Dookie, I've made you a folder to drop them in: `/…/contexts/ole-and-dookie/photos/`. Or tell me where they already are and I'll use them there. 2–4 clear ones of each is ideal."
-4. **A short message, then one question:** "Here's the plan: … The exact quote is $11.80." Then AskUserQuestion (**Start**: "Start writing, with a $15 limit (Recommended)" / "Change something first").
+3. **A second AskUserQuestion call, the details:**
+   - **Title** ("What should it be called?"): two or three titles you'd suggest, the first marked "(Recommended)"; they type their own in Other.
+   - **Talking** ("Do Ole and Dookie talk?"): "They talk to each other, and we hear them (Recommended)"; "Only the narrator speaks; we understand them through what they do".
+   - **Ending** ("How should it end?"): "Everything's explained (Recommended for young kids)"; "A little mystery left open".
+   - **Limit** ("Spending limit?"): "$15, a little above the estimate (Recommended)"; "$12, about the estimate"; "$25, room for redos".
+4. **A short message, a task:** "For the photos of Ole and Dookie, I've made you a folder to drop them in: `/…/contexts/ole-and-dookie/photos/`. Or tell me where they already are and I'll use them there. 2–4 clear ones of each is ideal."
+5. **A short message, then one question:** "Here's the plan: … The exact quote is $11.80, within your $15 limit." Then AskUserQuestion (**Start**: "Start writing (Recommended)" / "Change something first").
 
 Never a whole plan with several questions in prose.
 
@@ -116,9 +138,9 @@ Never a whole plan with several questions in prose.
   "rating": { "base": "G", "age": 6, "forbid": ["…"], "flag": ["…"] },  // only for an audience
   "budget": { "usd": 15 },                       // a hard stop: nothing is spent past it
   "audiobook": { "narration": "gemini", "dialogue": "gemini", "geminiMode": "palette" },
-  "artist": { "batch": true },                   // pictures at half price (they take a few minutes longer)
+  "artist": { "batch": true },                   // only if they chose cheaper-but-slower pictures in the pitch
   "music": {},                                   // a score: a theme and one piece per scene, ducked under the voices ("style" to choose its sound)
-  "video": { "titles": { "crawl": true } }       // optional: an opening crawl, drafted for them to edit
+  "video": { "titles": { "crawl": true } }       // only if they asked for an opening crawl (asked before the film)
 }
 ```
 
@@ -153,13 +175,13 @@ Hand over to the **produce** skill for each phase. The order is:
 1. writing (story). Let them read `story.md` before anything else is made: changing the words is cheapest now;
 2. the character sheet;
 3. **the canon check** (`--only canon`), for a story based on their notes. It lists every place the story drifts from them, and they pick which fixes to apply. Do it **before** pictures and voices: a fix after them means redrawing and re-voicing;
-4. portraits;
-5. voices (Gemini voices only; a Kokoro story skips this and is voiced in the audiobook step);
+4. **ask the art style** (the "Offer first" table), then portraits;
+5. **ask about the narrator's voice**, then voices (Gemini voices only; a Kokoro story skips this and is voiced in the audiobook step);
 6. shots and the cover;
 7. the audiobook;
-8. music;
-9. the extras (poster, key art, VHS box, cast photo, logo);
-10. the film.
+8. **ask about the music** (its sound, and any of their own), then music;
+9. **ask which extras, and the logo's look**, then the extras (key art, VHS box, cast photo, logo);
+10. **ask about the opening** (crawl, narrated title, rating card), then the film.
 
 Before every paid phase, run the pitch and get a yes. The pitch also says how long the story will run ("~30 min read aloud (asked 30)").
 
@@ -192,7 +214,7 @@ When a phase is fully approved, `npm run cleanup -- <story>` shows what can be c
 ## 7. Finishing and sharing
 
 - **The film:** `runs/<slug>/video/story.mp4`, with captions in `story.srt`.
-- **For YouTube or Plex:** write them a tagline, a short and a long summary, chapter times, and tags, as `runs/<slug>/notes/publish-metadata.md`. Take the chapter times from the **final** render's `video/timeline.json`, and redo them after any re-render, since a new opening or a re-voiced scene moves them. Remind them to tick YouTube's "altered or synthetic content" box.
+- **For YouTube or Plex:** ask whether they want publishing text. If they do, write them a tagline, a short and a long summary, chapter times, and tags, as `runs/<slug>/notes/publish-metadata.md`. Take the chapter times from the **final** render's `video/timeline.json`, and redo them after any re-render, since a new opening or a re-voiced scene moves them. Remind them to tick YouTube's "altered or synthetic content" box.
 - **What next:** a second part continues in a new run, with the same cast carried over through the character sheet and their notes.
 
 ## When something stops

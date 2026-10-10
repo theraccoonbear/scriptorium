@@ -84,6 +84,15 @@ Every choice goes through the **AskUserQuestion** tool: 2–4 options, the sugge
 
 Show what they need to see first (the contact sheet, the reel, the legend, the pitch) in a short message, then ask. Where the tool isn't available, ask one question in text and wait.
 
+**Offer first.** Every choice that shapes the story, its look or sound, or its cost is the author's first. Ask it with your suggestion **before** a phase settles it; "you pick" is fine, but only after asking. At the phase boundaries:
+- **before portraits: the art style.** Show the one the story picked (`node src/cli.ts bible --out <run>`, its ART STYLE line) and offer 2–3 alternatives suited to the story, or theirs. A change goes in `artStyle`, then a free `--only story` records it before any picture is made;
+- **before voices: the narrator** (warm storyteller, grandparent, crisp…), written as the narrator's `vocal` on the character sheet;
+- **in the pictures pitch:** cheaper-but-slower batch mode (`artist.batch`), or faster at full price;
+- **before music:** its sound (`music.style`) and whether they have tracks of their own;
+- **before extras:** which ones (key art, VHS box, cast photo) and the logo's look (`extras`);
+- **before the film:** an opening crawl, a narrated title, the rating card (`video.titles.crawl`, `video.titles.narrate`, `rating.card`);
+- **after the film:** whether they want publishing text.
+
 ## Before every paid phase: the pitch
 
 Run `npm run pitch -- <story.json> --only <phase>` and tell the author, in a line or two, what it will make and cost, and the budget left (`story.budget.usd` in the story file). Wait for a yes. If the estimate exceeds the budget, say so and offer to raise it — never raise it yourself.
@@ -127,6 +136,8 @@ Direction only shapes what's written next, so set it before the writing step.
 **After the sheet changes on a written story:** run `npm run make -- <story.json> --only canon` (about $1 with Opus for 6 scenes; pitch it). Send its `legend.txt` in the review format, and let the author choose which fixes to apply with `npm run canon -- <story.json> --apply --skip …`.
 
 ## Phase 2: portraits
+
+**First, the art style** (see "Offer first"): every portrait, shot and cover will use it, so it's settled before the first picture is paid for.
 
 After `--only refs`, build the contact sheet (`npm run review -- <story.json> refs`) and send it to the author. Then, per image:
 - **Approve:** `npm run approve -- <story.json> character-lemuel location-ditch ...`
