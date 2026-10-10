@@ -95,10 +95,10 @@ export interface StoryFile {
   // "art-first", or "parallel" (fastest).
   stepOrder?: StepOrder;
   maxDraftsPerScene?: number;          // hard stop for a scene that won't settle (default 20)
-  pricing?: StoryConfig["pricing"];    // per-model USD per million tokens, over the defaults
   extras?: StoryConfig["extras"];   // override the art style / direction for the extras (see StoryConfig)
   artStyle?: string;                   // prescriptive art style; overrides the Creator's
-  artist?: StoryConfig["artist"];      // image settings over the config's (batch, retakes, concurrency...)
+  artist?: Pick<NonNullable<StoryConfig["artist"]>, "batch" | "retakes" | "retakeAbove">;  // the author's image choices; the backends live in the config
+  sceneWords?: StoryConfig["sceneWords"];  // each scene's word band, instead of "length"
   critic?: StoryConfig["critic"];      // "blocking" (default), "advisory" or "off"
   // The author's pins, per scene in order (null: the models decide).
   tension?: Array<number | null>;      // tension targets 1-10 (else the creator's arc)
@@ -148,25 +148,25 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
   if (!raw.config) throw new Error(`${path}: "config" (a config file path, or the config inline) is required`);
   const configPath = typeof raw.config === "string" ? at(raw.config) : undefined;
   const baseConfig = configPath ? (JSON.parse(await readFile(configPath, "utf8")) as StoryConfig) : (raw.config as StoryConfig);
-  // The story file's direction and art style layer over the config's.
+  // Every setting has one home (see STORY_KEYS): nothing in both files, so nothing silently wins.
+  checkHomes(path, configPath ?? `${path} "config"`, raw as unknown as Record<string, unknown>, baseConfig as unknown as Record<string, unknown>);
   const config: StoryConfig = {
     ...baseConfig,
-    ...(raw.direction || baseConfig.direction ? { direction: { ...baseConfig.direction, ...raw.direction } } : {}),
-    ...(raw.artStyle ?? baseConfig.artStyle ? { artStyle: raw.artStyle ?? baseConfig.artStyle } : {}),
-    ...(raw.extras ?? baseConfig.extras ? { extras: { ...baseConfig.extras, ...raw.extras } } : {}),
-    ...(raw.budget ?? baseConfig.budget ? { budget: raw.budget ?? baseConfig.budget } : {}),
+    ...(raw.direction ? { direction: raw.direction } : {}),
+    ...(raw.artStyle ? { artStyle: raw.artStyle } : {}),
+    ...(raw.extras ? { extras: raw.extras } : {}),
+    ...(raw.budget ? { budget: raw.budget } : {}),
     ...(raw.rating !== undefined ? { rating: resolveRating(raw.rating, `${path}: "rating"`) } : {}),
     ...(typeof raw.title === "string" && raw.title.trim() ? { title: raw.title.trim() } : {}),
-    ...(raw.length ?? baseConfig.length ? { length: raw.length ?? baseConfig.length } : {}),
-    ...(raw.ambiguity ?? baseConfig.ambiguity ? { ambiguity: raw.ambiguity ?? baseConfig.ambiguity } : {}),
-    ...(raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene ?? baseConfig.maxDraftsPerScene } : {}),
-    ...(raw.pricing || baseConfig.pricing ? { pricing: { ...baseConfig.pricing, ...raw.pricing } } : {}),
-    ...(raw.critic ?? baseConfig.critic ? { critic: raw.critic ?? baseConfig.critic } : {}),
-    ...(raw.tension ?? baseConfig.tension ? { tension: raw.tension ?? baseConfig.tension } : {}),
-    ...(raw.turns ?? baseConfig.turns ? { turns: raw.turns ?? baseConfig.turns } : {}),
-    ...(raw.artist ? { artist: { ...baseConfig.artist, ...raw.artist } } : {})
+    ...(raw.length ? { length: raw.length } : {}),
+    ...(raw.sceneWords ? { sceneWords: raw.sceneWords } : {}),
+    ...(raw.ambiguity ? { ambiguity: raw.ambiguity } : {}),
+    ...(raw.maxDraftsPerScene ? { maxDraftsPerScene: raw.maxDraftsPerScene } : {}),
+    ...(raw.critic ? { critic: raw.critic } : {}),
+    ...(raw.tension ? { tension: raw.tension } : {}),
+    ...(raw.turns ? { turns: raw.turns } : {}),
+    ...(raw.artist ? { artist: { ...baseConfig.artist, ...raw.artist } as StoryConfig["artist"] } : {})
   };
-  if (baseConfig.scenes !== undefined) console.error(`[scriptorium] ${configPath ?? path}: "scenes" belongs in the story file, not a shared config — move it (the story file's "scenes" or "length" wins)`);
   if (raw.audiobook?.audioTags !== undefined) {
     try { resolveAudioTags(raw.audiobook.audioTags); } catch (err) { throw new Error(`${path}: ${(err as Error).message}`); }
   }
@@ -220,9 +220,8 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     series: raw.series,
     contextPaths: contexts.map(at),
     // The scene count has one place: the story file's "scenes". Without it, a running
-    // time sets it (what fits the minutes). A config's "scenes" is from before that rule:
-    // used only for a story with neither, and flagged.
-    scenes: raw.scenes ?? (config.length ? resolveLength(config.length).scenes : baseConfig.scenes),
+    // time sets it (what fits the minutes).
+    scenes: raw.scenes ?? (config.length ? resolveLength(config.length).scenes : undefined),
     maxAttempts: attempts,
     speakerTags: raw.speakerTags,
     audiobook: raw.audiobook?.castingFile ? { ...raw.audiobook, castingFile: at(raw.audiobook.castingFile) } : raw.audiobook ?? {},
@@ -230,6 +229,26 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     // The author's tracks' files resolve against the story file (#174).
     ...(raw.music ? { music: raw.music.tracks ? { ...raw.music, tracks: raw.music.tracks.map((t) => ({ ...t, file: at(t.file) })) } : raw.music } : {})
   };
+}
+
+// One home per setting. The story file says what the story is; the config says how it's
+// made (providers, models, backends, prices, pipeline tuning). A setting in the wrong file,
+// or two that contradict each other, stops the run with where it belongs.
+export const STORY_KEYS = ["premise", "setting", "context", "title", "scenes", "length", "sceneWords", "ambiguity", "rating", "tension", "turns", "direction", "artStyle", "extras", "budget", "critic", "speakerTags", "maxAttempts", "maxDraftsPerScene"] as const;
+export const CONFIG_KEYS = ["providers", "roles", "pricing", "rngSeed", "overdueAfter", "artWordsPerShot", "writerNotes", "looseEnds"] as const;
+export const STORY_ARTIST_KEYS = ["batch", "retakes", "retakeAbove"] as const;  // the author's image choices; the rest of "artist" is the config's
+export function checkHomes(storyPath: string, configName: string, story: Record<string, unknown>, config: Record<string, unknown>): void {
+  const problems: string[] = [];
+  for (const k of STORY_KEYS) if (config[k] !== undefined) problems.push(`"${k}" is set in ${configName}: it belongs in the story file`);
+  if (config.maxRevisions !== undefined) problems.push(`"maxRevisions" in ${configName} is gone: set "maxAttempts" in the story file (drafts per scene = maxRevisions + 1)`);
+  for (const k of CONFIG_KEYS) if (story[k] !== undefined) problems.push(`"${k}" is set in the story file: it belongs in the config`);
+  const sArt = (story.artist ?? {}) as Record<string, unknown>;
+  const cArt = (config.artist ?? {}) as Record<string, unknown>;
+  for (const k of Object.keys(sArt)) if (!(STORY_ARTIST_KEYS as readonly string[]).includes(k)) problems.push(`"artist.${k}" is set in the story file: it belongs in the config's "artist"`);
+  for (const k of STORY_ARTIST_KEYS) if (cArt[k] !== undefined) problems.push(`"artist.${k}" is set in ${configName}: it belongs in the story file's "artist"`);
+  if (story.length !== undefined && story.sceneWords !== undefined) problems.push(`"length" and "sceneWords" both set each scene's words: keep one`);
+  if (typeof story.maxAttempts === "number" && story.maxDraftsPerScene !== undefined) problems.push(`"maxDraftsPerScene" caps unlimited drafts; with "maxAttempts": ${story.maxAttempts} it can't apply: keep one`);
+  if (problems.length) throw new Error(`${storyPath}: ${problems.length === 1 ? problems[0] : `\n  - ${problems.join("\n  - ")}`}`);
 }
 
 function checkMusic(path: string, raw: StoryFile) {

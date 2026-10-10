@@ -1,5 +1,4 @@
 {
-  "maxRevisions": 2,
   "overdueAfter": 3,
   "providers": {
     "mock": {
