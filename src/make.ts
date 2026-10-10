@@ -480,7 +480,8 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
 // One scene rewritten with the author's note (#184), and what it leaves to do.
 async function rewriteAndReport(story: ResolvedStory, scene: number, note: string, storyPath: string): Promise<void> {
   const config: StoryConfig = { ...story.config, ...(story.premise ? { premise: story.premise } : {}), ...(story.setting ? { setting: story.setting } : {}), ...(story.speakerTags !== undefined ? { speakerTags: story.speakerTags } : {}) };
-  const r = await rewriteScene({ runDir: story.runDir, config, scene, note, ...(story.scenes ?? story.config.scenes ? { total: story.scenes ?? story.config.scenes } : {}), log: (m) => console.error(`[scriptorium] ${c.dim(m)}`) });
+  // Logged and capped like the story step: the rewrite's calls are the story's spend (rework).
+  const r = await accounted(story.runDir, story.config, "story", () => rewriteScene({ runDir: story.runDir, config, scene, note, ...(story.scenes ?? story.config.scenes ? { total: story.scenes ?? story.config.scenes } : {}), log: (m) => console.error(`[scriptorium] ${c.dim(m)}`) }));
   console.log(c.ok(`scene ${scene} rewritten → ${join(story.runDir, "story.md")}`));
   if (r.round) console.log(`${c.retry(`${r.findings.length} place${r.findings.length === 1 ? "" : "s"} in later scenes no longer fit`)} — ${join(r.round.dir, "legend.txt")}
   apply the ones the author wants: npm run canon -- ${storyPath} --apply [--skip N,…]`);
