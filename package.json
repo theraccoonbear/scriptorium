@@ -25,7 +25,8 @@
     "audition": "node src/cli.ts audition",
     "canon": "node src/cli.ts canon",
     "spend": "node src/cli.ts spend",
-    "cleanup": "node src/cli.ts cleanup"
+    "cleanup": "node src/cli.ts cleanup",
+    "fork": "node src/cli.ts fork"
   },
   "engines": {
     "node": ">=24"
