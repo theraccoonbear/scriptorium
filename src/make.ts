@@ -1,5 +1,6 @@
 import { resolveRating } from "./ratings.ts";
 import { measuredPace, midpoint, resolveLength } from "./length.ts";
+import { rewriteScene } from "./rewrite.ts";
 import type { LengthSetting } from "./length.ts";
 import type { RatingSetting } from "./ratings.ts";
 import { narratorReads } from "./casting.ts";
@@ -449,6 +450,8 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     scenes: story.scenes ?? story.config.scenes ?? events.filter((e) => e.type === "scene_committed").length,
     wordsPerShot: story.config.artWordsPerShot,
     ...lengthPitch(story, events),
+    // A scene rewritten with a note (#184): the scene again, and the later scenes read against it.
+    ...(steps.includes("story") && redo.some((r) => /^scene:\d+$/.test(r)) ? { rewriteScenes: redo.filter((r) => /^scene:\d+$/.test(r)).length } : {}),
     art: {
       maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, batch: artist.batch,
       skip: !(steps.includes("art") || steps.includes("refs") || steps.includes("extras")) || !story.config.roles.artdirector,
@@ -472,6 +475,19 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     scenesVoiced: existsSync(join(story.runDir, "audiobook")) ? readdirSync(join(story.runDir, "audiobook")).filter((f) => /^scene-\d+\.wav$/.test(f)).length : 0,
     revoiceShare: changedShare(events)
   });
+}
+
+// One scene rewritten with the author's note (#184), and what it leaves to do.
+async function rewriteAndReport(story: ResolvedStory, scene: number, note: string, storyPath: string): Promise<void> {
+  const config: StoryConfig = { ...story.config, ...(story.premise ? { premise: story.premise } : {}), ...(story.setting ? { setting: story.setting } : {}), ...(story.speakerTags !== undefined ? { speakerTags: story.speakerTags } : {}) };
+  // Logged and capped like the story step: the rewrite's calls are the story's spend (rework).
+  const r = await accounted(story.runDir, story.config, "story", () => rewriteScene({ runDir: story.runDir, config, scene, note, ...(story.scenes ?? story.config.scenes ? { total: story.scenes ?? story.config.scenes } : {}), log: (m) => console.error(`[scriptorium] ${c.dim(m)}`) }));
+  console.log(c.ok(`scene ${scene} rewritten → ${join(story.runDir, "story.md")}`));
+  if (r.round) console.log(`${c.retry(`${r.findings.length} place${r.findings.length === 1 ? "" : "s"} in later scenes no longer fit`)} — ${join(r.round.dir, "legend.txt")}
+  apply the ones the author wants: npm run canon -- ${storyPath} --apply [--skip N,…]`);
+  else console.log(c.dim("the later scenes still fit"));
+  if (r.approvedShots.length) console.log(c.retry(`scene ${scene}'s approved shots are from the old version — revoke to redraw: npm run approve -- ${storyPath} ${r.approvedShots.join(" ")} --revoke`));
+  console.log(c.dim(`next: --only art re-plans scene ${scene}'s shots; --only audiobook re-voices its changed lines; --only video rebuilds`));
 }
 
 // The cues the music step would make, and how many of those are already made.
@@ -590,7 +606,10 @@ async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {
   const redoRefs = redo.filter((r) => r !== "palette" && !r.startsWith("voice:") && !redoShots.includes(r) && !redoExtras.includes(r) && !/^scene:\d+$/.test(r));
   if (redoRefs.length && !steps.includes("refs")) throw new Error(`--redo ${redoRefs.join(",")}: references are remade in the refs phase (--only refs)`);
   if (redoVoices.length && !steps.includes("voices")) throw new Error(`--redo voice:…: voices are recast in the voices phase (--only voices)`);
-  if ((redoShots.length || replanScenes.length) && !steps.includes("art")) throw new Error(`--redo scene-…: shots are redone in the art step (--only art)`);
+  // scene:N with the story step rewrites that scene with the note (#184); with the art step, re-plans its shots.
+  const rewrites = steps.includes("story") ? replanScenes : [];
+  if ((redoShots.length || (replanScenes.length && !rewrites.length)) && !steps.includes("art")) throw new Error(`--redo scene-…: shots are redone in the art step (--only art); --redo scene:N with --only story rewrites the scene`);
+  if (rewrites.length && !opts.notes) throw new Error(`--redo scene:${rewrites[0] + 1} with the story step rewrites that scene: --note says what should change`);
   const edit = opts.edit ?? [];
   if (edit.length) {
     const bad = edit.filter((k) => !/^scene-\d+-\d+$/.test(k) && k !== "cover" && !EDITABLE_EXTRAS.test(k));
@@ -603,7 +622,7 @@ async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {
     if (!extras.length && !steps.includes("art")) throw new Error("--edit scene-…: images are edited in the art step (--only art)");
     if (opts.source && edit.length > 1) throw new Error("--source names one image's earlier take: edit one image at a time");
   } else if (opts.source || opts.with?.length) throw new Error(`${opts.source ? "--source" : "--with"} goes with --edit`);
-  if (opts.notes && !edit.length && redoRefs.length === 0 && redoShots.length === 0 && redoExtras.filter((r) => r !== "extras").length === 0) throw new Error("--note goes with --redo <kind>:<id>, --redo scene-NN-MM, --redo extra-… or --edit scene-NN-MM");
+  if (opts.notes && !edit.length && !rewrites.length && redoRefs.length === 0 && redoShots.length === 0 && redoExtras.filter((r) => r !== "extras").length === 0) throw new Error("--note goes with --redo <kind>:<id>, --redo scene-NN-MM, --redo extra-… or --edit scene-NN-MM");
   await mkdir(story.runDir, { recursive: true });
 
   // Guard the story in progress against changed settings.
@@ -641,6 +660,10 @@ async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {
   for (const stage of stages) {
     console.error(`[scriptorium] ${c.blue(c.bold(`== ${stage.join(" + ")} ==`))}`);
     if (stage[0] === "story") {
+      if (rewrites.length) {
+        for (const k of rewrites) await rewriteAndReport(story, k + 1, opts.notes!, storyPath);
+        continue;
+      }
       await run.story(story);
       continue;
     }

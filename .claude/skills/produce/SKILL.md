@@ -96,7 +96,11 @@ Direction only shapes what's written next, so set it before the writing step.
 
 **Changing written scenes:**
 - **A detail** goes through the canon check (`--only canon`, then `npm run canon -- <story.json> --apply [--skip …]`), with a backup and only the changed shots marked for redrawing. Add the fact to the author's context file first if it isn't there.
-- **A scene going the wrong way:** there's no one-scene rewrite yet (#184). Fork before it, `npm run fork -- --from <run> --at <scenes to keep> --out <new run>`, point the story file's `out` at the new run, set the direction, and run `--only story`. The later scenes are rewritten too, so pitch it.
+- **A scene going the wrong way:** `npm run make -- <story.json> --only story --redo scene:N --note "what should change"`. Pitch it first: the pitch counts it as one scene's writing plus a read of each later scene.
+  - Scene N alone is planned and written again with the note as the author's direction (its previous version is the reference), through the usual reviewers. It replaces the old version in the event log, which is backed up first; scene 1 keeps the story's foundation.
+  - Each later scene, and its shots, is then read against the new one. What no longer fits becomes a canon round (`legend.txt`) for the author to pick from: `npm run canon -- <story.json> --apply [--skip …]`.
+  - The scene's shot plan is dropped, so `--only art` plans it anew; revoke its approved shots first (the run lists them). `--only audiobook` re-voices only the changed paragraphs.
+- **The story going the wrong way from a point on:** fork before it, `npm run fork -- --from <run> --at <scenes to keep> --out <new run>`, point the story file's `out` at the new run, set the direction, and run `--only story`.
 
 ## Phase 1: the character sheet
 
