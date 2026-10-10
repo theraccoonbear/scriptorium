@@ -95,7 +95,7 @@ Other levers:
 Direction only shapes what's written next, so set it before the writing step.
 
 **Changing written scenes:**
-- **A detail** goes through the canon check (`--only canon`, then `npm run canon -- <story.json> --apply [--skip …]`), with a backup and only the changed shots marked for redrawing. Add the fact to the author's context file first if it isn't there.
+- **A detail** goes through the canon check (`--only canon`, then `npm run canon -- <story.json> --apply [--skip …]`), with a backup and only the changed shots marked for redrawing. If the fact isn't in the author's notes, the check can't know it: ask them to add it to their own notes (never edit those yourself), or with their OK put it in the plan you wrote (`<run>/notes/plan.md`) or on the character sheet.
 - **A scene going the wrong way:** `npm run make -- <story.json> --only story --redo scene:N --note "what should change"`. Pitch it first: the pitch counts it as one scene's writing plus a read of each later scene.
   - Scene N alone is planned and written again with the note as the author's direction (its previous version is the reference), through the usual reviewers. It replaces the old version in the event log, which is backed up first; scene 1 keeps the story's foundation.
   - Each later scene, and its shots, is then read against the new one. What no longer fits becomes a canon round (`legend.txt`) for the author to pick from: `npm run canon -- <story.json> --apply [--skip …]`.
@@ -166,7 +166,7 @@ The audiobook and video need no review loop; send a scene MP3 or the video path 
 
 Music is off unless the story file has a `music` block. Pitch it like any paid phase, then send the music reel (`review … music`). Cues with a voice in them are retaken automatically; any cue that never came out clean is listed in the run's output and left out of the mix. The author sets how far the music sits under the narrator with `music.duck` (dB, default 19); changing it only re-mixes, free.
 
-**The author's own music:** ask whether they have any pieces of their own (a friend's, a licensed track) and where each should play. Copy the files into `contexts/<slug>/music/` (create it, and give the author its full path; or copy the tracks in from wherever they are) and add them to `music.tracks` (paths relative to the story file, `../contexts/<slug>/music/…`), each with `from` and `to`:
+**The author's own music:** ask whether they have any pieces of their own (a friend's, a licensed track) and where each should play. Offer a folder to drop them in (scaffold `contexts/<slug>/music/` and give its path), or use them where they already are (absolute paths are fine). Never copy them yourself. Point `music.tracks` at them, each with `from` and `to`:
 - the part names are `rating`, `opening`, `crawl`, `card N`, `scene N`, `end`, `credits`, `next`;
 - a piece spans every part between `from` and `to`, and loops if it's short;
 - ask how they'd like it credited (`credit`).
@@ -193,6 +193,7 @@ Covered parts get no generated cue, and `"generate": false` means no score at al
 - **A stuck scene** ("scene N is stuck: … drafts"): read the last reviewer outputs in `<run>/threads/` with the author. Usually a plan item and a rule conflict, or a direction is too strict. Change the direction or notes and run again; it resumes at that scene. Raise `maxDraftsPerScene` only when the drafts are converging.
 - **Spend that isn't the story's:** testing, debugging or an experiment shouldn't count against the author's budget. Run it with `--cost-kind dev` (or `experiment`), or under `runs/_scratch/`. Re-tag past spend with `npm run spend -- <story.json> --retag --cost-kind dev --after <ts>`. `npm run spend -- <story.json>` shows spend by kind.
 - **Never spend without the pitch and a yes.** Free phases (characters, video, review) need no pitch.
+- **`contexts/` is the author's.** You may scaffold empty folders there for them to fill. Never write, edit, copy, move or delete a file in it; read it. What you write goes in the story file or `<run>/notes/` (see the README's "Who writes where").
 - **Sign-off before the next phase.** Don't chain paid phases on your own.
 - **Never use Kokoro on a story whose audiobook is set to Gemini**, and never change a story's voice settings to make a run succeed — stop and ask.
 - **Approved work is locked.** To change it, the author revokes first: `npm run approve -- <story.json> <key> --revoke`.
