@@ -26,6 +26,7 @@ description: The production wizard. Walks someone who has never used Scriptorium
 | **The spending limit** (a little above the pitch, the pitch, or more) | Second call, with the pitch | `budget.usd` |
 | **Cheaper but slower pictures** (batch: half price, minutes longer) | In the pictures pitch | `artist.batch` |
 | **The art style:** 2–3 styles suited to the story (suggest one), or theirs; once a story's written, its own pick too | **Before the first picture of any kind**: before the cast preview if they have a cast, else before portraits | `artStyle` |
+| **How the names are said** (any name a voice could get wrong: theirs, their pets', invented ones) | Before the first voice of any kind (samples, auditions) | `audiobook.pronunciations`, as a respelling: `"Ole": "OH-lee"` |
 | **The narrator's voice** (warm storyteller, grandparent, crisp…) | Before voices | the narrator's `vocal` on the character sheet |
 | **The music:** its sound, and whether they have their own | Before the music step | `music.style`, `music.tracks` |
 | **The extras:** which ones (key art, VHS box, cast photo), and the logo's look | Before the extras step | `extras` |

@@ -157,6 +157,17 @@ const RATE_LIMIT_WAITS_MS = [15000, 20000, 30000, 30000, 30000];
 // check compares against what was said.
 export type Pronunciations = Record<string, string | { say: string }>;
 
+// A sound-it-out guide ("OH-lee", "mick-POYL (rhymes with boil)") as text the voice
+// reads naturally: its leading syllables, in plain case ("Oh-lee", "Mick-poyl").
+// Undefined for a guide that isn't one (an explanation, a single plain word): that
+// stays a hint. A style hint alone is often ignored, so a respelling goes in the words.
+export function respelling(guide: string, original: string): string | undefined {
+  const m = /^([A-Za-z]+(?:-[A-Za-z]+)+)(?=$|[\s,;(])/.exec(guide.trim());
+  if (!m) return undefined;
+  const plain = m[1].toLowerCase();
+  return /^\p{Lu}/u.test(original) ? plain.charAt(0).toUpperCase() + plain.slice(1) : plain;
+}
+
 export function withPronunciations(input: SpeechInput, guide: Pronunciations = {}): SpeechInput {
   if (input.parts) {
     const parts = input.parts.map((p) => ({ ...p, ...withPronunciations({ text: p.text, ...(p.style ? { style: p.style } : {}) }, guide) }));
@@ -167,7 +178,12 @@ export function withPronunciations(input: SpeechInput, guide: Pronunciations = {
   const hints: string[] = [];
   for (const [word, how] of Object.entries(guide)) {
     if (!pattern(word).test(text)) continue;
-    if (typeof how === "string") { if (how.trim()) hints.push(`Pronounce ${word} as ${how.trim()}`); }
+    if (typeof how === "string") {
+      if (!how.trim()) continue;
+      // Said in the words where the guide spells it out; the guide still rides along for stress.
+      text = text.replace(pattern(word), (_m, pre: string, found: string) => `${pre}${respelling(how, found) ?? found}`);
+      hints.push(`Pronounce ${word} as ${how.trim()}`);
+    }
     else if (how?.say?.trim()) text = text.replace(pattern(word), (_m, pre: string) => `${pre}${how.say.trim()}`);
   }
   if (text === input.text && hints.length === 0) return input;
@@ -266,11 +282,13 @@ function geminiCall(spec: GeminiTtsSpec, model: string): Speak {
 // go out as one batch job at half price.
 export function geminiBatchSpeaker(jobs: BatchJobs, spec: GeminiTtsSpec = {}): Speak {
   const model = spec.model ?? DEFAULT_GEMINI_TTS_MODEL;
+  // The story's pronunciations reach this path too (#204): it was built without them.
+  const guide = (input: SpeechInput) => (spec.pronunciations ? withPronunciations(input, spec.pronunciations) : input);
   const send = microBatcher<{ input: SpeechInput; voice: string }, { samples: Float32Array; sampleRate: number }>(async (reqs) => {
     const items = await jobs.run(model, "tts", reqs.map((r) => ttsRequest(legacyPrompt(r.input), r.voice)));
     return items.map((item) => {
       try { return item.response ? audioFrom(item.response) : new Error(`batch: ${item.error}`); } catch (err) { return err as Error; }
     });
   });
-  return (input, voice) => send({ input, voice });
+  return (input, voice) => send({ input: guide(input), voice });
 }
