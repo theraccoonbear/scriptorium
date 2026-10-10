@@ -12,6 +12,8 @@ description: The production wizard. Walks someone who has never used Scriptorium
 > 2. **Open it** for them: images and audio in their viewer (`xdg-open <file>` on Linux, `open <file>` on macOS), or send it if this session can send files.
 >
 > Never ask "does it look right?" about something they haven't been shown, and never summarize a result without saying where it is.
+>
+> **A fix isn't done until it's remade and shown.** When they ask for a change to something made (Dookie fatter, a darker coat, a different voice), make the change *and* remake that thing (it's usually cents), then show the new one with its path and ask again. Never record the change and move on: a note that says one thing and a picture that shows another is worse than either.
 
 > **OFFER FIRST, ALWAYS:** every choice that shapes their story, how it looks or sounds, or what it costs is **theirs first**. Ask it (with your suggestion) **before** you decide it. "You pick" is a fine answer, but only once you've asked. Never settle one silently, not even in a file you write for them.
 
@@ -98,7 +100,7 @@ Work out what you can from their first message, then **propose the rest** (see "
   Either way the writers keep every beat, name and joke from the notes. Without notes, the story is invented from the premise.
 - **Characters they want?** Name, look, voice. These go on the character sheet in phase 1. They can skip this, and the story will invent its cast.
 - **Real people in it?** Their kids, their friends, their gaming group: photos can cast them. Offer a folder to drop them in (scaffold `contexts/<slug>/photos/` and give its path), or use them where they already are; never copy them yourself. Add a `cast` to the story file, one entry per person, pointing at their files: `{ "name": "Mia", "photos": ["/home/them/Pictures/mia-1.jpg", "/home/them/Pictures/mia-2.jpg"], "notes": "she/her, 7, the brave one" }`.
-  - **Before anything else,** `npm run cast -- stories/<slug>.json` previews them: it describes each person from their photos and draws one portrait each, for a few cents. The command prints each portrait's path (`runs/<slug>/cast/preview/<name>.jpg`). Give them those paths and open the portraits for them **before** asking whether they look right.
+  - **Before anything else,** `npm run cast -- stories/<slug>.json` previews them: it describes each person from their photos and draws one portrait each, for a few cents. The command prints each portrait's path (`runs/<slug>/cast/preview/<name>.jpg`). Give them those paths and open the portraits for them **before** asking whether they look right. If they want a change ("make Dookie fatter"), put it in that person's `notes` and run `npm run cast` again: changed notes make it describe them afresh and draw a new portrait. Show the new one and ask again, until they say it's right.
   - Ask that everyone in the photos (or their parents) is happy to be in it, and keep the photos in this folder.
   - `--as "a dwarf warrior in chainmail"` previews someone in costume.
 
