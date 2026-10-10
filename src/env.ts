@@ -1,20 +1,40 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 
-// The repo's .env always wins over the shell's environment. (Node's
-// --env-file never overrides a variable that's already set, so a key exported
-// in a shell profile silently beat the one in .env.) Each override is logged
-// with only the value's last four characters.
-export function loadRepoEnv(path: string, env: NodeJS.ProcessEnv = process.env, log: (msg: string) => void = (m) => console.error(m)): string[] {
-  if (!existsSync(path)) return [];
-  const values = parseEnv(readFileSync(path, "utf8")) as Record<string, string>;
+// API keys come from the repo's .env and nowhere else, so the author always
+// knows which key is billed. A key exported in the shell (a profile, an old
+// session) is dropped unless .env has it — and when .env has it, .env's wins.
+// (Node's --env-file never overrides a variable that's already set, so before
+// this a shell key silently beat .env, or billed when .env had none.)
+// Everything else in .env is loaded too, and still wins over the shell.
+// Keys are only ever shown by their last four characters.
+
+export const isApiKeyName = (name: string) => /_API_KEY$/.test(name);
+export const keyTail = (value: string) => `…${value.slice(-4)}`;
+
+export interface RepoEnv {
+  keys: { name: string; tail: string }[];  // the keys in use, all from .env
+  ignored: string[];                       // keys set in the shell that .env doesn't have: dropped
+  overridden: string[];                    // keys set in both, differently: .env's used
+}
+
+export function loadRepoEnv(path: string, env: NodeJS.ProcessEnv = process.env): RepoEnv {
+  const values = existsSync(path) ? (parseEnv(readFileSync(path, "utf8")) as Record<string, string>) : {};
+  const ignored = Object.keys(env).filter((k) => isApiKeyName(k) && env[k] && !values[k]);
+  for (const k of ignored) delete env[k];
   const overridden: string[] = [];
-  for (const [key, value] of Object.entries(values)) {
-    if (env[key] !== undefined && env[key] !== value) {
-      overridden.push(key);
-      log(`[scriptorium] ${key} overridden by .env ...${value.slice(-4)}`);
-    }
-    env[key] = value;
+  for (const [k, value] of Object.entries(values)) {
+    if (isApiKeyName(k) && env[k] !== undefined && env[k] !== value) overridden.push(k);
+    env[k] = value;
   }
-  return overridden;
+  const keys = Object.entries(values).filter(([k, v]) => isApiKeyName(k) && v).map(([name, v]) => ({ name, tail: keyTail(v) })).sort((a, b) => a.name.localeCompare(b.name));
+  return { keys, ignored, overridden };
+}
+
+// One line for the start of a command: which keys it bills, and any shell keys set aside.
+export function describeRepoEnv(r: RepoEnv): string[] {
+  return [
+    r.keys.length ? `keys (from .env): ${r.keys.map((k) => `${k.name} ${k.tail}`).join(", ")}` : "no API keys in .env — paid steps will stop (see the setup skill)",
+    ...(r.ignored.length ? [`ignoring ${r.ignored.join(", ")} from your shell: Scriptorium only uses keys in .env`] : [])
+  ];
 }

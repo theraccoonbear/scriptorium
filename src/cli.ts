@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { EventLog } from "./eventlog.ts";
-import { loadRepoEnv } from "./env.ts";
+import { describeRepoEnv, loadRepoEnv } from "./env.ts";
 import { buildRoleProviders, listModels } from "./providers.ts";
 import { renderStory, redirectArt } from "./engine.ts";
 import { replay } from "./bible.ts";
@@ -194,8 +194,8 @@ function engineFlag(value: string | undefined, flag: string): "kokoro" | "gemini
 }
 
 async function main() {
-  // The repo's .env wins over the shell (see env.ts).
-  loadRepoEnv(new URL("../.env", import.meta.url).pathname);
+  // API keys come only from the repo's .env (see env.ts); say which ones this command bills.
+  for (const line of describeRepoEnv(loadRepoEnv(new URL("../.env", import.meta.url).pathname))) console.error(`[scriptorium] ${line}`);
   const [command, ...rest] = process.argv.slice(2);
   const { values, positionals } = parseArgs({
     args: rest,

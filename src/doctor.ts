@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { DEFAULT_ARTIST_CONFIG, resolveArtistConfig } from "./artist.ts";
+import { keyTail } from "./env.ts";
 import { DEFAULT_GEMINI_TTS_MODEL } from "./geminiTts.ts";
 import { MUSIC_DEFAULTS } from "./music.ts";
 import type { ResolvedStory } from "./make.ts";
@@ -29,7 +30,7 @@ export const KEYS = {
 } as const;
 export type KeyName = keyof typeof KEYS;
 
-export interface KeyState { set: boolean; valid?: boolean; models?: Set<string>; error?: string }
+export interface KeyState { set: boolean; valid?: boolean; models?: Set<string>; error?: string; tail?: string }  // tail: the key's last four characters, to say which key
 
 // Each service's free model list: the URL, the auth headers and the model ids in the reply.
 const LISTS: Record<KeyName, { url: string; headers: (key: string) => Record<string, string>; ids: (body: any) => string[] }> = {
@@ -43,13 +44,14 @@ export async function checkKey(deps: DoctorDeps, name: KeyName, envName: string 
   const key = deps.env[envName]?.trim();
   if (!key) return { set: false };
   const list = LISTS[name];
+  const tail = keyTail(key);
   try {
     const res = await deps.fetch(list.url, { headers: list.headers(key) });
-    if (res.status === 400 || res.status === 401 || res.status === 403) return { set: true, valid: false, error: "the key was rejected" };
-    if (!res.ok) return { set: true, error: `HTTP ${res.status} from the service` };
-    return { set: true, valid: true, models: new Set(list.ids(await res.json())) };
+    if (res.status === 400 || res.status === 401 || res.status === 403) return { set: true, tail, valid: false, error: "the key was rejected" };
+    if (!res.ok) return { set: true, tail, error: `HTTP ${res.status} from the service` };
+    return { set: true, tail, valid: true, models: new Set(list.ids(await res.json())) };
   } catch (err) {
-    return { set: true, error: `couldn't reach the service (${(err as Error).message})` };
+    return { set: true, tail, error: `couldn't reach the service (${(err as Error).message})` };
   }
 }
 
@@ -74,14 +76,14 @@ export async function investigate(deps: DoctorDeps): Promise<Findings> {
 function modelRow(label: string, key: KeyName, state: KeyState, model: string): Row {
   if (!state.set) return { label, mark: "unset", detail: `needs ${KEYS[key].env}` };
   if (!state.valid) return { label, mark: "no", detail: `${KEYS[key].env}: ${state.error ?? "not working"}` };
-  if (!state.models?.has(model)) return { label, mark: "no", detail: `${model} isn't available to this key` };
-  return { label, mark: "ok", detail: model };
+  if (!state.models?.has(model)) return { label, mark: "no", detail: `${model} isn't available to ${KEYS[key].env} ${state.tail ?? ""}` };
+  return { label, mark: "ok", detail: `${model} (${KEYS[key].env} ${state.tail ?? ""})` };
 }
 
 function keyRow(label: string, key: KeyName, state: KeyState): Row {
   if (!state.set) return { label, mark: "unset", detail: `needs ${KEYS[key].env}` };
-  if (!state.valid) return { label, mark: "no", detail: `${KEYS[key].env}: ${state.error ?? "not working"}` };
-  return { label, mark: "ok", detail: `${KEYS[key].env} works (${state.models?.size ?? 0} models)` };
+  if (!state.valid) return { label, mark: "no", detail: `${KEYS[key].env} ${state.tail ?? ""}: ${state.error ?? "not working"}` };
+  return { label, mark: "ok", detail: `${KEYS[key].env} ${state.tail ?? ""} works (${state.models?.size ?? 0} models; from .env)` };
 }
 
 // What this machine can make, whatever the story.
@@ -112,7 +114,8 @@ function providerKey(spec: ProviderSpec): { key?: KeyName; env?: string } {
   if (spec.type === "anthropic") return { key: "anthropic", env: spec.apiKeyEnv || KEYS.anthropic.env };
   if (spec.type === "responses") return { key: "openai", env: spec.apiKeyEnv || KEYS.openai.env };
   if (spec.type === "opencode-go") return { key: "opencode", env: spec.apiKeyEnv || KEYS.opencode.env };
-  return spec.apiKeyEnv ? { env: spec.apiKeyEnv } : {};  // openai-compatible: a key only if the config names one
+  if (spec.type === "openai" && !spec.baseUrl) return { key: "openai", env: spec.apiKeyEnv || KEYS.openai.env };  // OpenAI itself (#181)
+  return spec.apiKeyEnv ? { env: spec.apiKeyEnv } : {};  // another openai-compatible host: a key only if the config names one
 }
 
 // Whether one story can run here: what its settings use, and what's missing.
@@ -136,6 +139,10 @@ export async function storyRows(story: ResolvedStory, f: Findings, deps: DoctorD
   }
   const gemini = (label: string, spec: ArtistBackendSpec | { type: "gemini"; model: string; apiKeyEnv?: string }): Row => {
     if (spec.type === "mock") return { label, mark: "ok", detail: "mock (offline)" };
+    if (spec.type === "openai") {  // GPT Image or a GPT vision model (#181)
+      const row = modelRow(label, "openai", f.keys.openai, spec.model);
+      return row.mark === "unset" ? { ...row, mark: "no" } : row;
+    }
     const env = (spec as { apiKeyEnv?: string }).apiKeyEnv;
     if (env && env !== KEYS.gemini.env) return deps.env[env] ? { label, mark: "ok", detail: `${spec.model} (key in ${env}, not checked)` } : { label, mark: "no", detail: `needs ${env}` };
     const row = modelRow(label, "gemini", f.keys.gemini, spec.model);

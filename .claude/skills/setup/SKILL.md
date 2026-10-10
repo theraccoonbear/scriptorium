@@ -60,7 +60,9 @@ Ask only for the keys their goal needs:
   - Images are about $0.05 each in batch mode.
   - Acted narration is about a cent a minute in batch mode.
   - `npm run pitch -- <story.json>` prices a story before anything is spent.
-- **Writing the keys:** have the user put keys in `.env` at the repo root. `cp .env.example .env`, then they fill it in. Their `.env` always wins over the shell (`src/env.ts`), and it's git-ignored.
+- **Writing the keys:** have the user put keys in `.env` at the repo root. `cp .env.example .env`, then they fill it in. It's git-ignored.
+  - **Keys come only from `.env`.** A key exported in their shell (a profile, an old session) is ignored unless `.env` has it, and `.env`'s wins when both do. That way they always know which key is billed.
+  - Every command starts by naming the keys it bills, by their last four characters (`keys (from .env): GEMINI_API_KEY …cRWg`), and any shell keys it ignored. `doctor` shows the same on each row. Point this out when they set up, and whenever a bill looks wrong.
   - **Never ask them to paste a key into the chat.** If they do anyway, write it to `.env` without repeating it back, and suggest they rotate it later.
   - Never print `.env`.
 
