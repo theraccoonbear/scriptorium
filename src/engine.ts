@@ -365,6 +365,9 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
     if (isFinal && i > 0 && !config.context && config.looseEnds !== false) {
       const promoted = await looseEndsBeforeFinal(roles.continuist, log, bible, i, runDir);
       overdue = [...due, ...promoted];
+      // Into this scene's ledger too, as promises: the beat gate and the continuist then hold
+      // the final scene to paying them off like any other setup (#180: being told wasn't enough).
+      if (promoted.length) bible = { ...bible, ledger: [...bible.ledger, ...promoted.filter((p) => !bible.ledger.some((s) => s.id === p.id))] };
     }
 
     console.error(`[scriptorium] ${c.blue(c.bold(`scene ${i + 1}/${total}`))} tension=${c.yellow(creating && config.tension?.[0] == null ? "from the creator's arc" : String(tension))}${turn ? c.dim(` · the author's turn: ${turn}`) : ""}`);

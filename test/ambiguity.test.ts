@@ -183,6 +183,8 @@ test("a mock story: before the final scene, an accidental loose end falls due an
   assert.match(report, /## To pay off in the final scene\n- \*\*boot print on the ceiling\*\*/);
   assert.match(report, /## Left open on purpose[^\n]*\n- \*\*a midnight bell\*\* \(scene 1, draft 1\)/);
   assert.equal(log.events.filter((e) => e.type === "loose_ends").length, 1);
+  // Held to it like any promise: the final director sees it in the open setups, not only the overdue list.
+  assert.match(finalPrompts.at(-1)!, /OPEN SETUPS[^]*- loose_end_2 \(opened S1\): boot print on the ceiling/);
   const committed = log.events.find((e) => e.type === "scene_committed")!.data as { drafts?: unknown[] };
   assert.equal(committed.drafts?.length, 1, "each draft kept with the scene");
 });
