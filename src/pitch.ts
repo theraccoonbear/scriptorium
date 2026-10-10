@@ -39,6 +39,7 @@ export interface PitchInput {
   wordsPerScene?: number;               // a scene still to write (the length setting's share, else 1500)
   wordsPerMinute?: number;              // the narrator's pace, for the running time
   askedMinutes?: number;                // the running time the author asked for (#170)
+  rewriteScenes?: number;               // scenes rewritten with a note (#184)
   // refsOnly: the refs phase — just references, `refTargets` of them (exact when known).
   // extrasOnly: the extras phase — key art in three shapes and a cast photo.
   art?: { maxAttempts?: number; retakes?: number; concurrency?: number; skip?: boolean; batch?: boolean; refsOnly?: boolean; refTargets?: number; extrasOnly?: boolean };
@@ -166,7 +167,9 @@ export function pitch(input: PitchInput): Pitch {
   const audioMinutes = (geminiRequests * TYPICAL.ttsSecondsPerRequest) / 60 / Math.max(1, audio.geminiConcurrency ?? 2) + kokoroSeconds / 1.05 / 60;
   const days = Math.ceil(geminiRequests / TYPICAL.ttsPerDay);
 
-  const storyUsd = toWrite * TYPICAL.storyUsdPerScene * (perScene / TYPICAL.wordsPerScene);
+  // A rewrite is a scene's writing again, plus a read of every later scene against it (about a fifth of a scene each).
+  const rewrites = input.rewriteScenes ?? 0;
+  const storyUsd = (toWrite + rewrites * (1 + 0.2 * Math.max(0, committed.length - 1))) * TYPICAL.storyUsdPerScene * (perScene / TYPICAL.wordsPerScene);
   // Spent so far toward the budget: dev and experiment spend doesn't count unless the budget says so.
   const counted = input.budgetKinds ?? BUDGET_KINDS;
   const spentUsd = ledger.filter((e) => counted.includes(kindOf(e))).reduce((a, e) => a + (e.usd ?? 0), 0);
@@ -182,7 +185,7 @@ export function pitch(input: PitchInput): Pitch {
   return {
     batch: { images: art.batch === true, voice: batchVoice },
     exact: { story: toWrite === 0, shots: undirectedScenes <= 0, voicing: exactVoicing },
-    story: { scenesToWrite: toWrite, usd: storyUsd },
+    story: { scenesToWrite: toWrite + rewrites, usd: storyUsd },
     length: { words, minutes: words / wpm, ...(input.askedMinutes ? { asked: input.askedMinutes } : {}) },
     images: { references: art.skip ? 0 : references, shots: art.skip ? 0 : shotsToRender, cover: art.skip ? 0 : cover, generations, retakes, usd: imagesUsd, minutes: imageMinutes },
     audio: { seconds, geminiRequests, usd: audioUsd, minutes: audioMinutes, days },

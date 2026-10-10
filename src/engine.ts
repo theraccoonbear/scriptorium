@@ -149,6 +149,11 @@ export interface RunStoryOptions {
   onScene?: (data: SceneCommittedData, bible: Bible) => void;
   runDir?: string;
   maxAttempts?: number;
+  // Rewriting one scene (#184): stop once this many scenes are written (the
+  // plan still sees the story's full length), and for scene 1, keep the story's
+  // foundation (premise, cast, world) instead of creating a new one.
+  stopAt?: number;
+  foundation?: Bible;
 }
 
 // An author-set art style (config.artStyle) overrides the Creator's: record it
@@ -158,7 +163,7 @@ async function applyAuthorArtStyle(config: StoryConfig, log: EventLog): Promise<
   if (style && storyArtStyle(log.events) !== style) await log.append("art_style", { style, source: "author" });
 }
 
-export async function runStory({ config, log, roles, scenes, onScene, runDir, maxAttempts: maxAttemptsOverride }: RunStoryOptions): Promise<Bible> {
+export async function runStory({ config, log, roles, scenes, onScene, runDir, maxAttempts: maxAttemptsOverride, stopAt, foundation }: RunStoryOptions): Promise<Bible> {
   await log.load();
   await applyAuthorArtStyle(config, log);
   let bible = replay(log.events);
@@ -209,7 +214,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
   // Context gate: once, before anything is generated. Contradictions between
   // the author's files stop the run here, at no cost, with both sides quoted —
   // the models don't get to silently pick a winner between files the author wrote.
-  if (config.context && bible.sceneCount === 0) {
+  if (config.context && bible.sceneCount === 0 && !foundation) {
     const gateRole = roles.contextgate || roles.continuist;
     const t0 = Date.now();
     const g = await reviewContext(gateRole, { context: config.context, premise: config.premise || undefined, setting: config.setting || undefined });
@@ -278,11 +283,12 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
     .filter((e) => e.type === "scene_committed")
     .map((e) => (e.data as SceneCommittedData).prose);
 
-  while (bible.sceneCount < total) {
+  if (foundation && bible.sceneCount === 0) bible = { ...foundation, sceneCount: 0 };
+  while (bible.sceneCount < Math.min(total, stopAt ?? total)) {
     const i = bible.sceneCount;
     const isFinal = i === total - 1;
     // Scene 1's tension comes from the arc the creator is about to plan (unless the author pinned it).
-    const creating = i === 0 && bible.sceneCount === 0;
+    const creating = i === 0 && bible.sceneCount === 0 && !foundation;
     let tension = planArc(total, config.tension, bible.arc)[i];
     sceneWords = wordsFor(i);
     const turn = config.turns?.[i]?.trim() || undefined;
@@ -361,7 +367,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         startFresh,
         gen: async (issues, fresh, generation) => {
           t0 = Date.now();
-          if (i === 0 && bible.sceneCount === 0) {
+          if (creating) {
             const out = await createAndDirect(roles.director, { sceneIndex: i, total, arc: config.tension, turn, world, premise: config.premise || undefined, context: config.context, issues, fresh, ambiguity, ...(length ? { sceneWords: length.sceneWords } : {}), ...(lengthNote ? { lengthNote } : {}) });
             createdBible = out.bible;
             bible = { ...baseBible, ...createdBible };
@@ -389,7 +395,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
       });
 
       const worldbuilderRole = roles.worldbuilder;
-      if (i === 0 && bible.sceneCount === 0 && worldbuilderRole) {
+      if (creating && worldbuilderRole) {
         const worldGateRole = roles.worldgate || roles.continuist;
         world = await gatedGenerate({
           label: "world",
@@ -645,6 +651,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         attempts: attempt
       };
       if (createdBible) data.bible = createdBible;
+      else if (foundation && i === 0) data.bible = foundation;
       if (patchDisputed) data.patchDisputed = patchDisputed;
       data.patch = withPlants(data.patch, beat.result, bible.ledger);
       await log.append("scene_committed", data);
