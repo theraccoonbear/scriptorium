@@ -144,7 +144,7 @@ docker compose run --rm --entrypoint npm scriptorium test
 | `artdirect --out <dir> [--config <file>] [--redo kind:id,…] [--note ".."]` | Redo the art direction for an existing run (references, shots, cover), then render. |
 | `video --out <dir> [--force]` | Assemble art + audiobook into `video/story.mp4`. |
 | `cast <story.json> [--as "..."]` | Preview a story's cast: describe each member from their photos and render one portrait each into `<run>/cast/preview/`. |
-| `review <story.json> refs\|shots\|voices\|music` | Rebuild the run's current review files in `<run>/review/`: contact sheets, the voice reel and its legends. |
+| `review <story.json> characters\|refs\|shots\|voices\|music` | Rebuild the run's current review files in `<run>/review/`: the character sheet as a readable page (`characters.md`), contact sheets, the voice reel and its legends. |
 | `approve <story.json> <key>… [--revoke]` | Lock approved images (`scene-03-07`, `character-nell`) and voices (`voice:nell`) so nothing redoes them. |
 | `audition <story.json> <speaker> [--direction ".."] [--voices a,b] [--count N]` | Their reel line in their current voice and a few others (the voice director's picks, or yours), as a review round. `--pick N` pins candidate N in the story file, makes the new direction their vocal line, and remakes their sample and the reel. |
 | `cost --out <dir>` | What a run has spent, by step, role and model. |

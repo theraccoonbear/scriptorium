@@ -11,7 +11,7 @@ description: The production wizard. Walks someone who has never used Scriptorium
 > 1. Give its **full path as a clickable link**: every file, every time, including files you merely mention.
 > 2. **Open it** for them: images and audio in their viewer (`xdg-open <file>` on Linux, `open <file>` on macOS), or send it if this session can send files.
 >
-> Never ask "does it look right?" about something they haven't been shown, and never summarize a result without saying where it is.
+> Never ask "does it look right?" about something they haven't been shown, and never summarize a result without saying where it is. Show things **in a form people read**, never raw JSON: the story file as a few plain lines, the character sheet as `review/characters.md` (`npm run review -- <story> characters`). You edit the JSON yourself.
 >
 > **A fix isn't done until it's remade and shown.** When they ask for a change to something made (Dookie fatter, a darker coat, a different voice), make the change *and* remake that thing (it's usually cents), then show the new one with its path and ask again. Never record the change and move on: a note that says one thing and a picture that shows another is worse than either.
 
@@ -166,7 +166,7 @@ If they have music of their own (a friend's piece, a licensed track), it goes in
 
 Show them their run folder once the first phase has made it (`runs/<slug>/`):
 - `story.md`: the story so far, to read.
-- `characters.json`: the character sheet. Edit it to change how someone looks or sounds.
+- `review/characters.md`: the character sheet, to read (`npm run review -- stories/<slug>.json characters` rebuilds it). They tell you what to change; you edit `characters.json`.
 - `art/`: every picture (`art/scene/02/05.jpg` is scene 2's fifth shot). Replaced pictures are kept in `art/previous/`.
 - `audiobook/scene-NN.mp3` and `video/story.mp4`: the finished audio and film.
 - `review/`: what's been made for them to look at; `review/rounds/` holds one folder per look.

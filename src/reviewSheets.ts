@@ -8,6 +8,8 @@ import { encodeWav } from "./geminiBatch.ts";
 import type { ArtManifest } from "./artist.ts";
 import { staleShots } from "./artist.ts";
 import { voicedBible } from "./audiobook.ts";
+import { SHEET_FILE } from "./characterSheet.ts";
+import type { Bible, SheetCharacter } from "./types.ts";
 import type { SampleIndexEntry } from "./voiceSamples.ts";
 import { EventLog } from "./eventlog.ts";
 
@@ -17,8 +19,36 @@ import { EventLog } from "./eventlog.ts";
 // a legend of who speaks when. Approved work is marked ✓.
 
 const run = promisify(execFile);
-export type ReviewKind = "refs" | "shots" | "extras" | "voices" | "music";
-export const REVIEW_KINDS: readonly ReviewKind[] = ["refs", "shots", "extras", "voices", "music"];
+export type ReviewKind = "characters" | "refs" | "shots" | "extras" | "voices" | "music";
+export const REVIEW_KINDS: readonly ReviewKind[] = ["characters", "refs", "shots", "extras", "voices", "music"];
+
+// The character sheet as the author reads it: one block per character, their
+// own words marked as theirs, empty fields saying what fills them. The sheet
+// itself (characters.json) is what gets edited; this is only for reading.
+export function formatCharacters(sheet: Record<string, SheetCharacter>, bible: Bible, title?: string): string {
+  const ids = [...new Set([...Object.keys(sheet), ...Object.keys(bible.characters)])];
+  const field = (label: string, mine: string | undefined, story: string | undefined, empty: string) =>
+    mine?.trim() ? `- **${label}:** ${mine.trim()}` : story?.trim() ? `- **${label}:** ${story.trim()} *(from the story; fill it in to change it)*` : `- **${label}:** *(empty: ${empty})*`;
+  const blocks = ids.map((id) => {
+    const s = sheet[id] ?? {};
+    const b = bible.characters[id];
+    const name = s.name?.trim() || b?.name || id;
+    const flags = [
+      s.portrait === false ? "no portrait" : "a portrait",
+      s.voiced === true ? "their own voice" : s.voiced === false ? "read by the narrator" : "their own voice if they speak enough",
+      ...(s.reference ? [`drawn from your art: ${s.reference}`] : [])
+    ];
+    return [
+      `## ${name}`,
+      field("Look", s.appearance, b?.traits, "the story describes them"),
+      field("Background", s.background, b?.goal ? `wants: ${b.goal}` : undefined, "the story decides"),
+      field("Sounds like", s.vocal, b?.vocal ?? b?.voice, "the story decides"),
+      ...(s.gender || b?.gender ? [`- **Gender:** ${s.gender || b?.gender}`] : []),
+      `- **Pictures and voice:** ${flags.join("; ")}`
+    ].join("\n");
+  });
+  return [`# The characters${title ? `: ${title}` : ""}`, "", "What each line means: your words win over the story's; an empty line is left to the story.", "", blocks.join("\n\n"), ""].join("\n");
+}
 
 export interface SheetTile { label: string; file: string }
 
@@ -122,9 +152,17 @@ export function formatShareList(legend: ReelEntry[], narrated: string[] = []): s
 }
 
 // Builds the review files for one phase; returns their paths and, for voices, the legend.
-export async function buildReview(runDir: string, kind: ReviewKind): Promise<{ files: string[]; legend?: string }> {
+export async function buildReview(runDir: string, kind: ReviewKind, opts: { title?: string } = {}): Promise<{ files: string[]; legend?: string }> {
   const outDir = join(runDir, "review");
   await mkdir(outDir, { recursive: true });
+  if (kind === "characters") {
+    let sheet: Record<string, SheetCharacter> = {};
+    try { sheet = (JSON.parse(await readFile(join(runDir, SHEET_FILE), "utf8")) as { characters?: Record<string, SheetCharacter> }).characters ?? {}; } catch { throw new Error(`no character sheet in ${runDir} — run make --only characters first`); }
+    const events = await new EventLog(runDir).load();
+    const file = join(outDir, "characters.md");
+    await writeFile(file, formatCharacters(sheet, voicedBible(events), opts.title));
+    return { files: [file] };
+  }
   const approvals = await readApprovals(runDir);
   if (kind === "music") {
     // Every clean cue in order, theme first, a second apart.
