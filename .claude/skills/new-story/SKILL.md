@@ -20,6 +20,19 @@ Speak plainly: "the writer drafts a scene, then three reviewers read it", not "t
 - **Tasks aren't questions.** Things for them to do (put photos in a folder) come after the plan is agreed, on their own, with exact steps.
 - **Don't ask about what can wait:** music, extras, the crawl, voices. Use the defaults and mention later that they can be changed.
 
+**Files and folders: do the work, name the place.**
+- **Never say "this project" or "the folder".** Say "your Scriptorium folder" or the story's own folder, and always give the **full path as a clickable link**, e.g. `/home/them/scriptorium/contexts/ole-and-dookie/photos/`.
+- **Create any folder before asking them to put something in it** (`mkdir -p`), then give its path. Better still, offer to fetch the files: "Where are the photos now? Give me the folder (or drag them in) and I'll copy them over."
+- **Each story keeps one layout,** which you set up. Show it once, the first time they need it:
+  - `stories/<slug>.json`: the story file (you write it);
+  - `contexts/<slug>.md`: their notes and plan;
+  - `contexts/<slug>/`: their material:
+    - `photos/` (`<name>-1.jpg`, `<name>-2.jpg`…);
+    - `drawings/` (their art of characters);
+    - `music/` (their own tracks);
+  - `runs/<slug>/`: everything Scriptorium makes.
+- **After they add files, check them** (list what arrived, and that each person has 2–4 clear photos) before going on.
+
 ## 0. How it works (say this in a few lines)
 
 Scriptorium turns an idea into a story, then (if you want) an illustrated audiobook and a film:
@@ -53,7 +66,7 @@ Work out what you can from their first message, then **propose the rest** (see "
 - **How much is left unsaid?** `"ambiguity"`: `"tidy"` (everything explained by the end, good for young readers), `"some"` (the default: the odd red herring, a question or two left open), or `"lots"` (mysteries, unease, a reader left to draw their own conclusions).
 - **Is it based on something?** Their own notes, a tabletop campaign, a bedtime story they tell. If so, write those notes into `contexts/<slug>.md` in their words. If they know what happens in each scene, add a scene-by-scene plan ("Scene 1 — Title: what happens"). The writers then keep every beat, name and joke from the notes. Without notes, the story is invented from the premise.
 - **Characters they want?** Name, look, voice. These go on the character sheet in phase 1. They can skip this, and the story will invent its cast.
-- **Real people in it?** Their kids, their friends, their gaming group: photos can cast them. Add a `cast` to the story file, one entry per person: `{ "name": "Mia", "photos": ["../cast/mia-1.jpg", "../cast/mia-2.jpg"], "notes": "she/her, 7, the brave one" }`.
+- **Real people in it?** Their kids, their friends, their gaming group: photos can cast them. Their photos go in `contexts/<slug>/photos/`: create it, give the full path, or copy the photos in from wherever they are. Add a `cast` to the story file, one entry per person: `{ "name": "Mia", "photos": ["../contexts/<slug>/photos/mia-1.jpg", "../contexts/<slug>/photos/mia-2.jpg"], "notes": "she/her, 7, the brave one" }`.
   - **Before anything else,** `npm run cast -- stories/<slug>.json` previews them: it describes each person from their photos and draws one portrait each into `runs/<slug>/cast/preview/`, for a few cents. Show those portraits before writing.
   - Ask that everyone in the photos (or their parents) is happy to be in it, and keep the photos in this folder.
   - `--as "a dwarf warrior in chainmail"` previews someone in costume.

@@ -166,7 +166,7 @@ The audiobook and video need no review loop; send a scene MP3 or the video path 
 
 Music is off unless the story file has a `music` block. Pitch it like any paid phase, then send the music reel (`review … music`). Cues with a voice in them are retaken automatically; any cue that never came out clean is listed in the run's output and left out of the mix. The author sets how far the music sits under the narrator with `music.duck` (dB, default 19); changing it only re-mixes, free.
 
-**The author's own music:** ask whether they have any pieces of their own (a friend's, a licensed track) and where each should play. Copy the files into `music/` beside the story file and add them to `music.tracks`, each with `from` and `to`:
+**The author's own music:** ask whether they have any pieces of their own (a friend's, a licensed track) and where each should play. Copy the files into `contexts/<slug>/music/` (create it, and give the author its full path; or copy the tracks in from wherever they are) and add them to `music.tracks` (paths relative to the story file, `../contexts/<slug>/music/…`), each with `from` and `to`:
 - the part names are `rating`, `opening`, `crawl`, `card N`, `scene N`, `end`, `credits`, `next`;
 - a piece spans every part between `from` and `to`, and loops if it's short;
 - ask how they'd like it credited (`credit`).
