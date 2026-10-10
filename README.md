@@ -449,6 +449,8 @@ Parts your tracks cover get no generated cue, and the pitch counts only the cues
 
 ## Configure
 
+**API keys come only from `.env`** at the repo root. A `*_API_KEY` set in the shell is dropped unless `.env` has it, and `.env`'s wins when both do, so you always know which key is billed. Every command starts by naming the keys it uses by their last four characters (`keys (from .env): GEMINI_API_KEY …cRWg`) and any shell keys it ignored; `doctor` shows the same.
+
 A config file names the providers and maps each role to one. `story.config.json` is all-mock; `story.opencode-go.config.json` is the real setup.
 
 Provider types:
