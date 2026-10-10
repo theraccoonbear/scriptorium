@@ -116,3 +116,17 @@ test("the narrator's measured pace, from this run's voiced scenes", async () => 
   assert.equal(measuredPace(dir, events), 150);
   assert.equal(measuredPace(dir, []), undefined, "no scene, no pace");
 });
+
+test("the story file's running time sets the scene count; a config's default scenes doesn't override it", async () => {
+  const { loadStoryFile } = await import("../src/make.ts");
+  const dir = await mkdtemp(join(tmpdir(), "scriptorium-scenes-"));
+  await writeFile(join(dir, "config.json"), JSON.stringify({ scenes: 8, providers: {}, roles: {} }));
+  const story = async (extra: object) => {
+    await writeFile(join(dir, "story.json"), JSON.stringify({ config: "config.json", out: "run", ...extra }));
+    return loadStoryFile(join(dir, "story.json"));
+  };
+  assert.equal((await story({ length: { minutes: 12, scenes: 3 } })).scenes, 3, "length.scenes beats the config's 8");
+  assert.equal((await story({ length: { minutes: 30 } })).scenes, 3, "minutes alone: what fits, not the config's 8");
+  assert.equal((await story({ scenes: 5, length: { minutes: 12, scenes: 3 } })).scenes, 5, "the story file's own scenes wins");
+  assert.equal((await story({})).scenes, undefined, "no length: the config's scenes applies as before");
+});

@@ -218,8 +218,9 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     subtitle: raw.subtitle,
     series: raw.series,
     contextPaths: contexts.map(at),
-    // A running time sets the scene count when the story file doesn't (#170).
-    scenes: raw.scenes ?? (config.length ? resolveLength(config.length, { scenes: config.scenes }).scenes : undefined),
+    // A running time sets the scene count when the story file doesn't name one (#170): its own
+    // "scenes", else what fits the minutes. A config's default "scenes" never overrides it.
+    scenes: raw.scenes ?? (config.length ? resolveLength(config.length).scenes : undefined),
     maxAttempts: attempts,
     speakerTags: raw.speakerTags,
     audiobook: raw.audiobook?.castingFile ? { ...raw.audiobook, castingFile: at(raw.audiobook.castingFile) } : raw.audiobook ?? {},
