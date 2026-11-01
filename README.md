@@ -36,6 +36,7 @@ Then check what your keys and tools can make (free; it only lists each service's
 ```bash
 npm run doctor                          # ✓ / ✗ for writing, images, voices, music, video, review sheets
 npm run doctor -- stories/keeper.json   # can this story run with these keys?
+npm run doctor                          # also: configured models gone from a service, or with a newer version
 ```
 
 In Claude Code, the `setup` skill walks you through all of this: what each phase needs, where to get the keys, and a first mock run.

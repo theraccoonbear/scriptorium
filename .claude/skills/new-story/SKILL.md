@@ -235,6 +235,7 @@ Read the message aloud to them in plain words, then:
 - **The budget is spent:** the run stops cleanly. Show `npm run spend -- stories/<slug>.json` and ask whether to raise `budget`. Never raise it yourself.
 - **Voice quota or rate limits:** the pitch shows how many days of Gemini voice quota a story needs. A run that hits the daily cap carries on the next day, picking up where it stopped.
 - **A missing key or tool:** `npm run doctor -- stories/<slug>.json`, then the setup skill.
+- **Before a new run, or a model failing:** `doctor` also checks the configured models. "Keeping models fresh" in the setup skill says what to do, and a creative or judgement role never changes model without the author's yes.
 
 ## House rules
 

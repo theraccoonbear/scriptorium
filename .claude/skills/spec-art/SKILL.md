@@ -23,6 +23,8 @@ The art comes from the real pipeline: art director, reference jobs, inspector, t
 
 A design holds up within about a factor of two of its size. Past that, a small version is not a shrunken big one: it needs fewer shapes, fewer colours and a bolder silhouette. So for sizes far apart, list **two props per item**, each with its own description, and don't reduce one to make the other. For example, `lantern_inline` at 13 px and `lantern_large` at 32 px are two drawings.
 
+**Check the models first.** Run `npm run doctor`, and see "Keeping models fresh" in the setup skill. If a model or key fails at any point, stop and tell the author. Never swap in another provider or model for the art director, or any creative or judgement role, without their yes.
+
 ## 3. The story file
 
 Keep it in `stories/<slug>.json`. `out` must not be under `runs/_scratch`, or the budget won't count the spend.
@@ -59,7 +61,7 @@ Keep it in `stories/<slug>.json`. `out` must not be under `runs/_scratch`, or th
 - **`drawing`:** how to draw this one. Spell out how few pixels and colours a small prop has.
 - **`styleReferences`:** up to `artist.maxReferences` images (3 by default). Choose the art closest to where the props will appear, and leave out logos and anything in another style. The art director reads text only, so put what you see in them into `artStyle`.
 - **`referenceKinds`:** `["prop"]` skips the portraits and places.
-- **Config:** to keep pixel edges, give this story its own copy of the config, or put the config inline in `"config"`, with `"referenceSize": 0` and `"inspectSize": 0` in its `artist`. The story file's `artist` doesn't hold these. Cheaper writer and director models are fine here, since nobody reads the scene. A shared config stays as it is.
+- **Config:** to keep pixel edges, give this story its own copy of the config, or put the config inline in `"config"`, with `"referenceSize": 0` and `"inspectSize": 0` in its `artist`. The story file's `artist` doesn't hold these. Cheaper models are fine for the roles nobody reads here, such as the writer and director on this throwaway scene. Hold the art director to a known-good model: its prompts are the art. A shared config stays as it is.
 - **Images:** describe only what should be there. Don't write what to leave out.
 
 ## 4. Pilot one item at both sizes

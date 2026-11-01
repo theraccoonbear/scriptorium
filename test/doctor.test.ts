@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { capabilities, doctor, formatRows, investigate, storyRows } from "../src/doctor.ts";
+import { capabilities, doctor, formatRows, freshnessRows, investigate, modelVersion, newerModels, storyRows } from "../src/doctor.ts";
 import type { DoctorDeps } from "../src/doctor.ts";
 import type { ResolvedStory } from "../src/make.ts";
 
@@ -85,4 +85,54 @@ test("a story file: its roles' providers, its art, voices and music are checked 
   assert.match(formatRows(rows), /Art: images\s+✗  needs GEMINI_API_KEY/, "a story that needs a key it hasn't got is ✗, not ○");
   const { ready } = await doctor(d, story);
   assert.equal(ready, false);
+});
+
+// Which models the configs name, against what each service lists now, for free.
+
+test("model ids split into a family and a version; a date stamp is not a version", () => {
+  assert.deepEqual(modelVersion("claude-haiku-4-5-20251001"), { family: "claude-haiku-*", version: [4, 5] });
+  assert.deepEqual(modelVersion("claude-haiku-5-5"), { family: "claude-haiku-*", version: [5, 5] });
+  assert.deepEqual(modelVersion("gemini-3.1-flash-image"), { family: "gemini-*-flash-image", version: [3, 1] });
+  assert.deepEqual(modelVersion("deepseek-v4-flash"), { family: "deepseek-*-flash", version: [4] });
+  assert.equal(modelVersion("space-bunny-free"), undefined);
+});
+
+test("newer means the same family at a higher version, newest first", () => {
+  const listed = ["claude-haiku-4-5-20251001", "claude-haiku-5-5", "claude-haiku-5-10", "claude-opus-6-0", "gemini-3.8-flash"];
+  assert.deepEqual(newerModels("claude-haiku-4-5-20251001", listed), ["claude-haiku-5-10", "claude-haiku-5-5"]);
+  assert.deepEqual(newerModels("claude-haiku-5-10", listed), []);
+  assert.deepEqual(newerModels("gemini-3.1-flash-image", ["gemini-3.8-flash"]), [], "a different family is not an upgrade");
+  assert.deepEqual(newerModels("space-bunny-free", listed), []);
+});
+
+test("freshness: a gone model is ✗, a newer one is ○, each naming the config it came from", async () => {
+  const f = await investigate(deps({ ANTHROPIC_API_KEY: "sk-good", GEMINI_API_KEY: "g-good" }));
+  const rows = freshnessRows(f, [
+    { source: "a.json", config: { providers: { h: { type: "anthropic", model: "claude-haiku-3-5" }, o: { type: "anthropic", model: "claude-opus-5-5" } } } },
+    { source: "b.json", config: { providers: { g: { type: "anthropic", model: "claude-opus-5-5" }, m: { type: "mock" } } } }
+  ] as never);
+  const claude = rows.filter((r) => r.label === "Models: Anthropic (Claude)");
+  const gone = claude.find((r) => r.detail.includes("no longer listed"));
+  assert.equal(gone?.mark, "no");
+  assert.match(gone!.detail, /claude-haiku-3-5 is no longer listed \(a\.json\)/);
+  const newer = claude.find((r) => r.detail.includes("has newer"));
+  assert.equal(newer?.mark, "unset");
+  assert.match(newer!.detail, /claude-haiku-3-5 has newer: claude-haiku-4-5-20251001/);
+  assert.equal(rows.find((r) => r.label === "Models: Google Gemini")?.mark, "ok", "built-in defaults are all listed");
+});
+
+test("freshness: a rejected key leaves the service unchecked, not all-missing, and doctor still finishes", async () => {
+  const d = { ...deps({ ANTHROPIC_API_KEY: "sk-bad", GEMINI_API_KEY: "g-good" }, { reject: ["sk-bad"] }), configs: () => [{ source: "a.json", config: { providers: { h: { type: "anthropic", model: "claude-haiku-5-5" } } } }] } as never;
+  const { text } = await doctor(d);
+  assert.match(text, /Models: Anthropic \(Claude\).*not checked \(the key was rejected\): claude-haiku-5-5/);
+  assert.doesNotMatch(text, /claude-haiku-5-5 is no longer listed/);
+});
+
+test("freshness covers the story's own config and doesn't change whether the story is ready", async () => {
+  const d = deps({ ANTHROPIC_API_KEY: "sk-good", GEMINI_API_KEY: "g-good" });
+  const story = { file: "stories/x.json", config: { providers: { o: { type: "anthropic", model: "claude-opus-5-5" } }, roles: { writer: { provider: "o" } } }, audiobook: { narration: "kokoro", dialogue: "kokoro" } } as unknown as ResolvedStory;
+  const { text, ready } = await doctor(d, story);
+  assert.equal(ready, true);
+  assert.match(text, /Models: Anthropic \(Claude\)/);
+  assert.match(text, /Only a paid call proves that/);
 });
