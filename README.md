@@ -146,11 +146,12 @@ docker compose run --rm --entrypoint npm scriptorium test
 | `cast <story.json> [--as "..."]` | Preview a story's cast: describe each member from their photos and render one portrait each into `<run>/cast/preview/`. |
 | `review <story.json> characters\|refs\|shots\|voices\|music` | Rebuild the run's current review files in `<run>/review/`: the character sheet as a readable page (`characters.md`), contact sheets, the voice reel and its legends. |
 | `approve <story.json> <key>… [--revoke]` | Lock approved images (`scene-03-07`, `character-nell`) and voices (`voice:nell`) so nothing redoes them. |
+| `sprites <story.json> [--sizes 16,48] [--kinds prop] [--keys prop-a,…] [--background #FF00FF] [--tolerance 96] [--colors 16]` | Recover true pixel sprites from finished art, each at its prop's `sprite` size (`--sizes` for art without one). Nothing is resized. Free. See [Spec art](#spec-art). |
 | `audition <story.json> <speaker> [--direction ".."] [--voices a,b] [--count N]` | Their reel line in their current voice and a few others (the voice director's picks, or yours), as a review round. `--pick N` pins candidate N in the story file, makes the new direction their vocal line, and remakes their sample and the reel. |
 | `cost --out <dir>` | What a run has spent, by step, role and model. |
 | `models --config <file> --provider <name>` | List the model ids a provider serves. |
 
-npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, `video`, `test`, `typecheck`. Run `node src/cli.ts` with no command for the full usage text.
+npm shortcuts: `make`, `story` (real config), `story:mock`, `art`, `artdirect`, `video`, `sprites`, `test`, `typecheck`. Run `node src/cli.ts` with no command for the full usage text.
 
 ## Who writes where
 
@@ -327,6 +328,7 @@ Output goes to `<run>/art/`: `character-<id>`, `location-<id>`, `prop-<id>`, `sc
 - **When a reference changes** (a remade portrait, a new prop design, your own drawing), every shot drawn from the old version is out of date. The next `make --only art` reshoots just those, and approved shots stay with a warning. `npm run reshoot -- <story>` lists them by scene with the cost first. On the shots contact sheets they're marked ⟳.
 - **One shot:** `make --only art --redo scene-04-07 --note "lying flat, seen from above"` redoes that shot. The note stays with its prompt. `--redo scene:4` re-plans scene 4's shots.
 - **One detail:** `make --only art --edit scene-04-05 --note "he works a bow drill back and forth"` edits the image in place. The image is the only reference and the note is the only instruction, so everything else stays as it is. A redo, by contrast, redraws from the prompt and re-rolls everything. `--source art/previous/scene-04-05/<take>.jpg` edits an earlier take instead of the current one. `--with character-rantoul,scene-06-07` adds images showing how someone in it should look: a portrait for a face, or another shot for a costume. The key art and cast photo are edited the same way in the extras phase: `make --only extras --edit extra-keyart-16x9 --note "…" --with character-rantoul`. The shelf covers and box art are rebuilt from the edited key art. Describe what should be there, not what shouldn't: naming the unwanted thing tends to put it in the picture.
+- **One detail of a reference:** `make --only art --edit prop-<id> --note "..."` works the same way on `prop-`, `location-` and `character-` keys. It keeps the reference's shape, and shots drawn from it are reshot as above.
 - **The video follows:** a reshot scene re-renders only its own video section and the final join.
 
 **Your own drawing of a character:** give their entry on the character sheet (`<run>/characters.json`) a `"reference"`: a `.png`, `.jpg` or `.webp` path, relative to `characters.json`. For example, `"reference": "../../contexts/rantouls-mushrooms/Lemuel-drawing.png"`.
@@ -335,6 +337,20 @@ Output goes to `<run>/art/`: `character-<id>`, `location-<id>`, `prop-<id>`, `sc
 - **Copy:** the image is copied into the run (`references/<id>.<ext>`), so the run stands on its own.
 - **Changes:** a new image, even at the same path, remakes that portrait on the next `--only refs`, unless you've approved the portrait.
 - **Description:** keep a written `appearance` too. The art director writes every shot from text, so the words carry the look into scenes.
+
+### Spec art
+
+To get a set of props without a film, a story file can fix what's drawn. The **spec-art** skill walks through it. Run a one-scene story with `--only story`, then `--only refs`.
+
+- **`props`:** the complete list of key objects, `[{ "id", "name", "description", "sprite", "drawing" }]`. It replaces the Creator's objects, is canon, and turns off prop discovery. Ids are snake_case. A new list needs a new `out`.
+- **`props[].sprite`:** the square size it's drawn for, in pixels. Sizes far apart need separate props, each its own design.
+- **`props[].drawing`:** how to draw this one. It reaches the art director, the artist and the inspector for that prop alone.
+- **`styleReferences`:** your images, sent to every reference job and the inspector for style only (up to `artist.maxReferences`). The files are only read. The art director works from text, so `artStyle` should describe them. A changed image redraws what isn't approved.
+- **`referenceKinds`:** which kinds to plan and draw, such as `["prop"]`. Without it, the first portrait anchors the props' style.
+
+**Style anchors with mixed sizes:** props with a `sprite` are anchored by size. The first prop of each size is drawn with no anchor and anchors only that size, so a detailed design can't push its detail into a tiny one.
+
+**Sprites:** image models draw pixel art at about 1024 px. `npm run sprites -- <story.json>` finds the grid the model drew on, reads the cells back, removes the background and trims, without resampling. Each prop lands centred on its `sprite` size in `<run>/sprites/<size>px/`, with the true sprite in `sprites/native/`, a report in `sprites/sprites.json` and sheets in `review/sprites-<size>px.png`. A sprite too big for its target is flagged, not written, and the command exits non-zero. Redraw it simpler.
 
 ### Extras
 
@@ -488,7 +504,7 @@ All providers strip `<think>` blocks, retry on 429/5xx, and fail loudly on empty
 - **Prices** for GPT-6 Astra, Sol and Luna, GPT-5.6 Sol, GPT Image 2.5 and GPT-4o mini TTS are built in.
 
 **One home per setting.** A setting lives in exactly one file, and one in the wrong file (or two that contradict each other) stops the run with where it belongs:
-- **The story file** says what the story is: `premise`, `setting`, `context`, `title`, `scenes`, `length` or `sceneWords`, `ambiguity`, `rating`, `tension`, `turns`, `direction`, `artStyle`, `extras`, `budget`, `critic`, `speakerTags`, `maxAttempts`, `maxDraftsPerScene`, `cast`, `audiobook`, `music`, `video`, and the author's image choices in `artist` (`batch`, `retakes`, `retakeAbove`).
+- **The story file** says what the story is: `premise`, `setting`, `context`, `title`, `scenes`, `length` or `sceneWords`, `ambiguity`, `rating`, `tension`, `turns`, `direction`, `artStyle`, `props`, `styleReferences`, `referenceKinds`, `extras`, `budget`, `critic`, `speakerTags`, `maxAttempts`, `maxDraftsPerScene`, `cast`, `audiobook`, `music`, `video`, and the author's image choices in `artist` (`batch`, `retakes`, `retakeAbove`).
 - **The config** says how it's made: `providers`, `roles`, `pricing`, `rngSeed`, `overdueAfter`, `artWordsPerShot`, `writerNotes`, `looseEnds`, and the rest of `artist` (backends, `maxAttempts` per image, `maxReferences`, sizes, `concurrency`).
 
 Other config keys:

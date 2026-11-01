@@ -6,6 +6,8 @@ import { closeRounds, formatPending, roundStatuses } from "./pending.ts";
 import { join } from "node:path";
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
+import { makeSprites, parseColour } from "./sprites.ts";
+import type { VisualRefKind } from "./types.ts";
 import { EventLog } from "./eventlog.ts";
 import { describeRepoEnv, loadRepoEnv } from "./env.ts";
 import { buildRoleProviders, listModels } from "./providers.ts";
@@ -45,7 +47,7 @@ const USAGE = `scriptorium <command> [options]
           voices       cast every speaker and render a sample of each (audiobook/samples/)
         [--redo character:<id>,voice:<id>,...] [--note "..."]
                        remake these references (with your corrections) or recast these voices
-        [--only art --edit scene-NN-MM --note "..." [--source art/previous/<key>/<take>.jpg] [--with character-<id>,scene-NN-MM]]
+        [--only art --edit scene-NN-MM|prop-<id> --note "..." [--source art/previous/<key>/<take>.jpg] [--with character-<id>,scene-NN-MM]]
                        edit an image in place: one change, everything else kept (or edit an earlier take);
                        --with: images showing how someone in it should look (a portrait, another shot)
   review <story.json> refs|shots|voices|music
@@ -82,6 +84,8 @@ const USAGE = `scriptorium <command> [options]
                                                          a review round
   audition <story.json> <speaker> --pick N [--round NN] pin candidate N; a new direction becomes their
                                                          vocal line; remakes their sample and the reel
+  sprites <story.json> [--sizes 16,48] [--kinds prop] [--keys prop-a,…] [--background #FF00FF] [--tolerance 96] [--colors 16]
+        recover true pixel sprites from finished art. Each prop goes to its own "sprite" size; --sizes is for art without one. Never resized. Free.
   canon <story.json> [--apply [--skip N,…]]           show the latest canon check (make --only canon), or
                                                          apply its fixes to the prose and shot prompts
   spend <story.json> [--since <date>] [--cost-kind k] [--cost-tag t]
@@ -253,7 +257,13 @@ async function main() {
       "no-wait": { type: "boolean" },
       yes: { type: "boolean" },
       purge: { type: "boolean" },
-      "keep-last": { type: "boolean" }
+      "keep-last": { type: "boolean" },
+      sizes: { type: "string" },
+      kinds: { type: "string" },
+      keys: { type: "string" },
+      background: { type: "string" },
+      tolerance: { type: "string" },
+      colors: { type: "string" }
     }
   });
 
@@ -416,6 +426,38 @@ async function main() {
     const approved = new Set((await readApprovals(story.runDir)).art);
     const stale = await staleShots(log.events, story.runDir, approved);
     console.log(formatReshoot(stale, story.config.artist?.batch === true));
+    return;
+  }
+
+  if (command === "sprites") {
+    const [storyFile] = positionals;
+    if (!storyFile) throw new Error("usage: sprites <story.json> [--sizes 16,48] [--kinds prop,location] [--keys prop-a,prop-b] [--background #FF00FF] [--tolerance 96] [--colors 16]");
+    const story = await loadStoryFile(storyFile);
+    const list = (text?: string) => text?.split(",").map((x) => x.trim()).filter(Boolean);
+    const number = (name: string, text?: string) => {
+      if (text === undefined) return {};
+      const n = Number(text);
+      if (!Number.isInteger(n) || n < 0) throw new Error(`--${name} must be a whole number`);
+      return { [name]: n };
+    };
+    const results = await makeSprites({
+      runDir: story.runDir,
+      // A prop's own "sprite" is its target; --sizes serves art without one.
+      targets: Object.fromEntries((story.config.props ?? []).flatMap((p) => (p.sprite ? [[p.id, p.sprite]] : []))),
+      ...(values.sizes ? { sizes: list(values.sizes)!.map(Number) } : {}),
+      ...(values.kinds ? { kinds: list(values.kinds) as VisualRefKind[] } : {}),
+      ...(values.keys ? { keys: list(values.keys) } : {}),
+      ...(values.background ? { background: parseColour(values.background) } : {}),
+      ...number("tolerance", values.tolerance),
+      ...number("colors", values.colors)
+    });
+    for (const r of results) {
+      console.log(`${c.ok(r.id)} ${c.dim(`grid ${r.grid}, sprite ${r.width}x${r.height}`)}`);
+      for (const f of r.flags) console.log(`  ${c.retry(f)}`);
+    }
+    const flagged = results.filter((r) => r.flags.length).length;
+    if (results.some((r) => r.unfit.length || r.width === 0)) process.exitCode = 1;
+    console.log(`${results.length} sprite${results.length === 1 ? "" : "s"} → ${join(story.runDir, "sprites")}, sheets in ${join(story.runDir, "review")}${flagged ? c.retry(` — ${flagged} flagged`) : ""}`);
     return;
   }
 

@@ -22,15 +22,16 @@ import { changedShare } from "./tagging.ts";
 import { withRunLock } from "./runLock.ts";
 import type { LockOptions } from "./runLock.ts";
 import type { Pitch } from "./pitch.ts";
-import { accounted, artStep, audiobookStep, resolveAudioTags, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
+import { accounted, artStep, propOverrides, audiobookStep, resolveAudioTags, extrasStep, loadRun, musicStep, readContexts, storyStep, videoStep, voicesStep } from "./steps.ts";
 import type { AudiobookStepOptions } from "./steps.ts";
 import { portraitIds, recordedSheet, syncCharacterSheet } from "./characterSheet.ts";
 import { staleCharacterRefs } from "./engine.ts";
 import { replay } from "./bible.ts";
-import { refAppearances } from "./visualrefs.ts";
+import { readVisualRefs, refAppearances, refKey } from "./visualrefs.ts";
+import { styleReferencesKey } from "./artist.ts";
 import { c } from "./colors.ts";
 import { CRITIC_MODES } from "./types.ts";
-import type { Ambiguity, StoryConfig, StoryEvent } from "./types.ts";
+import type { Ambiguity, AuthorProp, StoryConfig, StoryEvent, VisualRefKind } from "./types.ts";
 import type { CastMember } from "./cast.ts";
 import type { TitleSettings } from "./titles.ts";
 import type { MusicSettings } from "./music.ts";
@@ -97,6 +98,9 @@ export interface StoryFile {
   maxDraftsPerScene?: number;          // hard stop for a scene that won't settle (default 20)
   extras?: StoryConfig["extras"];   // override the art style / direction for the extras (see StoryConfig)
   artStyle?: string;                   // prescriptive art style; overrides the Creator's
+  props?: AuthorProp[];                // the complete list of key objects, as canon (ids in snake_case)
+  styleReferences?: string[];          // the author's images, for style only, sent to every reference job
+  referenceKinds?: VisualRefKind[];    // which kinds of reference to plan and draw (default all)
   artist?: Pick<NonNullable<StoryConfig["artist"]>, "batch" | "retakes" | "retakeAbove">;  // the author's image choices; the backends live in the config
   sceneWords?: StoryConfig["sceneWords"];  // each scene's word band, instead of "length"
   critic?: StoryConfig["critic"];      // "blocking" (default), "advisory" or "off"
@@ -154,6 +158,9 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
     ...baseConfig,
     ...(raw.direction ? { direction: raw.direction } : {}),
     ...(raw.artStyle ? { artStyle: raw.artStyle } : {}),
+    ...(raw.props ? { props: raw.props } : {}),
+    ...(raw.styleReferences ? { styleReferences: Array.isArray(raw.styleReferences) ? raw.styleReferences.map(at) : raw.styleReferences } : {}),
+    ...(raw.referenceKinds ? { referenceKinds: raw.referenceKinds } : {}),
     ...(raw.extras ? { extras: raw.extras } : {}),
     ...(raw.budget ? { budget: raw.budget } : {}),
     ...(raw.rating !== undefined ? { rating: resolveRating(raw.rating, `${path}: "rating"`) } : {}),
@@ -203,6 +210,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
   });
   checkVideoTitles(path, raw);
   checkMusic(path, raw);
+  checkPropArt(path, config);
   if (raw.stepOrder !== undefined && !(STEP_ORDERS as readonly string[]).includes(raw.stepOrder)) {
     throw new Error(`${path}: "stepOrder" must be one of ${STEP_ORDERS.join(", ")}`);
   }
@@ -234,7 +242,7 @@ export async function loadStoryFile(path: string): Promise<ResolvedStory> {
 // One home per setting. The story file says what the story is; the config says how it's
 // made (providers, models, backends, prices, pipeline tuning). A setting in the wrong file,
 // or two that contradict each other, stops the run with where it belongs.
-export const STORY_KEYS = ["premise", "setting", "context", "title", "scenes", "length", "sceneWords", "ambiguity", "rating", "tension", "turns", "direction", "artStyle", "extras", "budget", "critic", "speakerTags", "maxAttempts", "maxDraftsPerScene"] as const;
+export const STORY_KEYS = ["premise", "setting", "context", "title", "scenes", "length", "sceneWords", "ambiguity", "rating", "tension", "turns", "direction", "artStyle", "props", "styleReferences", "referenceKinds", "extras", "budget", "critic", "speakerTags", "maxAttempts", "maxDraftsPerScene"] as const;
 export const CONFIG_KEYS = ["providers", "roles", "pricing", "rngSeed", "overdueAfter", "artWordsPerShot", "writerNotes", "looseEnds"] as const;
 export const STORY_ARTIST_KEYS = ["batch", "retakes", "retakeAbove"] as const;  // the author's image choices; the rest of "artist" is the config's
 export function checkHomes(storyPath: string, configName: string, story: Record<string, unknown>, config: Record<string, unknown>): void {
@@ -249,6 +257,38 @@ export function checkHomes(storyPath: string, configName: string, story: Record<
   if (story.length !== undefined && story.sceneWords !== undefined) problems.push(`"length" and "sceneWords" both set each scene's words: keep one`);
   if (typeof story.maxAttempts === "number" && story.maxDraftsPerScene !== undefined) problems.push(`"maxDraftsPerScene" caps unlimited drafts; with "maxAttempts": ${story.maxAttempts} it can't apply: keep one`);
   if (problems.length) throw new Error(`${storyPath}: ${problems.length === 1 ? problems[0] : `\n  - ${problems.join("\n  - ")}`}`);
+}
+
+const VISUAL_REF_KINDS: readonly string[] = ["character", "location", "prop"];
+const STYLE_IMAGE = /\.(png|jpe?g|webp)$/i;
+function checkPropArt(path: string, config: StoryConfig) {
+  const { props, styleReferences, referenceKinds } = config;
+  if (props !== undefined) {
+    if (!Array.isArray(props) || props.length === 0) throw new Error(`${path}: "props" must be a list of { "id", "name", "description" }`);
+    const seen = new Set<string>();
+    for (const [i, p] of props.entries()) {
+      const where = `${path}: prop ${i + 1}`;
+      for (const k of ["id", "name", "description"] as const) if (typeof p?.[k] !== "string" || !p[k].trim()) throw new Error(`${where} needs "${k}"`);
+      // Prop references use snake_case ids: another spelling would never match its own reference.
+      if (!/^[a-z0-9]+(_[a-z0-9]+)*$/.test(p.id)) throw new Error(`${where}: id "${p.id}" must be snake_case (laser_capacitor)`);
+      if (seen.has(p.id)) throw new Error(`${where}: id "${p.id}" is listed twice`);
+      if (p.sprite !== undefined && !(Number.isInteger(p.sprite) && p.sprite > 0)) throw new Error(`${where}: "sprite" must be a whole number of pixels`);
+      if (p.drawing !== undefined && (typeof p.drawing !== "string" || !p.drawing.trim())) throw new Error(`${where}: "drawing" must be text`);
+      seen.add(p.id);
+    }
+  }
+  if (styleReferences !== undefined) {
+    if (!Array.isArray(styleReferences) || styleReferences.length === 0) throw new Error(`${path}: "styleReferences" must be a list of image files`);
+    const cap = config.artist?.maxReferences ?? 3;
+    if (styleReferences.length > cap) throw new Error(`${path}: "styleReferences" has ${styleReferences.length} images; each job takes ${cap} (artist.maxReferences in the config)`);
+    for (const f of styleReferences) {
+      if (typeof f !== "string" || !STYLE_IMAGE.test(f)) throw new Error(`${path}: "styleReferences": ${f} must be a .png, .jpg or .webp`);
+      if (!existsSync(f)) throw new Error(`${path}: "styleReferences": no file at ${f}`);
+    }
+  }
+  if (referenceKinds !== undefined && !(Array.isArray(referenceKinds) && referenceKinds.length > 0 && referenceKinds.every((k) => VISUAL_REF_KINDS.includes(k)))) {
+    throw new Error(`${path}: "referenceKinds" must be a list of ${VISUAL_REF_KINDS.join(", ")}`);
+  }
 }
 
 function checkMusic(path: string, raw: StoryFile) {
@@ -331,6 +371,7 @@ export interface StorySettings {
   contextFiles: string[];
   speakerTags: boolean;
   cast?: string | null;    // hash of the cast's names, notes and photo paths
+  props?: string | null;   // hash of the author's prop list
 }
 
 export async function storySettings(story: ResolvedStory): Promise<StorySettings> {
@@ -341,7 +382,9 @@ export async function storySettings(story: ResolvedStory): Promise<StorySettings
     context: context ? createHash("sha1").update(context).digest("hex") : null,
     contextFiles,
     speakerTags: Boolean(story.speakerTags ?? story.config.speakerTags),
-    cast: story.cast.length > 0 ? createHash("sha1").update(JSON.stringify(story.cast)).digest("hex") : null
+    cast: story.cast.length > 0 ? createHash("sha1").update(JSON.stringify(story.cast)).digest("hex") : null,
+    // What the story itself holds: a prop's size and drawing direction are the art's.
+    props: story.config.props ? createHash("sha1").update(JSON.stringify(story.config.props.map(({ id, name, description }) => ({ id, name, description })))).digest("hex") : null
   };
 }
 
@@ -352,6 +395,7 @@ export function settingChanges(before: StorySettings, after: StorySettings): str
   if (before.context !== after.context) changed.push(`context (${before.contextFiles.join(", ") || "none"} → ${after.contextFiles.join(", ") || "none"}, or their contents)`);
   if (before.speakerTags !== after.speakerTags) changed.push("speakerTags");
   if ((before.cast ?? null) !== (after.cast ?? null)) changed.push("cast");
+  if ((before.props ?? null) !== (after.props ?? null)) changed.push("props");
   return changed;
 }
 
@@ -375,6 +419,7 @@ export interface MakeOptions {
 
 // The extras an edit in place can change (#150): the key art in its three shapes and the cast photo.
 const EDITABLE_EXTRAS = /^extra-(keyart-(2x3|16x9|1x1)|cast)$/;
+const EDITABLE_REFERENCE = /^(character|location|prop)-.+$/;
 export interface ExtrasEdit { keys: string[]; note: string; source?: string; with?: string[] }
 
 // Shots to redo in the art step: by key (with the author's note), or whole scenes re-planned.
@@ -477,7 +522,7 @@ export function storyPitch(story: ResolvedStory, events: StoryEvent[], steps: re
     art: {
       maxAttempts: artist.maxAttempts, retakes: artist.retakes, concurrency: artist.concurrency, batch: artist.batch,
       skip: !(steps.includes("art") || steps.includes("refs") || steps.includes("extras")) || !story.config.roles.artdirector,
-      ...(steps.includes("refs") && !steps.includes("art") ? { refsOnly: true, refTargets: refTargets(events, approvedArt(story.runDir), redo) } : {}),
+      ...(steps.includes("refs") && !steps.includes("art") ? { refsOnly: true, refTargets: refTargets(story, events, approvedArt(story.runDir), redo) } : {}),
       ...(steps.includes("extras") && !steps.includes("art") && !steps.includes("refs") ? { extrasOnly: true } : {})
     },
     audio: {
@@ -532,16 +577,36 @@ function lengthPitch(story: ResolvedStory, events: StoryEvent[]): { wordsPerScen
   };
 }
 
-// References the refs phase would make: portraits and places without one,
-// portraits the sheet has changed (unless approved or redone: those are
-// counted as redos), and a couple of key props.
-function refTargets(events: StoryEvent[], approved: ReadonlySet<string> = new Set(), redo: string[] = []): number {
+// References the refs phase would draw: those planned but not drawn or out of
+// date against the author's style images, portraits and places not planned yet,
+// portraits the sheet has changed, and the props to come (the author's list, or
+// a couple of key props). Approved and redone ones aren't counted here: approved
+// ones stay, and redos are counted as redos.
+function refTargets(story: ResolvedStory, events: StoryEvent[], approved: ReadonlySet<string> = new Set(), redo: string[] = []): number {
+  const kinds = story.config.referenceKinds;
+  const drawn = (kind: VisualRefKind) => !kinds || kinds.includes(kind);
+  const free = (key: string, ref: string) => !approved.has(key) && !redo.includes(ref);
   const have = refAppearances(events);
   const bible = replay(events);
-  return portraitIds(events).filter((id) => !have.characters[id]).length
-    + Object.keys(bible.locations).filter((id) => !have.locations[id]).length
-    + staleCharacterRefs(events).filter((id) => !approved.has(`character-${id}`) && !redo.includes(`character:${id}`)).length
-    + (Object.keys(have.props).length === 0 ? 2 : 0);
+  const manifest = drawnRefs(story.runDir);
+  const style = styleReferencesKey(story.config.styleReferences);
+  const looks = propOverrides(story.config);
+  const undrawn = readVisualRefs(events).filter((r) => {
+    const key = refKey(r.kind, r.id);
+    return drawn(r.kind) && free(key, `${r.kind}:${r.id}`) && (!manifest[key] || manifest[key].styleRefs !== style || (looks[key] !== undefined && manifest[key].direction !== looks[key].direction));
+  });
+  const counted = new Set(undrawn.map((r) => refKey(r.kind, r.id)));
+  const props = story.config.props ? story.config.props.filter((p) => !have.props[p.id]).length : Object.keys(have.props).length === 0 ? 2 : 0;
+  return undrawn.length
+    + (drawn("character") ? portraitIds(events).filter((id) => !have.characters[id]).length : 0)
+    + (drawn("location") ? Object.keys(bible.locations).filter((id) => !have.locations[id]).length : 0)
+    + (drawn("character") ? staleCharacterRefs(events).filter((id) => free(`character-${id}`, `character:${id}`) && !counted.has(`character-${id}`)).length : 0)
+    + (drawn("prop") ? props : 0);
+}
+
+// What art.json says is drawn, read synchronously for the pitch.
+function drawnRefs(runDir: string): Record<string, { styleRefs?: string; direction?: string }> {
+  try { return JSON.parse(readFileSync(join(runDir, "art", "art.json"), "utf8")); } catch { return {}; }
 }
 
 // Approved art keys (approvals.json), read synchronously for the pitch.
@@ -634,14 +699,14 @@ async function makeRun(storyPath: string, opts: MakeOptions): Promise<Step[]> {
   if (rewrites.length && !opts.notes) throw new Error(`--redo scene:${rewrites[0] + 1} with the story step rewrites that scene: --note says what should change`);
   const edit = opts.edit ?? [];
   if (edit.length) {
-    const bad = edit.filter((k) => !/^scene-\d+-\d+$/.test(k) && k !== "cover" && !EDITABLE_EXTRAS.test(k));
-    if (bad.length) throw new Error(`--edit ${bad.join(",")}: only shots (scene-NN-MM), the cover, the key art (extra-keyart-2x3|16x9|1x1) and the cast photo (extra-cast) can be edited`);
+    const bad = edit.filter((k) => !/^scene-\d+-\d+$/.test(k) && k !== "cover" && !EDITABLE_EXTRAS.test(k) && !EDITABLE_REFERENCE.test(k));
+    if (bad.length) throw new Error(`--edit ${bad.join(",")}: only shots (scene-NN-MM), the cover, references (prop-<id>, location-<id>, character-<id>), the key art (extra-keyart-2x3|16x9|1x1) and the cast photo (extra-cast) can be edited`);
     const extras = edit.filter((k) => EDITABLE_EXTRAS.test(k));
     if (extras.length && extras.length !== edit.length) throw new Error("--edit: extras and shots go in separate runs (they're edited in different phases)");
     if (extras.length && !steps.includes("extras")) throw new Error("--edit extra-…: the key art and cast photo are edited in the extras phase (--only extras)");
     if (!opts.notes) throw new Error("--edit needs --note: the one change to make");
     if (redo.length) throw new Error("--edit and --redo go in separate runs (the note would apply to both)");
-    if (!extras.length && !steps.includes("art")) throw new Error("--edit scene-…: images are edited in the art step (--only art)");
+    if (!extras.length && !steps.includes("art")) throw new Error(`--edit ${edit[0]}: images are edited in the art step (--only art)`);
     if (opts.source && edit.length > 1) throw new Error("--source names one image's earlier take: edit one image at a time");
   } else if (opts.source || opts.with?.length) throw new Error(`${opts.source ? "--source" : "--with"} goes with --edit`);
   if (opts.notes && !edit.length && !rewrites.length && redoRefs.length === 0 && redoShots.length === 0 && redoExtras.filter((r) => r !== "extras").length === 0) throw new Error("--note goes with --redo <kind>:<id>, --redo scene-NN-MM, --redo extra-… or --edit scene-NN-MM");

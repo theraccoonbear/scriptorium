@@ -1960,6 +1960,7 @@ export async function artDirect(role: Role, params: {
   objectIds?: string[];  // bible key objects that need a prop reference
   discoverProps?: boolean;  // also look for new key props in the story text (default true)
   redoProps?: string[];  // existing prop ids to recreate
+  propDirections?: Record<string, string>;  // the author's drawing direction, per prop id
   notes?: string;        // author corrections for the recreated references
   mentions?: Record<string, string[]>;
   storyText?: string[];
@@ -2011,6 +2012,8 @@ export async function artDirect(role: Role, params: {
       parts.push(`CAST (real ${cast.some(([, m]) => m.kind === "animal") ? "people and animals" : "people"} starring in this story — their likeness is intended; their portraits are drawn from their photos):\n${cast.map(([id, m]) => `- character ${id} (${bible.characters[id].name}) is ${m.name}, ${m.kind === "animal" ? "an animal" : "a person"}: ${m.appearance}`).join("\n")}`);
     }
     if (objectIds.length > 0) parts.push(`OBJECTS NEEDING REFERENCES (canon — props with these ids): ${objectIds.map((id) => `${id} (${bible.objects[id]?.name ?? id})`).join(", ")}`);
+    const drawing = [...objectIds, ...redo].filter((id) => params.propDirections?.[id]);
+    if (drawing.length > 0) parts.push(`DRAWING DIRECTION PER PROP (the author's, follow exactly; it overrides your usual level of detail, so each prop's prompt holds only what its own line allows, however much detail another prop gets):\n${drawing.map((id) => `- ${id}: ${params.propDirections![id]}`).join("\n")}`);
     const discover = params.discoverProps ?? true;
     parts.push(`Create references for — characters: ${characterIds.join(", ") || "(none)"}; locations: ${locationIds.join(", ") || "(none)"}; props: ${[...objectIds, ...(params.redoProps ?? [])].join(", ") || "(none)"}${discover ? "; plus any other new key props." : ". No other props this time."}`);
   } else {

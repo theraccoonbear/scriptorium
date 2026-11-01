@@ -3,6 +3,7 @@
 Scriptorium turns an idea into a story, an illustrated audiobook and a film. Most people opening this folder want to **make a story**, not change the code.
 
 - **Someone new, or wanting to make a story** ("how does this work?", "I want to make a story for my kids"): follow the **new-story** skill. It's the production wizard, from the idea to the finished film.
+- **Wanting props, icons, sprites or other assets from reference art**, not a story: the **spec-art** skill.
 - **Setting up keys and tools**, or a run failing on a missing key: the **setup** skill.
 - **A story already under way** ("what's next?", reviewing pictures or voices): the **produce** skill.
 - **Changing Scriptorium's code:** read `AGENTS.md` first.
