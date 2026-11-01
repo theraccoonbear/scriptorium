@@ -126,6 +126,16 @@ export interface StoryObject {
   owner?: string;       // character id
 }
 
+// A key object the author lists in the story file: canon, like the Creator's,
+// but the list is the author's (id in snake_case, as prop references use).
+export interface AuthorProp {
+  id: string;
+  name: string;
+  description: string;  // size and proportions, shape, materials: everything the art director gets
+  sprite?: number;      // the square sprite it's drawn for, in pixels: its own design, and the sprites step's target
+  drawing?: string;     // how to draw this one (how few pixels it has, what to leave out); reaches the art director, artist and inspector
+}
+
 export interface Bible {
   premise: string;
   tone: string;
@@ -371,6 +381,12 @@ export interface StoryConfig {
   // Author direction per creative layer (role label -> notes the layer must
   // follow), plus "artist" for every image request. See DIRECTION_LAYERS.
   direction?: Record<string, string>;
+  // The author's complete list of key objects: canon, and the only props made.
+  props?: AuthorProp[];
+  // The author's images (absolute paths), sent to reference jobs for style only.
+  styleReferences?: string[];
+  // Which kinds of reference are planned and drawn (default: all of them).
+  referenceKinds?: VisualRefKind[];
   // A prescriptive art style that overrides the Creator's choice.
   // The author's overrides of the story's art style and art direction for the
   // extras (#49): for all of them, or just the key art or the cast photo.

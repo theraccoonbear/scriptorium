@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { postJson, requireKey } from "./providers.ts";
@@ -98,7 +99,7 @@ RULES:
 - ok: true if the image is usable as-is. Minor stylistic drift is fine — only flag what a viewer would notice.
 - severity: how far the image falls short, 0-10, judged as a viewer would notice it. 0 = matches everything; 1-2 = small drift a viewer wouldn't notice; 3-4 = noticeable but usable (a slightly off color, a stiff pose); 5-6 = a clear mistake (wrong object shape, wrong hair, ignored camera angle); 7-8 = wrong in a way that breaks the story (wrong character, a character mix-up, a key object wrong, a real-person likeness, text in the image); 9-10 = unusable (broken anatomy, the wrong scene). Score every image, ok or not; the worst images across a story are retaken first.
 - issues: one short sentence per problem; empty when ok.
-- revised_prompt: when ok is false, rewrite the ORIGINAL prompt to fix the issues (make the missed detail explicit, restate character appearance, make the action and camera angle explicit for a STAGING issue, add "no text"). Keep the same scene and moment. NEVER name any real person, actor or celebrity in it, not even to say "not like them": the image model draws toward any name it reads. For a REAL PERSON issue, describe a clearly different original face instead (bone structure, age, distinctive features). When ok is true, return "".`;
+- revised_prompt: when ok is false, rewrite the ORIGINAL prompt to fix the issues (make the missed detail explicit, restate character appearance, make the action and camera angle explicit for a STAGING issue). Describe only what should be there: state the wanted thing itself, and never write what to leave out ("no blue background" becomes the background colour it should be; a TEXT issue becomes plain, unmarked surfaces). Keep the same scene and moment. NEVER name any real person, actor or celebrity in it, not even to say "not like them": the image model draws toward any name it reads. For a REAL PERSON issue, describe a clearly different original face instead (bone structure, age, distinctive features). When ok is true, return "".`;
 
 export interface ArtJob {
   key: string;            // "character-<id>", "scene-01-03" (scene 1, shot 3), "scene-01" (pre-shots events) or "cover"
@@ -385,6 +386,7 @@ export interface ManifestEntry {
   direction?: string;   // the author's art direction it was rendered under (also a skip key)
   style?: string;       // the art style it was rendered in (also a skip key)
   photos?: string;      // a cast portrait's photos (the cast hash; also a skip key)
+  styleRefs?: string;   // a reference's author style images (their hash; also a skip key)
   attempts: number;
   accepted: boolean;    // false = attempts ran out; the last image was kept anyway
   issues: string[];
@@ -420,6 +422,10 @@ export interface ArtOptions {
   maxAttempts?: number;    // per image, default 3
   maxReferences?: number;  // earlier renders passed for continuity, default 3
   maxPortraits?: number;   // character portraits passed per image, default 3 (plus 1 location and 2 props)
+  styleReferences?: Image[];  // the author's images, given to every reference job for style only
+  styleReferencesKey?: string;  // their hash: a change redraws what wasn't approved
+  referenceKinds?: VisualRefKind[];  // which kinds of reference are drawn (default all)
+  referenceGroups?: Record<string, string>;  // art key -> style-anchor group (default: one group)
   concurrency?: number;    // images rendered at once, default 4
   // Triage: render every shot (and the cover) once, then spend this many
   // retakes per shot on average (0.5 = half a retake each) on the worst-scored
@@ -450,6 +456,15 @@ export interface ArtOptions {
   inspectSize?: number;
   shrink?: Shrink;         // resizer; defaults to ffmpeg, falling back to the original
   onProgress?: (event: ArtProgress) => void;
+}
+
+// The author's style images, as a skip key: their bytes, in order. A new image at
+// the same path counts as new.
+export function styleReferencesKey(paths: string[] = []): string | undefined {
+  if (paths.length === 0) return undefined;
+  const hash = createHash("sha1");
+  for (const p of paths) hash.update(readFileSync(p));
+  return hash.digest("hex");
 }
 
 export type Shrink = (image: Image, maxSide: number) => Promise<Image>;
@@ -513,7 +528,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   // to each prompt to restate.
   const style = storyArtStyle(events);
   const direction = opts.direction?.trim() || undefined;
-  const jobs = buildArtJobs(events).map((job) => {
+  const jobs = buildArtJobs(events).filter((job) => !job.ref || !opts.referenceKinds || opts.referenceKinds.includes(job.ref.kind)).map((job) => {
     const o = opts.overrides?.[job.key];
     if (!o || (!o.style?.trim() && !o.direction?.trim())) return job;
     const lookStyle = o.style?.trim() || undefined;
@@ -531,6 +546,9 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   const shrink = opts.shrink ?? ffmpegShrink;
   const referenceSize = opts.referenceSize ?? 768;
   const inspectSize = opts.inspectSize ?? 1024;
+  const authorStyle = await Promise.all((opts.styleReferences ?? []).slice(0, maxReferences).map(async (img) => ({ ...(await shrink(img, referenceSize)), label: STYLE_LABEL })));
+  const styleRefs = opts.styleReferencesKey;
+  const groupOf = (key: string) => opts.referenceGroups?.[key] ?? "";
   // Kept images are only ever used as references, so keep the shrunk copy.
   const keep = async (job: ArtJob, image: Image) => {
     const small = await shrink(image, referenceSize);
@@ -568,8 +586,9 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
       // A cast member's portrait is drawn from their photos; a designed character's from the author's drawing.
       const photos = await Promise.all((job.photos ?? []).slice(0, 3).map(async (p) => ({ ...(await shrink(await loadImage(join(opts.runDir, p)), referenceSize)), label: job.design ? AUTHOR_DESIGN_LABEL : CAST_PHOTO_LABEL })));
       // Style: the first reference (rendered on its own first), so references made in parallel still match.
-      const anchor = refs.values().next().value as Image | undefined;
-      return [...photos, ...(anchor ? [{ ...anchor, label: STYLE_LABEL }] : [])];
+      // A group has its own anchor, so a big detailed design can't set a tiny one's level of detail.
+      const anchor = [...refs.entries()].find(([key]) => groupOf(key) === groupOf(job.key))?.[1];
+      return [...photos, ...authorStyle, ...(anchor ? [{ ...anchor, label: STYLE_LABEL }] : [])];
     }
     const canon = [
       ...(await characterRefs(job)),
@@ -608,7 +627,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
     const changed = !job.ref && prior?.refs ? changedRefs(prior.refs, await refHashes(Object.keys(prior.refs), manifest, outDir)) : [];
     if (approved && changed.length) emit({ type: "stale_approved", key: job.key, refs: changed });
     const redo = opts.redoKeys?.includes(job.key) ?? false;
-    if (approved || (!opts.force && !redo && changed.length === 0 && prior && prior.prompt === job.prompt && prior.style === (job.lookStyle ?? style) && prior.direction === (job.lookDirection ?? direction) && prior.photos === job.photoKey && existing.has(prior.file))) {
+    if (approved || (!opts.force && !redo && changed.length === 0 && prior && prior.prompt === job.prompt && prior.style === (job.lookStyle ?? style) && prior.direction === (job.lookDirection ?? direction) && prior.photos === job.photoKey && prior.styleRefs === (job.ref ? styleRefs : undefined) && existing.has(prior.file))) {
       // Same image, but keep its placement current in case the shot's anchor moved.
       prior.sceneIndex = job.sceneIndex;
       prior.startParagraph = job.startParagraph;
@@ -639,6 +658,7 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
         ...((job.lookStyle ?? style) ? { style: job.lookStyle ?? style } : {}),
         ...((job.lookDirection ?? direction) ? { direction: job.lookDirection ?? direction } : {}),
         ...(job.photoKey ? { photos: job.photoKey } : {}),
+        ...(job.ref && styleRefs ? { styleRefs } : {}),
         ...(job.ref ? {} : { refs: await shotInputs(job, manifest, outDir, maxPortraits) }),
         attempts: entry.attempts,
         accepted: entry.accepted,
@@ -706,9 +726,11 @@ export async function renderArt(events: StoryEvent[], opts: ArtOptions): Promise
   // Extras render only when asked for by key (the extras phase), with its overrides.
   const indexed = jobs.map((job, index) => ({ job, index })).filter(({ job }) => (picked ? picked.has(job.key) || (job.ref && (needed.has(job.key) || Boolean(manifest[job.key]))) : !job.key.startsWith("extra-")));
   const refJobs = indexed.filter(({ job }) => job.ref);
+  // Each group's first reference renders on its own stage, before the group's others need it.
+  const leads = refJobs.filter(({ job }, i) => refJobs.findIndex((r) => groupOf(r.job.key) === groupOf(job.key)) === i);
   const stages = [
-    refJobs.slice(0, 1),
-    refJobs.slice(1),
+    leads,
+    refJobs.filter((r) => !leads.includes(r)),
     ...(opts.only === "references" ? [] : [
       indexed.filter(({ job }) => isAnchor(job)),
       indexed.filter(({ job }) => !job.ref && !isAnchor(job) && job.sceneIndex !== undefined),

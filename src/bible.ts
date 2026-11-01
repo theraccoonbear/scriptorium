@@ -1,7 +1,7 @@
 // The story bible is derived state. Only the archivist's patches change it,
 // and it is always rebuilt by replaying the event log.
 import { SETUP_KINDS } from "./types.ts";
-import type { AuthorCharactersData, Bible, Character, Patch, Setup, SheetCharacter, StoryEvent } from "./types.ts";
+import type { AuthorCharactersData, AuthorProp, Bible, Character, Patch, Setup, SheetCharacter, StoryEvent } from "./types.ts";
 
 const RECENT_KEEP = 2;
 const ARC_CHUNK = 2;
@@ -85,6 +85,19 @@ export function applyPatch(bible: Bible, patch: Patch | undefined, index: number
   }
   next.sceneCount = index + 1;
   return next;
+}
+
+// The author's list of key objects replaces the Creator's: it is what the story's
+// props are, so nothing on it can be dropped and nothing else gets drawn.
+export function withAuthorProps(bible: Bible, props?: AuthorProp[]): Bible {
+  if (!props?.length) return bible;
+  return { ...bible, objects: Object.fromEntries(props.map(({ id, name, description }) => [id, { id, name, description }])) };
+}
+
+// What the art director, the artist and the inspector are told about one prop.
+export function propDirection(prop: AuthorProp): string | undefined {
+  const size = prop.sprite ? `Drawn for a sprite of ${prop.sprite} by ${prop.sprite} pixels: one pixel per grid cell, and every detail must read at that size.` : "";
+  return [size, prop.drawing?.trim()].filter(Boolean).join(" ") || undefined;
 }
 
 export function replay(events: StoryEvent[]): Bible {

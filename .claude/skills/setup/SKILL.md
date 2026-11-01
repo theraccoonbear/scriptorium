@@ -68,6 +68,21 @@ Ask only for the keys their goal needs:
 
 After each key, re-run `npm run doctor` and show the changed rows.
 
+## Keeping models fresh
+
+Run `npm run doctor -- <story.json>` before every new run, and whenever a run fails on a model. It's free, and it's always current, so there's nothing to schedule. Its models section compares every model in the shipped configs and the story with what each service lists now:
+- **✗ no longer listed:** that model is gone. Pick its replacement before running.
+- **○ has newer:** a newer version of the same model exists. Tell the author and suggest it. Change a config only with their yes.
+- **○ not checked:** the key didn't work, so nothing is known about that service's models. Fix the key first.
+
+A listed model isn't proof it works: a listed model can still fail with "unavailable" on a real call, and only a paid call shows that. Doctor spends nothing, so a pilot is the real test.
+
+**Choosing a model for each role** comes down to what the role needs:
+- **Judgement and creative roles** (art director, writer, director, editor, critic): use a model the project has already seen do this work well, as in `story.recommended.config.json`. A newer version of that model is a fair move once the author agrees. A model that has never done the role is an experiment, so say so and pilot it.
+- **Mechanical roles nobody reads** (continuist, archivist): the cheaper end of the same provider is fine.
+
+**If a model or key fails, stop and tell the author** what failed and what the choices are. Never substitute another provider or model for a creative or judgement role without their yes, even to keep a run moving. The fallback changes the work, and the run log won't make that obvious.
+
 ## 5. Tools
 
 With Docker, the image has every tool, so skip this step. Run locally, `doctor` checks them. Give the install command for their OS when one is ✗:

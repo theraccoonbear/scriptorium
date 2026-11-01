@@ -4,7 +4,7 @@ import { policyText, writeRatingReport } from "./ratings.ts";
 import { checkPlanRating, rate } from "./roles.ts";
 import type { RatingConflict } from "./roles.ts";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
-import { applyPatch, replay } from "./bible.ts";
+import { applyPatch, propDirection, replay, withAuthorProps } from "./bible.ts";
 import type { ArtDirection } from "./roles.ts";
 import { findLooseEnds } from "./roles.ts";
 import { shotCountFor, direct, createAndDirect, buildWorld, write, edit, checkContinuity, review, archive, reviewBeat, reviewPatch, reviewWorld, reviewContext, normalizeIssue, renderIssue, artDirect, checkShotCast, mergeShotCast, blockGroupPicture, checkLengthFit } from "./roles.ts";
@@ -38,6 +38,7 @@ import type {
   StoryEvent,
   Verdict,
   VisualRefData,
+  VisualRefKind,
   WorldOutput
 } from "./types.ts";
 import { CRITIC_MODES } from "./types.ts";
@@ -439,7 +440,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
           t0 = Date.now();
           if (creating) {
             const out = await createAndDirect(roles.director, { sceneIndex: i, total, arc: config.tension, turn, world, premise: config.premise || undefined, context: config.context, issues, fresh, ambiguity, ...(length ? { sceneWords: length.sceneWords } : {}), ...(lengthNote ? { lengthNote } : {}) });
-            createdBible = out.bible;
+            createdBible = withAuthorProps(out.bible, config.props);
             bible = { ...baseBible, ...createdBible };
             const arc = planArc(total, config.tension, createdBible.arc);
             tension = arc[0];
@@ -750,7 +751,7 @@ export async function runStory({ config, log, roles, scenes, onScene, runDir, ma
         };
         await nonFatal(`scene ${i + 1} visual references`, async () => {
           const known = new Set(Object.keys(bible.characters));
-          await directReferences(artRole, bible, log, sceneParagraphs(prose, known), recordRefs, new Set(), undefined, { characterIds: [], locationIds: [] });
+          await directReferences(artRole, bible, log, sceneParagraphs(prose, known), recordRefs, new Set(), undefined, { characterIds: [], locationIds: [] }, config);
         });
         await nonFatal(`scene ${i + 1} art prompts`, async () => {
           const { drafts } = await directSceneShots(artRole, config, bible, beat.result, prose, i, sceneArtPrompts(log.events), log, recordRefs);
@@ -866,21 +867,28 @@ async function directReferences(
   notes?: string,
   // Which characters and locations to consider (default: every one in the
   // bible), and whether to run the props batch (default: yes).
-  scope: { characterIds?: string[]; locationIds?: string[]; props?: boolean } = {}
+  scope: { characterIds?: string[]; locationIds?: string[]; props?: boolean } = {},
+  // The author's limits: which kinds are drawn, and a fixed list of props.
+  limits: Pick<StoryConfig, "props" | "referenceKinds"> = {}
 ): Promise<VisualRefData[]> {
   const start = refAppearances(log.events);
+  const drawn = (kind: VisualRefKind) => !limits.referenceKinds || limits.referenceKinds.includes(kind);
+  const authorProps = limits.props ? new Set(limits.props.map((p) => p.id)) : undefined;
+  const propDirections = Object.fromEntries((limits.props ?? []).flatMap((p) => { const d = propDirection(p); return d ? [[p.id, d]] : []; }));
   const characterIds = (scope.characterIds ?? Object.keys(bible.characters))
-    .filter((id) => bible.characters[id] && (!start.characters[id] || redo.has(`character:${id}`))).sort();
+    .filter((id) => drawn("character") && bible.characters[id] && (!start.characters[id] || redo.has(`character:${id}`))).sort();
   const locationIds = (scope.locationIds ?? Object.keys(bible.locations))
-    .filter((id) => bible.locations[id] && (!start.locations[id] || redo.has(`location:${id}`))).sort();
+    .filter((id) => drawn("location") && bible.locations[id] && (!start.locations[id] || redo.has(`location:${id}`))).sort();
   const redoProps = Object.keys(start.props).filter((id) => redo.has(`prop:${id}`));
   // Canon key objects are props whose look comes from the bible.
-  const objectIds = Object.keys(bible.objects ?? {}).filter((id) => (!start.props[id] || redo.has(`prop:${id}`)) && !redoProps.includes(id)).sort();
+  const objectIds = Object.keys(bible.objects ?? {}).filter((id) => (!authorProps || authorProps.has(id)) && (!start.props[id] || redo.has(`prop:${id}`)) && !redoProps.includes(id)).sort();
+  // A fixed list has nothing to discover, so a batch with nothing to do isn't a call.
+  const propsBatch = scope.props !== false && drawn("prop") && (!authorProps || objectIds.length + redoProps.length > 0);
   const chunk = (ids: string[]) => Array.from({ length: Math.ceil(ids.length / REF_BATCH) }, (_, k) => ids.slice(k * REF_BATCH, (k + 1) * REF_BATCH));
   const batches: Array<{ characterIds?: string[]; locationIds?: string[]; props?: true }> = [
     ...chunk(characterIds).map((ids) => ({ characterIds: ids })),
     ...chunk(locationIds).map((ids) => ({ locationIds: ids })),
-    ...(scope.props === false ? [] : [{ props: true as const }])  // canon objects, recreated props, and discovery of new ones
+    ...(propsBatch ? [{ props: true as const }] : [])  // canon objects, recreated props, and discovery of new ones
   ];
   const made: VisualRefData[] = [];
   for (const [n, b] of batches.entries()) {
@@ -893,7 +901,8 @@ async function directReferences(
       locationIds: b.locationIds ?? [],
       objectIds: b.props ? objectIds : [],
       redoProps: b.props ? redoProps : [],
-      discoverProps: Boolean(b.props),
+      propDirections,
+      discoverProps: Boolean(b.props) && !authorProps,
       notes,
       mentions: storyMentions(bible, log.events, ids),
       // The full text is only needed to find props; the other batches get mentions.
@@ -961,7 +970,7 @@ async function directSceneShots(
   const known = new Set(Object.keys(bible.characters));
   let made: VisualRefData[];
   try {
-    made = await directReferences(role, bible, log, sceneParagraphs(prose, known), recordRefs, new Set(), undefined, { characterIds, locationIds, props: false });
+    made = await directReferences(role, bible, log, sceneParagraphs(prose, known), recordRefs, new Set(), undefined, { characterIds, locationIds, props: false }, config);
   } catch (err) {
     // The shots are still good without these references; keep them.
     if (isBudgetError(err)) throw err;
@@ -1163,7 +1172,7 @@ export async function redirectArt({ config, log, roles, runDir, onScene, onRefer
   // get references as the re-shot scenes show them.
   const redoIds = (kind: string) => redo.filter((r) => r.startsWith(`${kind}:`)).map((r) => r.slice(kind.length + 1));
   const made = await directReferences(artRole, finalBible, log, storyText, recordRefs, new Set(redo), notes,
-    { characterIds: redoIds("character"), locationIds: redoIds("location") });
+    { characterIds: redoIds("character"), locationIds: redoIds("location") }, config);
   const events = [...log.events];
   const committed: SceneCommittedData[] = [];
   const prompts: string[] = [];
@@ -1228,6 +1237,8 @@ export async function planReferences({ config, log, roles, runDir, redo = [], no
   let seq = runDir ? await nextThreadSeq(runDir) : 0;
   const isApproved = (r: string) => approved.has(r.replace(":", "-"));
   for (const r of redo) if (isApproved(r)) throw new Error(`${r} is approved — revoke the approval before remaking it`);
+  const leftOut = redo.filter((r) => config.referenceKinds && !config.referenceKinds.includes(r.split(":")[0] as VisualRefKind));
+  if (leftOut.length) throw new Error(`--redo ${leftOut.join(",")}: the story file's "referenceKinds" leaves that kind out`);
   if (notes && redo.length === 0) throw new Error("--note only applies with --redo");
   const changed = staleCharacterRefs(log.events).map((id) => `character:${id}`);
   // An approved portrait stays as it is, even when its sheet entry changes: say so.
@@ -1244,10 +1255,10 @@ export async function planReferences({ config, log, roles, runDir, redo = [], no
   // The author's redo notes go only to what they're about.
   if (redo.length > 0) {
     made.push(...await directReferences(artRole, bible, log, storyText, record, new Set(redo), notes,
-      { characterIds: ids(redo, "character"), locationIds: ids(redo, "location"), props: ids(redo, "prop").length > 0 }));
+      { characterIds: ids(redo, "character"), locationIds: ids(redo, "location"), props: ids(redo, "prop").length > 0 }, config));
   }
   made.push(...await directReferences(artRole, replay(log.events), log, storyText, record, new Set(stale), undefined,
-    { characterIds: portraitIds(log.events), locationIds: Object.keys(bible.locations) }));
+    { characterIds: portraitIds(log.events), locationIds: Object.keys(bible.locations) }, config));
   return { made: made.map((r) => `${r.kind}:${r.id}`), stale: stale.map((r) => r.slice("character:".length)) };
 }
 

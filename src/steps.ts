@@ -22,7 +22,7 @@ import { cueSheetFor, cuesFromSheet, cuesToMake, generateCues, geminiVoiceCheck,
 import type { Compose, MusicSettings, VoiceCheck } from "./music.ts";
 import type { TitleSettings } from "./titles.ts";
 import type { EncoderChoice } from "./video.ts";
-import { BatchImageBackend, CAST_PHOTO_KEY, CAST_PHOTO_LABEL, KEY_ART, extensionFor, ffmpegShrink, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig, storyNames, stripNames } from "./artist.ts";
+import { BatchImageBackend, CAST_PHOTO_KEY, CAST_PHOTO_LABEL, KEY_ART, extensionFor, ffmpegShrink, styleReferencesKey, makeCastDescriber, makeImageBackend, makeInspector, renderArt, renderOne, resolveArtistConfig, storyNames, stripNames } from "./artist.ts";
 import type { ArtManifest, ImageBackend, Inspector, Shrink } from "./artist.ts";
 import { castContext, castRun, loadImage, slug } from "./cast.ts";
 import type { CastDescriber, CastEntry, CastMember } from "./cast.ts";
@@ -36,7 +36,7 @@ import { geminiBatchJobs } from "./batchJobs.ts";
 import type { GeminiSpec } from "./types.ts";
 import type { TonePaletteData } from "./tagging.ts";
 import type { GeminiMode } from "./geminiBatch.ts";
-import { replay } from "./bible.ts";
+import { propDirection, replay } from "./bible.ts";
 import { c } from "./colors.ts";
 import { accountantFor, readLedger, runAccounted, usd } from "./usage.ts";
 import { TYPICAL } from "./pitch.ts";
@@ -256,6 +256,15 @@ export function artistDirection(config: StoryConfig): string | undefined {
   return [config.direction?.artist?.trim(), config.rating ? visualLimits(config.rating) : ""].filter(Boolean).join("\n") || undefined;
 }
 
+// A prop's own drawing direction, added to the story's for that image alone.
+export function propOverrides(config: StoryConfig): Record<string, { direction: string }> {
+  const base = artistDirection(config);
+  return Object.fromEntries((config.props ?? []).flatMap((p) => {
+    const own = propDirection(p);
+    return own ? [[`prop-${p.id}`, { direction: [base, own].filter(Boolean).join("\n") }]] : [];
+  }));
+}
+
 // The extras phase (#49): key art (2:3, 16:9, 1:1) and a cast photo, in the
 // story's art style, at 2K; directed once, then rendered like the cover.
 // redo: these extras keys again (a new prompt with redirect, or just new takes).
@@ -413,7 +422,11 @@ async function artStepInner(runDir: string, config: StoryConfig, events: StoryEv
     inspectSize: artist.inspectSize,
     direction: artistDirection(config),
     force,
+    ...(config.styleReferences?.length ? { styleReferences: await Promise.all(config.styleReferences.map(loadImage)), styleReferencesKey: styleReferencesKey(config.styleReferences) } : {}),
+    ...(config.referenceKinds ? { referenceKinds: config.referenceKinds } : {}),
+    ...(config.props?.some((p) => p.sprite) ? { referenceGroups: Object.fromEntries(config.props.map((p) => [`prop-${p.id}`, String(p.sprite ?? "")])) } : {}),
     ...lock,
+    overrides: { ...propOverrides(config), ...lock.overrides },
     onProgress: (event) => {
       if (event.type === "job_start") console.error(`[scriptorium] ${c.blue(c.bold(`${event.key} (${event.index + 1}/${event.total})`))}`);
       else if (event.type === "job_skipped") console.error(`[scriptorium] ${c.dim(`${event.key} unchanged — skipping (${event.file})`)}`);

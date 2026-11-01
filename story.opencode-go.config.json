@@ -4,7 +4,7 @@
     "go": {
       "type": "opencode-go",
       "api": "chat",
-      "model": "deepseek-v4-flash",
+      "model": "deepseek-v4.1-flash",
       "maxTokens": 8192
     },
     "go-fast": {

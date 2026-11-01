@@ -1,16 +1,20 @@
 import { execFile } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_ARTIST_CONFIG, resolveArtistConfig } from "./artist.ts";
 import { keyTail } from "./env.ts";
 import { DEFAULT_GEMINI_TTS_MODEL } from "./geminiTts.ts";
 import { MUSIC_DEFAULTS } from "./music.ts";
 import type { ResolvedStory } from "./make.ts";
-import type { ArtistBackendSpec, ProviderSpec } from "./types.ts";
+import type { ArtistBackendSpec, ProviderSpec, StoryConfig } from "./types.ts";
 
 // `scriptorium doctor`: what this machine can make, from its API keys and
 // tools, without spending anything. Each key is checked with a free call (its
 // service's model list), never a generation, and each model the pipeline uses
 // is looked for in that list. With a story file, also whether that story can run.
+// Every configured model is also compared with the list, for gone and newer versions.
 
 export type Mark = "ok" | "no" | "unset";  // ✓ ready, ✗ broken or missing, ○ not set up (or optional)
 export interface Row { label: string; mark: Mark; detail: string }
@@ -20,7 +24,10 @@ export interface DoctorDeps {
   fetch: typeof fetch;
   has: (cmd: string, args: string[]) => Promise<boolean>;  // the command runs and exits 0
   resolves: (pkg: string) => boolean;                      // the npm package is installed
+  configs?: () => ModelSource[];                           // the config files shipped with the repo
 }
+
+export interface ModelSource { source: string; config: Partial<StoryConfig> }
 
 export const KEYS = {
   anthropic: { env: "ANTHROPIC_API_KEY", name: "Anthropic (Claude)", where: "https://console.anthropic.com/settings/keys" },
@@ -162,6 +169,90 @@ export async function storyRows(story: ResolvedStory, f: Findings, deps: DoctorD
   return rows;
 }
 
+// Model ids carry a version: claude-haiku-4-5-20251001 is family claude-haiku-*,
+// version 4.5, and gemini-3.1-flash-image is gemini-*-flash-image, version 3.1.
+// Ids with no version (or a tier name like 4o) have no family to compare.
+export function modelVersion(id: string): { family: string; version: number[] } | undefined {
+  const isVersion = (t: string | undefined) => t !== undefined && /^v?\d+(\.\d+)*$/.test(t);
+  const tokens = id.split("-").filter((t) => !/^\d{8}$/.test(t));  // a date stamp isn't a version
+  const start = tokens.findIndex(isVersion);
+  if (start < 0) return undefined;
+  let end = start;
+  while (isVersion(tokens[end])) end++;
+  const version = tokens.slice(start, end).join(".").replaceAll("v", "").split(".").map(Number);
+  return { family: [...tokens.slice(0, start), "*", ...tokens.slice(end)].join("-"), version };
+}
+
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+// Listed models of the same family with a higher version, newest first.
+export function newerModels(id: string, listed: Iterable<string>): string[] {
+  const mine = modelVersion(id);
+  if (!mine) return [];
+  const newer = [...listed].flatMap((other) => {
+    const theirs = modelVersion(other);
+    return theirs?.family === mine.family && compareVersions(theirs.version, mine.version) > 0 ? [{ other, version: theirs.version }] : [];
+  });
+  return newer.sort((a, b) => compareVersions(b.version, a.version)).map((n) => n.other);
+}
+
+function configuredModels(sources: ModelSource[]): Map<KeyName, Map<string, Set<string>>> {
+  const found = new Map<KeyName, Map<string, Set<string>>>();
+  const add = (key: KeyName, model: string, source: string) => {
+    const models = found.get(key) ?? new Map<string, Set<string>>();
+    found.set(key, models.set(model, (models.get(model) ?? new Set()).add(source)));
+  };
+  for (const { source, config } of sources) {
+    for (const spec of Object.values(config.providers ?? {})) {
+      const { key } = providerKey(spec);
+      if (key && spec.model) add(key, spec.model, source);
+    }
+    for (const spec of [config.artist?.image, config.artist?.inspector]) {
+      if (spec?.type === "gemini" || spec?.type === "openai") add(spec.type, spec.model, source);
+    }
+  }
+  return found;
+}
+
+// Every configured model against what its service lists now: what's gone, and
+// what has a newer version. Free. A rejected key leaves its service unchecked,
+// which says nothing about its models.
+export function freshnessRows(f: Findings, sources: ModelSource[]): Row[] {
+  const builtIn: ModelSource = { source: "built-in defaults", config: { artist: DEFAULT_ARTIST_CONFIG } };
+  const models = configuredModels([builtIn, ...sources]);
+  const defaults = models.get("gemini") ?? new Map<string, Set<string>>();
+  for (const model of [DEFAULT_GEMINI_TTS_MODEL, MUSIC_DEFAULTS.model]) defaults.set(model, (defaults.get(model) ?? new Set()).add("built-in defaults"));
+  models.set("gemini", defaults);
+
+  const rows: Row[] = [];
+  for (const key of Object.keys(KEYS) as KeyName[]) {
+    const configured = models.get(key);
+    if (!configured) continue;
+    const label = `Models: ${KEYS[key].name}`;
+    const state = f.keys[key];
+    if (!state.valid || !state.models) {
+      const why = state.set ? state.error ?? "not working" : `no ${KEYS[key].env}`;
+      rows.push({ label, mark: "unset", detail: `not checked (${why}): ${[...configured.keys()].join(", ")}` });
+      continue;
+    }
+    const found: Row[] = [];
+    for (const [model, from] of configured) {
+      const where = [...from].join(", ");
+      if (!state.models.has(model)) found.push({ label, mark: "no", detail: `${model} is no longer listed (${where})` });
+      const newer = newerModels(model, state.models);
+      if (newer.length) found.push({ label, mark: "unset", detail: `${model} has newer: ${newer.join(", ")} (${where})` });
+    }
+    rows.push(...(found.length ? found : [{ label, mark: "ok" as Mark, detail: `all ${configured.size} configured models listed, none with a newer version` }]));
+  }
+  return rows;
+}
+
 const MARKS: Record<Mark, string> = { ok: "✓", no: "✗", unset: "○" };
 
 export function formatRows(rows: Row[], color = false): string {
@@ -179,8 +270,14 @@ export function systemDeps(env: Record<string, string | undefined> = process.env
     env,
     fetch: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(15000) }),
     has: (cmd, args) => new Promise((ok) => execFile(cmd, args, { timeout: 10000 }, (err) => ok(!err))),
-    resolves: (pkg) => { try { require.resolve(pkg); return true; } catch { return false; } }
+    resolves: (pkg) => { try { require.resolve(pkg); return true; } catch { return false; } },
+    configs: shippedConfigs
   };
+}
+
+function shippedConfigs(): ModelSource[] {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  return readdirSync(root).filter((f) => /^story\..*config\.json$/.test(f)).map((file) => ({ source: file, config: JSON.parse(readFileSync(join(root, file), "utf8")) }));
 }
 
 export async function doctor(deps: DoctorDeps, story?: ResolvedStory): Promise<{ text: string; ready: boolean }> {
@@ -195,7 +292,9 @@ export async function doctor(deps: DoctorDeps, story?: ResolvedStory): Promise<{
     ready = rows.every((r) => r.mark !== "no");
     parts.push("", `${story.file}: ${ready ? "ready to run" : "can't run yet"}`, "", formatRows(rows, color));
   }
+  const sources = [...(deps.configs?.() ?? []), ...(story ? [{ source: story.file, config: story.config }] : [])];
+  parts.push("", "Models in the configs, against what each service lists now:", "", formatRows(freshnessRows(f, sources), color));
   parts.push("", "✓ ready   ✗ broken or missing   ○ not set up (or optional)",
-    "Keys are checked by listing their models (free); a model being listed doesn't prove the key has billing for it.");
+    "Keys are checked by listing their models (free); a model being listed doesn't prove the key has billing for it, or that the service can run it today. Only a paid call proves that.");
   return { text: parts.join("\n"), ready };
 }
