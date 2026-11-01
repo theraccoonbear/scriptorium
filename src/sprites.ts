@@ -16,6 +16,8 @@ type Rgb = [number, number, number];
 export const GRID_RANGE = { min: 8, max: 128 };
 export const DEFAULT_TOLERANCE = 96;
 export const DEFAULT_COLORS = 16;
+export const DEFAULT_FUZZ = 28;   // percent: how near the background still keys out, JPEG fringe included
+export const DEFAULT_ERODE = 2;   // pixels shaved off the cut-out's edge, where the background bled in
 // Average colour error of a clean grid, even through JPEG: above it, there isn't one.
 const GRID_NOISE = 18;
 
@@ -128,11 +130,20 @@ function magickTools(bin: string) {
     child.stdin.on("error", () => { /* reported via close */ });
     child.stdin.end(input);
   });
+  const hex = (c: Rgb) => `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
   const size = async (file: string) => {
     const [width, height] = (await call(["identify", "-format", "%w %h", `${file}[0]`])).toString().trim().split(" ").map(Number);
     return { width, height };
   };
   return {
+    // The model's image is flat: the background is painted pixels, with no alpha.
+    // So key it at full size, before anything blends it into the object's edges.
+    cutout: (from: string, to: string, background: Rgb, fuzz: number, erode: number) => call([
+      from, "-alpha", "set", "-fuzz", `${fuzz}%`, "-transparent", hex(background),
+      "(", "+clone", "-alpha", "extract", "-threshold", "50%", ...(erode > 0 ? ["-morphology", "Erode", `Diamond:${erode}`] : []), ")",
+      "-alpha", "off", "-compose", "CopyOpacity", "-composite", `PNG32:${to}`
+    ]),
+    reduce: (from: string, to: string, size: number) => call([from, "-filter", "Box", "-resize", `${size}x${size}`, "-channel", "A", "-threshold", "50%", "+channel", `PNG32:${to}`]),
     decode: async (file: string, channels: "rgb" | "rgba"): Promise<Raster> => ({ ...(await size(file)), data: new Uint8Array(await call([file, "-colorspace", "sRGB", "-depth", "8", ...(channels === "rgb" ? ["-alpha", "off"] : []), `${channels}:-`])) }),
     encode: (sprite: Raster, file: string, colors?: number) => write(["-size", `${sprite.width}x${sprite.height}`, "-depth", "8", "rgba:-", ...(colors ? ["-dither", "None", "-colors", String(colors)] : []), `PNG32:${file}`], sprite.data),
     sheet: (files: string[], to: string) => call(["montage", ...files, "-filter", "Point", "-resize", "400%", "-background", "#808890", "-geometry", "+8+8", "-tile", "7x", to])
@@ -162,12 +173,7 @@ export interface SpriteResult {
   flags: string[];
 }
 
-// Reads art.json, and writes <run>/sprites/native/<id>.png (the true sprite),
-// <run>/sprites/<size>px/<id>.png, sprites.json, and a sheet per size in review/.
-export async function makeSprites(opts: SpriteOptions): Promise<SpriteResult[]> {
-  const asked = [...(opts.sizes ?? []), ...Object.values(opts.targets ?? {})];
-  if (asked.some((s) => !Number.isInteger(s) || s <= 0)) throw new Error("sprites: sizes must be whole numbers of pixels (--sizes 16,48)");
-  const tools = magickTools(opts.magick ?? "magick");
+async function pickArt(opts: Pick<SpriteOptions, "runDir" | "kinds" | "keys">) {
   const artDir = join(opts.runDir, "art");
   const manifest = JSON.parse(await readFile(join(artDir, "art.json"), "utf8").catch(() => { throw new Error(`no art/art.json in ${opts.runDir}: run --only refs first`); })) as ArtManifest;
   const kinds = opts.kinds ?? ["prop"];
@@ -175,6 +181,16 @@ export async function makeSprites(opts: SpriteOptions): Promise<SpriteResult[]> 
   if (unknown.length) throw new Error(`sprites: no image for ${unknown.join(", ")} (art keys, e.g. prop-lantern)`);
   const picked = Object.entries(manifest).filter(([key, e]) => (opts.keys ? opts.keys.includes(key) : e.refKind !== undefined && kinds.includes(e.refKind)));
   if (picked.length === 0) throw new Error(`sprites: nothing to do in ${artDir}`);
+  return { artDir, picked };
+}
+
+// Reads art.json, and writes <run>/sprites/native/<id>.png (the true sprite),
+// <run>/sprites/<size>px/<id>.png, sprites.json, and a sheet per size in review/.
+export async function makeSprites(opts: SpriteOptions): Promise<SpriteResult[]> {
+  const asked = [...(opts.sizes ?? []), ...Object.values(opts.targets ?? {})];
+  if (asked.some((s) => !Number.isInteger(s) || s <= 0)) throw new Error("sprites: sizes must be whole numbers of pixels (--sizes 16,48)");
+  const tools = magickTools(opts.magick ?? "magick");
+  const { artDir, picked } = await pickArt(opts);
   const spritesDir = join(opts.runDir, "sprites");
   await mkdir(join(spritesDir, "native"), { recursive: true });
   const results: SpriteResult[] = [];
@@ -217,6 +233,70 @@ export async function makeSprites(opts: SpriteOptions): Promise<SpriteResult[]> 
   await mkdir(join(opts.runDir, "review"), { recursive: true });
   for (const size of new Set(results.flatMap((r) => Object.keys(r.sizes)))) {
     await tools.sheet(results.flatMap((r) => (r.sizes[size] ? [r.sizes[size]] : [])), join(opts.runDir, "review", `sprites-${size}px.png`));
+  }
+  return results;
+}
+
+export interface CutoutOptions {
+  runDir: string;
+  reduce?: number[];            // square sizes to reduce to, from the cut-outs
+  kinds?: VisualRefKind[];      // default props
+  keys?: string[];              // just these art keys
+  background?: Rgb;             // default the corners' colour
+  fuzz?: number;                // percent, default DEFAULT_FUZZ
+  erode?: number;               // pixels, default DEFAULT_ERODE
+  magick?: string;              // the binary (default magick)
+}
+
+export interface CutoutResult {
+  key: string;
+  id: string;
+  file?: string;                  // the full-size cut-out
+  reduced: Record<string, string>;  // size -> file
+  flags: string[];
+}
+
+// For art not drawn on a strict grid: a real-alpha PNG at full size in
+// <run>/sprites/cutout/, and only if asked, reductions of those cut-outs in
+// <run>/sprites/reduced/<size>px/. Reductions are averaged, not true pixels, so
+// they stay apart from <size>px/. They never touch the background-backed image.
+export async function makeCutouts(opts: CutoutOptions): Promise<CutoutResult[]> {
+  const sizes = opts.reduce ?? [];
+  if (sizes.some((s) => !Number.isInteger(s) || s <= 0)) throw new Error("sprites: --reduce takes whole numbers of pixels (--reduce 32,64)");
+  const fuzz = opts.fuzz ?? DEFAULT_FUZZ;
+  if (!(fuzz >= 0 && fuzz <= 100)) throw new Error("sprites: --fuzz is a percentage, 0 to 100");
+  const erode = opts.erode ?? DEFAULT_ERODE;
+  if (!Number.isInteger(erode) || erode < 0) throw new Error("sprites: --erode is a whole number of pixels");
+  const tools = magickTools(opts.magick ?? "magick");
+  const { artDir, picked } = await pickArt(opts);
+  const spritesDir = join(opts.runDir, "sprites");
+  await mkdir(join(spritesDir, "cutout"), { recursive: true });
+  const results: CutoutResult[] = [];
+  for (const [key, entry] of picked) {
+    const id = entry.refId ?? key;
+    const source = join(artDir, entry.file);
+    const background = opts.background ?? cornerColour(await tools.decode(source, "rgb"));
+    const flags = entry.accepted === false ? [`the inspector never accepted this image: ${entry.issues.join("; ")}`] : [];
+    const file = join(spritesDir, "cutout", `${id}.png`);
+    await tools.cutout(source, file, background, fuzz, erode);
+    const { data } = await tools.decode(file, "rgba");
+    if (!data.some((v, i) => i % 4 === 3 && v > 0)) {
+      results.push({ key, id, reduced: {}, flags: [...flags, "nothing left once the background was removed"] });
+      continue;
+    }
+    const reduced: CutoutResult["reduced"] = {};
+    for (const size of sizes) {
+      await mkdir(join(spritesDir, "reduced", `${size}px`), { recursive: true });
+      reduced[size] = join(spritesDir, "reduced", `${size}px`, `${id}.png`);
+      await tools.reduce(file, reduced[size], size);
+    }
+    results.push({ key, id, file, reduced, flags });
+  }
+  await writeFile(join(spritesDir, "cutouts.json"), JSON.stringify(results, null, 2) + "\n", "utf8");
+  await mkdir(join(opts.runDir, "review"), { recursive: true });
+  for (const size of sizes) {
+    const files = results.flatMap((r) => (r.reduced[size] ? [r.reduced[size]] : []));
+    if (files.length) await tools.sheet(files, join(opts.runDir, "review", `sprites-reduced-${size}px.png`));
   }
   return results;
 }

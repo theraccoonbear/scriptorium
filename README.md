@@ -148,6 +148,7 @@ docker compose run --rm --entrypoint npm scriptorium test
 | `review <story.json> characters\|refs\|shots\|voices\|music` | Rebuild the run's current review files in `<run>/review/`: the character sheet as a readable page (`characters.md`), contact sheets, the voice reel and its legends. |
 | `approve <story.json> <key>… [--revoke]` | Lock approved images (`scene-03-07`, `character-nell`) and voices (`voice:nell`) so nothing redoes them. |
 | `sprites <story.json> [--sizes 16,48] [--kinds prop] [--keys prop-a,…] [--background #FF00FF] [--tolerance 96] [--colors 16]` | Recover true pixel sprites from finished art, each at its prop's `sprite` size (`--sizes` for art without one). Nothing is resized. Free. See [Spec art](#spec-art). |
+| `sprites <story.json> --cutout [--reduce 32,64] [--fuzz 28] [--erode 2]` | For art not on a strict grid: real-alpha PNGs at full size in `sprites/cutout/`, and with `--reduce`, reductions of those in `sprites/reduced/<size>px/`. Free. |
 | `audition <story.json> <speaker> [--direction ".."] [--voices a,b] [--count N]` | Their reel line in their current voice and a few others (the voice director's picks, or yours), as a review round. `--pick N` pins candidate N in the story file, makes the new direction their vocal line, and remakes their sample and the reel. |
 | `cost --out <dir>` | What a run has spent, by step, role and model. |
 | `models --config <file> --provider <name>` | List the model ids a provider serves. |
@@ -352,6 +353,8 @@ To get a set of props without a film, a story file can fix what's drawn. The **s
 **Style anchors with mixed sizes:** props with a `sprite` are anchored by size. The first prop of each size is drawn with no anchor and anchors only that size, so a detailed design can't push its detail into a tiny one.
 
 **Sprites:** image models draw pixel art at about 1024 px. `npm run sprites -- <story.json>` finds the grid the model drew on, reads the cells back, removes the background and trims, without resampling. Each prop lands centred on its `sprite` size in `<run>/sprites/<size>px/`, with the true sprite in `sprites/native/`, a report in `sprites/sprites.json` and sheets in `review/sprites-<size>px.png`. A sprite too big for its target is flagged, not written, and the command exits non-zero. Redraw it simpler.
+
+**Cut-outs:** image models return flat images: the plain background is painted pixels, with no alpha. For art not drawn on a strict grid, `npm run sprites -- <story.json> --cutout` keys the background at full size, shaves the fringe and writes real-alpha PNGs to `<run>/sprites/cutout/`. `--reduce 32,64` adds averaged reductions of those cut-outs in `<run>/sprites/reduced/<size>px/`, kept apart from true-grid sprites, with sheets in `review/sprites-reduced-<size>px.png`.
 
 ### Extras
 

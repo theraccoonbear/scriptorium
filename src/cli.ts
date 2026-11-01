@@ -6,7 +6,7 @@ import { closeRounds, formatPending, roundStatuses } from "./pending.ts";
 import { join } from "node:path";
 import { readFile, writeFile, readdir, rmdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { makeSprites, parseColour } from "./sprites.ts";
+import { makeCutouts, makeSprites, parseColour } from "./sprites.ts";
 import type { VisualRefKind } from "./types.ts";
 import { EventLog } from "./eventlog.ts";
 import { describeRepoEnv, loadRepoEnv } from "./env.ts";
@@ -86,6 +86,8 @@ const USAGE = `scriptorium <command> [options]
                                                          vocal line; remakes their sample and the reel
   sprites <story.json> [--sizes 16,48] [--kinds prop] [--keys prop-a,…] [--background #FF00FF] [--tolerance 96] [--colors 16]
         recover true pixel sprites from finished art. Each prop goes to its own "sprite" size; --sizes is for art without one. Never resized. Free.
+  sprites <story.json> --cutout [--reduce 32,64] [--fuzz 28] [--erode 2] [--kinds prop] [--keys prop-a,…] [--background #FF00FF]
+        for art not on a strict grid: real-alpha PNGs at full size, and with --reduce (which implies --cutout), reductions of those cut-outs. Free.
   canon <story.json> [--apply [--skip N,…]]           show the latest canon check (make --only canon), or
                                                          apply its fixes to the prose and shot prompts
   spend <story.json> [--since <date>] [--cost-kind k] [--cost-tag t]
@@ -263,7 +265,11 @@ async function main() {
       keys: { type: "string" },
       background: { type: "string" },
       tolerance: { type: "string" },
-      colors: { type: "string" }
+      colors: { type: "string" },
+      cutout: { type: "boolean" },
+      reduce: { type: "string" },
+      fuzz: { type: "string" },
+      erode: { type: "string" }
     }
   });
 
@@ -431,7 +437,7 @@ async function main() {
 
   if (command === "sprites") {
     const [storyFile] = positionals;
-    if (!storyFile) throw new Error("usage: sprites <story.json> [--sizes 16,48] [--kinds prop,location] [--keys prop-a,prop-b] [--background #FF00FF] [--tolerance 96] [--colors 16]");
+    if (!storyFile) throw new Error("usage: sprites <story.json> [--sizes 16,48] [--kinds prop,location] [--keys prop-a,prop-b] [--background #FF00FF] [--tolerance 96] [--colors 16], or --cutout [--reduce 32,64] [--fuzz 28] [--erode 2]");
     const story = await loadStoryFile(storyFile);
     const list = (text?: string) => text?.split(",").map((x) => x.trim()).filter(Boolean);
     const number = (name: string, text?: string) => {
@@ -440,6 +446,25 @@ async function main() {
       if (!Number.isInteger(n) || n < 0) throw new Error(`--${name} must be a whole number`);
       return { [name]: n };
     };
+    if (values.cutout || values.reduce) {
+      const cut = await makeCutouts({
+        runDir: story.runDir,
+        ...(values.reduce ? { reduce: list(values.reduce)!.map(Number) } : {}),
+        ...(values.kinds ? { kinds: list(values.kinds) as VisualRefKind[] } : {}),
+        ...(values.keys ? { keys: list(values.keys) } : {}),
+        ...(values.background ? { background: parseColour(values.background) } : {}),
+        ...number("fuzz", values.fuzz),
+        ...number("erode", values.erode)
+      });
+      for (const r of cut) {
+        const sizes = Object.keys(r.reduced);
+        console.log(`${c.ok(r.id)} ${c.dim(r.file ? `cut out${sizes.length ? `, reduced to ${sizes.join(", ")}px` : ""}` : "empty")}`);
+        for (const f of r.flags) console.log(`  ${c.retry(f)}`);
+      }
+      if (cut.some((r) => !r.file)) process.exitCode = 1;
+      console.log(`${cut.length} cut-out${cut.length === 1 ? "" : "s"} → ${join(story.runDir, "sprites", "cutout")}${values.reduce ? `, reductions in ${join(story.runDir, "sprites", "reduced")}` : ""}`);
+      return;
+    }
     const results = await makeSprites({
       runDir: story.runDir,
       // A prop's own "sprite" is its target; --sizes serves art without one.

@@ -110,3 +110,17 @@ This finds the pixel grid the model really drew on, reads the cells back, remove
 - **Options:** `--sizes 16,48` serves art with no `sprite`. `--background`, `--tolerance` and `--colors` tune the keying and palette.
 
 Show the sheets on a background like the one the art will sit on: near-black outlines vanish on dark colours.
+
+### Art not on a strict grid
+
+Image models don't honour very small grids: asked for 13 or 32 cells, they draw much finer, and a very small design rarely survives. Pilot this. If the small size fails, draw the set as detailed art, with no `sprite`, and reduce it or let the author adapt it by hand. Don't spend more retries on a grid the model won't draw.
+
+Image models also return flat images: the background is painted pixels with no alpha, and blending it into the edges is what makes a fringe. So never shrink the image with its background still on.
+
+```bash
+npm run sprites -- <story.json> --cutout
+npm run sprites -- <story.json> --reduce 32,64
+```
+
+- **`--cutout`:** keys the background at full size and shaves the fringe, writing real-alpha PNGs to `<run>/sprites/cutout/`. `--fuzz` (default 28) and `--erode` (default 2) tune it. Check thin glows and rings, which keying can eat.
+- **`--reduce`:** also writes reductions of those cut-outs to `<run>/sprites/reduced/<size>px/`, with sheets in `review/sprites-reduced-<size>px.png`. They're averaged, so softer than true-grid sprites, and they're kept apart from them.

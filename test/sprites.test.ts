@@ -5,8 +5,9 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cornerColour, detectGrid, fitSprite, makeSprites, parseColour, readCells, trimSprite } from "../src/sprites.ts";
+import { cornerColour, detectGrid, fitSprite, makeCutouts, makeSprites, parseColour, readCells, trimSprite } from "../src/sprites.ts";
 import type { Raster } from "../src/sprites.ts";
+import { INSPECTOR_SYSTEM } from "../src/artist.ts";
 
 const hasMagick = (() => { try { execFileSync("magick", ["-version"]); return true; } catch { return false; } })();
 const MAGENTA: [number, number, number] = [255, 0, 255];
@@ -119,4 +120,58 @@ test("makeSprites refuses bad input clearly, and says when ImageMagick is missin
   await assert.rejects(makeSprites({ runDir, sizes: [16], keys: ["prop-y"] }), /no image for prop-y/);
   await assert.rejects(makeSprites({ runDir, sizes: [16], kinds: ["location"] }), /nothing to do/);
   await assert.rejects(makeSprites({ runDir, sizes: [16], magick: "no-such-magick-binary" }), /sprites needs ImageMagick 7/);
+});
+
+// A square of solid colour on magenta, with a band of magenta-tinted fringe around it.
+async function fringed(dir: string): Promise<string> {
+  const run = join(dir, "run");
+  await mkdir(join(run, "art", "prop"), { recursive: true });
+  execFileSync("magick", ["-size", "400x400", "xc:#FF00FF", "-fill", "#D020C0", "-draw", "rectangle 98,98 301,301", "-fill", "#20A040", "-draw", "rectangle 100,100 299,299", join(run, "art", "prop", "box.png")]);
+  await writeFile(join(run, "art", "art.json"), JSON.stringify({ "prop-box": { file: "prop/box.png", refKind: "prop", refId: "box", prompt: "p", finalPrompt: "p", attempts: 1, accepted: true, issues: [] } }));
+  return run;
+}
+const pixel = (file: string, x: number, y: number) => execFileSync("magick", [file, "-format", `%[fx:p{${x},${y}}.a] %[fx:p{${x},${y}}.r]`, "info:"]).toString().trim().split(" ").map(Number);
+
+test("a cut-out has real alpha at full size, its fringe shaved", { skip: !hasMagick }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cutout-"));
+  const run = await fringed(dir);
+  const [result] = await makeCutouts({ runDir: run });
+  assert.equal(result.file, join(run, "sprites", "cutout", "box.png"));
+  assert.deepEqual(result.reduced, {});
+  assert.equal(pixel(result.file!, 0, 0)[0], 0, "the background is transparent");
+  assert.equal(pixel(result.file!, 99, 200)[0], 0, "the fringe is gone");
+  assert.equal(pixel(result.file!, 200, 200)[0], 1, "the object is opaque");
+  assert.equal(existsSync(join(run, "sprites", "reduced")), false, "reduction is opt-in");
+});
+
+test("reductions come from the cut-out, hard-edged, and apart from true-grid sprites", { skip: !hasMagick }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cutout-"));
+  const run = await fringed(dir);
+  const [result] = await makeCutouts({ runDir: run, reduce: [32] });
+  const file = join(run, "sprites", "reduced", "32px", "box.png");
+  assert.equal(result.reduced[32], file);
+  assert.equal(existsSync(join(run, "sprites", "32px")), false);
+  assert.equal(existsSync(join(run, "review", "sprites-reduced-32px.png")), true);
+  for (const [x, y] of [[0, 0], [7, 16], [8, 16], [16, 16], [23, 16], [24, 16], [8, 8], [23, 23]]) {
+    const [a, r] = pixel(file, x, y);
+    assert.ok(a === 0 || a === 1, `alpha is on or off at ${x},${y}`);
+    if (a > 0) assert.ok(r < 0.5, `no magenta in the edge at ${x},${y}`);
+  }
+});
+
+test("cut-out options are checked, and an all-background image is reported", { skip: !hasMagick }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cutout-"));
+  const run = await fringed(dir);
+  await assert.rejects(makeCutouts({ runDir: run, reduce: [0] }), /--reduce/);
+  await assert.rejects(makeCutouts({ runDir: run, fuzz: 101 }), /--fuzz/);
+  await assert.rejects(makeCutouts({ runDir: run, erode: 1.5 }), /--erode/);
+  execFileSync("magick", ["-size", "64x64", "xc:#FF00FF", join(run, "art", "prop", "box.png")]);
+  const [empty] = await makeCutouts({ runDir: run, reduce: [16] });
+  assert.equal(empty.file, undefined);
+  assert.match(empty.flags.join(), /nothing left/);
+});
+
+test("the inspector's rewrite describes only what should be there", () => {
+  assert.doesNotMatch(INSPECTOR_SYSTEM, /add "no text"/);
+  assert.match(INSPECTOR_SYSTEM, /Describe only what should be there/);
 });
